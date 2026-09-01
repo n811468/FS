@@ -240,7 +240,7 @@
 | EffectiveDate | date | |
 
 > **不在此表手動輸入的科目**：
-> - `d4` 季Margin：即原「0.5%Margin」，直接由「稅務費用比率」頁的季Margin率 × 實際零售價(未稅) 算出。
+> - `d4` 季Margin：即原「0.5%Margin」，直接由「稅務費用比率」頁的季Margin率 × 廠價(未稅) 算出。
 > - `f3`/`f4` 車型專案開發費用：由 `DevInvestment` 費用類低減後金額 ÷ LIFE CYCLE 總台數（月台數 × 12 × LC年限）自動攤提。
 
 ### 2.10 `AuditLog` 異動紀錄（選配，建議加）

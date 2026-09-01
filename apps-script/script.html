@@ -75,6 +75,9 @@ let currentScenarioId = '';
 let currentScenario = null;      // 目前情境的完整資料(含 Gate / ScenarioType)
 let scenarioCache = [];
 let currentTab = 'vehicletypes';
+// 靜默模式：初始化(或切換車型)時會連續設定車型/情境，每一步都重繪會造成
+// 同一個分頁被畫三、四次、也重複打伺服器。開啟後只更新狀態不渲染，最後統一渲染一次。
+let silent = false;
 
 /* ---------------- 共用工具 ---------------- */
 function num(v) { const n = Number(v); return isNaN(n) ? 0 : n; }
@@ -82,7 +85,11 @@ function fmt(v, digits) {
   if (v === '' || v === null || v === undefined) return '';
   return Number(v).toLocaleString(undefined, { maximumFractionDigits: digits === undefined ? 0 : digits });
 }
-function esc(s) { return String(s === undefined || s === null ? '' : s).replace(/"/g, '&quot;'); }
+/** 科目名稱/備註等使用者輸入會被塞進 HTML，& < > " 都要轉義，否則表格會被破壞 */
+function esc(s) {
+  return String(s === undefined || s === null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
 function val(id) { const el = document.getElementById(id); return el ? el.value : ''; }
 
 function showGlobalError(err) {
@@ -137,34 +144,64 @@ function switchTab(key) {
 }
 
 function renderTab(key) {
+  if (silent) return;
   if (key === 'dashboard') loadComparisonPicker();
   else if (GRID_PANELS[key]) window[GRID_PANELS[key]]();
   else if (ENTITIES[key]) renderEntityPanel(key);
 }
 
+/** 開場：車型 + 情境一次取回，期間不重繪，最後只渲染一次目前分頁 */
 function loadVehicleTypeSelector(preferredId) {
+  silent = true;
   google.script.run
-    .withSuccessHandler(safeHandler(types => {
-      types = types || [];
-      const sel = document.getElementById('vehicletype-selector');
-      sel.innerHTML = '<option value="">-- 選擇車型 --</option>' +
-        types.map(t => `<option value="${esc(t.VehicleTypeID)}">${esc(t.VehicleTypeID)}</option>`).join('');
-      const ids = types.map(t => t.VehicleTypeID);
-      const pick = (preferredId && ids.indexOf(preferredId) !== -1) ? preferredId
-        : (currentVehicleTypeId && ids.indexOf(currentVehicleTypeId) !== -1) ? currentVehicleTypeId
-        : ids[0] || '';
-      sel.value = pick;
-      onVehicleTypeChange(pick);
+    .withSuccessHandler(safeHandler(data => {
+      renderVehicleTypeOptions(data.vehicleTypes || [], data.vehicleTypeId);
+      currentVehicleTypeId = data.vehicleTypeId || '';
+      renderScenarioOptions(data.scenarios || []);
+      silent = false;
+      renderTab(currentTab);
     }))
-    .withFailureHandler(showGlobalError)
-    .getVehicleTypes();
+    .withFailureHandler(err => { silent = false; showGlobalError(err); })
+    .getBootstrap(preferredId || currentVehicleTypeId);
+}
+
+function renderVehicleTypeOptions(types, pick) {
+  const sel = document.getElementById('vehicletype-selector');
+  sel.innerHTML = '<option value="">-- 選擇車型 --</option>' +
+    types.map(t => `<option value="${esc(t.VehicleTypeID)}">${esc(t.VehicleTypeID)}</option>`).join('');
+  sel.value = pick || '';
+}
+
+/** 把情境選單畫出來並決定選哪一個，不觸發伺服器呼叫 */
+function renderScenarioOptions(scenarios, preferredId) {
+  scenarioCache = scenarios || [];
+  const sel = document.getElementById('scenario-selector');
+  sel.innerHTML = '<option value="">-- 選擇情境 --</option>' +
+    scenarioCache.map(s => `<option value="${esc(s.ScenarioID)}">${esc(scenarioLabel(s))}</option>`).join('');
+  const ids = scenarioCache.map(s => s.ScenarioID);
+  const pick = (preferredId && ids.indexOf(preferredId) !== -1) ? preferredId
+    : (currentScenarioId && ids.indexOf(currentScenarioId) !== -1) ? currentScenarioId
+    : ids[0] || '';
+  sel.value = pick;
+  setCurrentScenario(pick);
+}
+
+/** 只更新目前情境狀態與標籤，渲染交給呼叫端決定 */
+function setCurrentScenario(value) {
+  currentScenarioId = value;
+  currentScenario = scenarioCache.filter(s => s.ScenarioID === value)[0] || null;
+  const badge = document.getElementById('scenario-type-badge');
+  if (badge) {
+    badge.textContent = currentScenario ? (currentScenario.ScenarioType || '現況') : '';
+    badge.style.display = currentScenario ? 'inline-block' : 'none';
+  }
 }
 
 function onVehicleTypeChange(value) {
   currentVehicleTypeId = value;
   currentScenarioId = '';
   currentScenario = null;
-  if (ENTITIES[currentTab] && ENTITIES[currentTab].scopedBy === 'vehicleType') renderEntityPanel(currentTab);
+  // 車型換了之後情境清單也要換，換完才渲染一次，避免同一個分頁畫兩遍
   loadScenarioSelector();
 }
 
@@ -173,33 +210,23 @@ function loadScenarioSelector(preferredId) {
   if (!currentVehicleTypeId) {
     sel.innerHTML = '<option value="">-- 請先選車型 --</option>';
     scenarioCache = [];
-    onScenarioChange('');
+    setCurrentScenario('');
+    renderTab(currentTab);
     return;
   }
+  silent = true;
   google.script.run
     .withSuccessHandler(safeHandler(scenarios => {
-      scenarioCache = scenarios || [];
-      sel.innerHTML = '<option value="">-- 選擇情境 --</option>' +
-        scenarioCache.map(s => `<option value="${esc(s.ScenarioID)}">${esc(scenarioLabel(s))}</option>`).join('');
-      const ids = scenarioCache.map(s => s.ScenarioID);
-      const pick = (preferredId && ids.indexOf(preferredId) !== -1) ? preferredId
-        : (currentScenarioId && ids.indexOf(currentScenarioId) !== -1) ? currentScenarioId
-        : ids[0] || '';
-      sel.value = pick;
-      onScenarioChange(pick);
+      renderScenarioOptions(scenarios, preferredId);
+      silent = false;
+      renderTab(currentTab);
     }))
-    .withFailureHandler(showGlobalError)
+    .withFailureHandler(err => { silent = false; showGlobalError(err); })
     .getScenarios(currentVehicleTypeId);
 }
 
 function onScenarioChange(value) {
-  currentScenarioId = value;
-  currentScenario = scenarioCache.filter(s => s.ScenarioID === value)[0] || null;
-  const badge = document.getElementById('scenario-type-badge');
-  if (badge) {
-    badge.textContent = currentScenario ? (currentScenario.ScenarioType || '現況') : '';
-    badge.style.display = currentScenario ? 'inline-block' : 'none';
-  }
+  setCurrentScenario(value);
   renderTab(currentTab);
 }
 
@@ -646,7 +673,7 @@ function addMatrixLine(key) {
 }
 
 function deleteMatrixLine(key, lineCode) {
-  if (!confirm('刪除這個項目會一併清掉它在各車系已輸入的金額，確定嗎？')) return;
+  if (!confirm('科目表是全域共用的：刪除這個項目會一併清掉它在「所有情境」各車系已輸入的金額，確定嗎？')) return;
   setStatus(key, '刪除中...');
   google.script.run
     .withSuccessHandler(() => { setStatus(key, '已刪除項目', 'ok'); renderMatrixPanel(key); })
@@ -1116,32 +1143,6 @@ function drawCharts(result) {
     new google.visualization.ColumnChart(document.getElementById('chart-revenue'))
       .draw(revData, { title: '各比較欄位：收入 vs 營業淨利', legend: { position: 'top' }, vAxis: { format: '#,###' } });
   });
-}
-
-/** 一鍵匯入 Gate F 範例資料（DA 車 3 車系 × 3 個 GATE F 情境） */
-function importGateFSample() {
-  if (!confirm('將匯入 Gate F 範例資料（車型 DA、3 個車系、3 個 GATE F 情境）。\n' +
-      '重複執行會覆蓋這三個範例情境的既有資料，確定嗎？')) return;
-  const out = document.getElementById('diagnostics-output');
-  out.style.display = 'block';
-  out.textContent = '匯入中...';
-  google.script.run
-    .withSuccessHandler(safeHandler(summary => {
-      out.textContent = '匯入完成：' + JSON.stringify(summary, null, 2);
-      loadVehicleTypeSelector('DA');
-    }))
-    .withFailureHandler(err => { out.textContent = '匯入失敗：' + err.message; })
-    .importGateFSample();
-}
-
-function runDiagnostics() {
-  const out = document.getElementById('diagnostics-output');
-  out.style.display = 'block';
-  out.textContent = '執行中...';
-  google.script.run
-    .withSuccessHandler(result => { out.textContent = JSON.stringify(result, null, 2); })
-    .withFailureHandler(err => { out.textContent = '診斷失敗：' + err.message; })
-    .runDiagnostics();
 }
 
 /* ---------------- 初始化 ---------------- */

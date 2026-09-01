@@ -19,12 +19,29 @@ function withLock_(fn) {
   }
 }
 
+/**
+ * 開場資料：車型清單 + 預設選到的車型與它底下的情境，一次取回。
+ * 前端載入時原本要分別呼叫 getVehicleTypes / getScenarios 並各觸發一次重繪，
+ * 每趟 google.script.run 往返都是數百毫秒，合併成一次可以明顯縮短開場等待。
+ */
+function getBootstrap(preferredVehicleTypeId) {
+  var types = getVehicleTypes();
+  var ids = types.map(function (t) { return t.VehicleTypeID; });
+  var pick = (preferredVehicleTypeId && ids.indexOf(preferredVehicleTypeId) !== -1)
+    ? preferredVehicleTypeId : (ids[0] || '');
+  return {
+    vehicleTypes: types,
+    vehicleTypeId: pick,
+    scenarios: pick ? getScenarios(pick) : []
+  };
+}
+
 // ---- VehicleTypes（車型主檔，如 DA/DE/DH/DX，需先建立才能在底下新增車系） ----
 function getVehicleTypes() {
   return sheetToObjects_(SHEETS.VEHICLE_TYPES) || [];
 }
 function saveVehicleType(rowObj) {
-  return withLock_(function () { return upsertRow_(SHEETS.VEHICLE_TYPES, 'VehicleTypeID', rowObj); });
+  return withLock_(function () { return upsertRowMerge_(SHEETS.VEHICLE_TYPES, 'VehicleTypeID', rowObj); });
 }
 function deleteVehicleType(vehicleTypeId) {
   return withLock_(function () { return deleteRow_(SHEETS.VEHICLE_TYPES, 'VehicleTypeID', vehicleTypeId); });
@@ -36,7 +53,7 @@ function getVehicles(vehicleTypeId) {
   return vehicleTypeId ? rows.filter(function (r) { return r.VehicleTypeID === vehicleTypeId; }) : rows;
 }
 function saveVehicle(rowObj) {
-  return withLock_(function () { return upsertRow_(SHEETS.VEHICLES, 'VehicleID', rowObj); });
+  return withLock_(function () { return upsertRowMerge_(SHEETS.VEHICLES, 'VehicleID', rowObj); });
 }
 function deleteVehicle(vehicleId) {
   return withLock_(function () { return deleteRow_(SHEETS.VEHICLES, 'VehicleID', vehicleId); });
@@ -53,7 +70,8 @@ function saveScenario(rowObj) {
     // 所以 ScenarioID 只是系統內部鍵值，由 upsertRow_ 自動產生，不需使用者自行編碼。
     if (!rowObj.Gate) throw new Error('請選擇 GATE 別');
     if (GATE_OPTIONS.indexOf(rowObj.Gate) === -1) throw new Error('GATE 別不正確：' + rowObj.Gate);
-    return upsertRow_(SHEETS.SCENARIOS, 'ScenarioID', rowObj);
+    // 用合併式 upsert：情境表單沒有攤提基準台數欄位，直接覆寫會把開發總投頁設定的值清掉
+    return upsertRowMerge_(SHEETS.SCENARIOS, 'ScenarioID', rowObj);
   });
 }
 function deleteScenario(scenarioId) {
@@ -248,7 +266,11 @@ function addLineItemInline(parentLine, lineName) {
   });
 }
 
-/** 在銷貨成本／營業費用頁面直接刪除科目，連同該科目已輸入的金額一併清掉 */
+/**
+ * 刪除科目，並清掉該科目在「所有情境」已輸入的金額。
+ * 科目表是全域的，只清當前情境會讓其他情境留下孤兒金額，
+ * 那些金額不會顯示在任何頁面上，卻仍被計入銷貨成本，最難察覺。
+ */
 function deleteLineItemInline(lineCode) {
   return withLock_(function () {
     [SHEETS.COST_OF_SALES, SHEETS.OPERATING_EXPENSE].forEach(function (sheetName) {
@@ -279,6 +301,10 @@ function saveDevInvestmentGrid(scenarioId, rows) {
       if (isEmpty) {
         if (r.RowID) deleteRow_(SHEETS.DEV_INVESTMENT, 'RowID', r.RowID);
         return;
+      }
+      // 沒選資產類型的話會被當成費用類攤提到 f3，靜靜地算錯，所以直接擋下來
+      if (toNumber_(r.Amount) && DEV_ASSET_TYPES.indexOf(r.AssetType) === -1) {
+        throw new Error('「' + (r.Department || '未命名部門') + '」有金額但沒有選資產類型，請選擇 模具 / 設備 / 費用。');
       }
       r.ScenarioID = scenarioId;
       upsertRow_(SHEETS.DEV_INVESTMENT, 'RowID', r);
@@ -530,10 +556,11 @@ function getPLLineItems() {
 function savePLLineItem(rowObj) {
   return withLock_(function () {
     if (!rowObj.LineCode) throw new Error('科目代碼(LineCode)為必填');
-    // 自動計算科目由 CalcEngine 產生，使用者新增的科目一律是手動輸入科目
+    // 自動計算科目由 CalcEngine 產生，使用者新增的科目一律是手動輸入科目；
+    // CommodityTaxDeduct(貨物稅完稅價格可扣除)等表單沒有的欄位由合併式 upsert 保留原值
     var existing = getPLLineItems().filter(function (d) { return d.LineCode === rowObj.LineCode; })[0];
     rowObj.AutoSource = existing ? (existing.AutoSource || '') : '';
-    return upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', rowObj);
+    return upsertRowMerge_(SHEETS.PL_LINE_ITEMS, 'LineCode', rowObj);
   });
 }
 function deletePLLineItem(lineCode) {
@@ -571,42 +598,3 @@ function getOperatingExpenseLineOptions() {
   return lineOptionsFor_(['E', 'G', 'I'], ['J']);
 }
 
-/**
- * 系統診斷：回傳目前這個部署實際綁定的 Google Sheet 檔案，以及每個分頁的列數。
- * 前端「系統診斷」按鈕會呼叫這個函式，用來確認：
- *   1. 網頁應用程式是否真的連到你以為的那個 Google Sheet
- *   2. 每張表 Apps Script 實際讀到幾列資料（跟你人眼在 Sheet 上看到的是否一致）
- */
-function runDiagnostics() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  if (!ss) {
-    return { ok: false, error: 'SpreadsheetApp.getActiveSpreadsheet() 回傳 null，代表這個部署沒有正確綁定到任何 Google Sheet。' };
-  }
-  var sheetsInfo = ss.getSheets().map(function (s) {
-    return { name: s.getName(), lastRow: s.getLastRow(), lastCol: s.getLastColumn() };
-  });
-  var missing = Object.keys(SHEETS).map(function (k) { return SHEETS[k]; })
-    .filter(function (name) { return sheetsInfo.every(function (s) { return s.name !== name; }); });
-
-  // 直接用跟 getScenarios() 等函式相同的解析邏輯(sheetToObjects_)跑一次，
-  // 拿掉業務邏輯後單純比對「原始列數」vs「實際解析出幾筆物件」，藏在哪一步漏資料一看就知道。
-  var parseCheck = {};
-  Object.keys(SCHEMA).forEach(function (sheetName) {
-    try {
-      var raw = sheetToObjects_(sheetName);
-      parseCheck[sheetName] = { parsedCount: raw.length, sample: raw[0] || null };
-    } catch (e) {
-      parseCheck[sheetName] = { error: e.message };
-    }
-  });
-
-  return {
-    ok: true,
-    spreadsheetId: ss.getId(),
-    spreadsheetName: ss.getName(),
-    spreadsheetUrl: ss.getUrl(),
-    sheets: sheetsInfo,
-    missingExpectedSheets: missing,
-    parseCheck: parseCheck
-  };
-}

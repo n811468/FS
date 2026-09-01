@@ -44,7 +44,7 @@ project/
 ├─ Code.gs              # doGet 入口、路由、include() 工具
 ├─ DataService.gs        # 各表 CRUD：getXxx() / saveXxx() / deleteXxx()
 ├─ CalcEngine.gs          # 損益計算引擎，對應 Gate F 公式鏈
-├─ Utils.gs               # ID 產生器、日期格式、快取(CacheService)
+├─ Utils.gs               # ID 產生器、日期格式、分頁讀取快取(單次執行內)
 ├─ Constants.gs           # 分頁名稱、欄位索引、科目代碼常數
 ├─ index.html             # SPA 外殼（含 nav 切換 輸入/儀表板）
 ├─ input_salesmix.html    # 銷售構成輸入表單
@@ -96,14 +96,14 @@ function calculatePL(scenarioId, vehicleId) {
   //    P3 建議零售價(不含強配,含稅) = P1 建議零售價(含稅) - P2 強配件售價
   //    P5 實際零售價(含稅) = P3 - P4 廢車處理費(換算含稅)
   //    P6 營業稅 = P5 × 稅率/(1+稅率)        → 內含稅反推
-  //    P7 銷售佣金 = P5 × 佣金率
+  //    P7 銷售佣金 = (P5 - P6) × 佣金率        → 基礎為未稅零售價
   //    P8 廠價(未稅) = P5 - P6 - P7
   //    A 收入(未稅,含強配) = P8 + P9 強配收入
   //    B 銷貨成本 = Σ(手動輸入的成本科目，外幣以現況匯率換算)
   //               + b5 模具攤提 + b8 設備攤提 (開發總投 ÷ LC總台數)
-  //               + b13 貨物稅 (廠價 × 貨物稅率)
+  //               + b13 貨物稅 ((廠價-水平配件調降-廣促margin)×完稅計算率÷(1+率)×率)
   //    C 生產毛利 = A - B
-  //    E 銷貨毛利 = C - Σd(廣宣/促銷/批標售/索賠 + d4 季Margin = (P5-P6) × 季Margin率)
+  //    E 銷貨毛利 = C - Σd(廣宣/促銷/批標售/索賠 + d4 季Margin = P8 廠價(未稅) × 季Margin率)
   //    G 產品貢獻 = E - Σf(直接歸屬費用 + 車型專案開發費用，由 DevInvestment 分攤單台成本得出)
   //    I 營業淨利(未扣前瞻) = G - Σh(固定營業費用/品牌廣宣/特別加發)
   //    K 營業淨利 = I - J(前瞻費用)
@@ -119,7 +119,8 @@ function calculatePLAllVehicles(scenarioId) {
 
 DevInvestment → 單台成本分攤邏輯（對應 Excel 的 CMC單台/BASE廠單台）：
 ```
-LIFE CYCLE 總台數 = Σ(SalesMix.MonthlyVolume × 12 × LifeCycleYears)   // 該情境所有車系加總
+LIFE CYCLE 總台數 = 情境的攤提基準(AmortMonthlyVolume × 12 × AmortLifeCycleYears)
+                    留空才用 Σ(SalesMix.MonthlyVolume × 12 × LifeCycleYears)
 低減後金額 = Amount × (1 - ChallengeReductionPct/100)
 單台攤提 = 低減後金額 / LIFE CYCLE 總台數，依 AssetType 落到不同科目：
   模具 → b5 模具費用(銷貨成本)          設備 → b8 新增專屬設備(銷貨成本)

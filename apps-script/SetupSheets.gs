@@ -24,6 +24,7 @@ function setupSpreadsheet() {
     auditSheet.setFrozenRows(1);
   }
 
+  invalidateSheetCache_();   // 分頁/標題列剛建立，清掉可能已快取的空結果
   seedPLLineItems_();
 
   // 移除當初建立 Sheet 時自動附帶的空白預設分頁。
@@ -54,6 +55,8 @@ function setupSpreadsheet() {
  */
 function seedPLLineItems_() {
   var sheet = getSheet_(SHEETS.PL_LINE_ITEMS);
+  // 本函式直接用 appendRow/setValue 寫入(沒走 upsertRow_)，所以要自己負責讓讀取快取失效
+
   var existing = sheetToObjects_(SHEETS.PL_LINE_ITEMS);
   var existingCodes = existing.map(function (r) { return r.LineCode; });
 
@@ -65,7 +68,7 @@ function seedPLLineItems_() {
 
   PL_LINE_ITEMS.forEach(function (line) {
     if (existingCodes.indexOf(line.LineCode) === -1) {
-      sheet.appendRow(SCHEMA.PLLineItems.map(function (h) { return line[h]; }));
+      sheet.appendRow(SCHEMA.PLLineItems.map(function (h) { return line[h] !== undefined ? line[h] : ''; }));
       return;
     }
     if (!line.AutoSource) return;
@@ -78,4 +81,5 @@ function seedPLLineItems_() {
       }
     }
   });
+  invalidateSheetCache_(SHEETS.PL_LINE_ITEMS);
 }

@@ -6,8 +6,8 @@
  *     避免同一筆金額在兩個地方各填一次而對不起來。目前自動計算的科目為：
  *       P1~P9 售價結構(營業稅、銷售佣金、廠價...)：由 SalesMix 售價欄位 + 比率設定推算
  *       b5 模具費用 / b8 新增專屬設備：開發總投(模具/設備)低減後金額 ÷ LIFE CYCLE 總台數
- *       b13 貨物稅：廠價(未稅) × 貨物稅率
- *       d4 季Margin：實際零售價(未稅) × 季Margin率
+ *       b13 貨物稅：(廠價 - 水平配件外移調降 - 廣促margin) × 完稅價格計算率 ÷ (1+貨物稅率) × 貨物稅率
+ *       d4 季Margin：廠價(未稅) × 季Margin率
  *       f3/f4 車型專案開發費用：開發總投(費用類) 低減後金額 ÷ LIFE CYCLE 總台數
  *   - 所有比率參數以百分比數值儲存(5 = 5%)，取用時一律經過 pct_() 轉成小數。
  *   - 外幣的銷貨成本用「匯率設定」頁的現況匯率換算，不在成本列上逐筆填匯率。
@@ -95,10 +95,12 @@ function calculatePL(scenarioId, vehicleId) {
 
   // ---- B 銷貨成本：手動輸入的成本列 + 自動計算的成本列 ----
   var costRows = getCostOfSales(scenarioId, vehicleId);
+  var knownCodes = getPLLineItems().map(function (d) { return d.LineCode; });
   var bLines = {};
   costRows.forEach(function (r) {
     var code = r.LineCode;
-    if (!code) return;
+    // 科目已被刪除的殘留金額不計入，否則 B 會跟畫面上列出的 b 科目合計對不起來
+    if (!code || knownCodes.indexOf(code) === -1) return;
     // 外幣成本用「匯率設定」頁該幣別的現況匯率換算，不在成本列逐筆填匯率
     bLines[code] = (bLines[code] || 0) + toNumber_(r.Amount) * fxRateFor_(params, r.Currency, vehicleId);
   });
@@ -368,25 +370,33 @@ function sumValues_(obj) {
   return Object.keys(obj).reduce(function (s, k) { return s + obj[k]; }, 0);
 }
 
+/**
+ * 寫入損益快照：先清掉該 scenario+vehicle 的舊快照再寫新的。
+ * 舊資料用「整張重寫」而非逐列 deleteRow —— 儀表板一次比較多個欄位時，
+ * 逐列刪除會累積成上百次 Sheet 異動，容易撞到執行時間上限。
+ */
 function writePLResult_(scenarioId, vehicleId, lineValues, revenue, timestamp) {
   var sheet = getSheet_(SHEETS.PL_RESULT);
-  // 先刪除該 scenario+vehicle 的舊快照
+  var width = SCHEMA.PLResult.length;
   var lastRow = sheet.getLastRow();
+
+  var kept = [];
   if (lastRow >= 2) {
-    var data = sheet.getRange(2, 1, lastRow - 1, SCHEMA.PLResult.length).getValues();
-    for (var i = data.length - 1; i >= 0; i--) {
-      if (data[i][1] === scenarioId && data[i][2] === vehicleId) {
-        sheet.deleteRow(i + 2);
-      }
-    }
+    kept = sheet.getRange(2, 1, lastRow - 1, width).getValues().filter(function (row) {
+      var isBlank = row.every(function (v) { return v === '' || v === null; });
+      return !isBlank && !(samePk_(row[1], scenarioId) && String(row[2] || '') === String(vehicleId || ''));
+    });
+    sheet.getRange(2, 1, lastRow - 1, width).clearContent();
   }
+
   var rows = Object.keys(lineValues).map(function (code) {
     var amount = lineValues[code];
     return [generateId_('PR'), scenarioId, vehicleId, code, amount, revenue ? amount / revenue : 0, timestamp];
   });
-  if (rows.length) {
-    sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, SCHEMA.PLResult.length).setValues(rows);
-  }
+
+  var all = kept.concat(rows);
+  if (all.length) sheet.getRange(2, 1, all.length, width).setValues(all);
+  invalidateSheetCache_(SHEETS.PL_RESULT);
 }
 
 function buildResultLines_(lineValues, revenue) {
