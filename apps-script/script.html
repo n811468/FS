@@ -130,8 +130,10 @@ function onScenarioChange(value) {
 
 function showGlobalError(err) {
   const box = document.getElementById('global-error');
-  if (!box) { console.error(err); return; }
-  box.textContent = '發生錯誤：' + (err && err.message ? err.message : err);
+  const msg = '發生錯誤：' + (err && err.message ? err.message : err);
+  console.error(err);
+  if (!box) { return; }
+  box.textContent = msg;
   box.style.display = 'block';
 }
 function clearGlobalError() {
@@ -139,10 +141,23 @@ function clearGlobalError() {
   if (box) box.style.display = 'none';
 }
 
+/** 包住 success handler 本體：伺服器呼叫成功後，前端渲染若還是丟例外，
+ *  也要顯示在畫面上，而不是被 google.script.run 靜默吞掉、只留 console trace。 */
+function safeHandler(fn) {
+  return function () {
+    try {
+      clearGlobalError();
+      return fn.apply(null, arguments);
+    } catch (e) {
+      showGlobalError(e);
+    }
+  };
+}
+
 function loadScenarioSelector(preferredId) {
   google.script.run
-    .withSuccessHandler(scenarios => {
-      clearGlobalError();
+    .withSuccessHandler(safeHandler(scenarios => {
+      scenarios = scenarios || [];
       const sel = document.getElementById('scenario-selector');
       sel.innerHTML = '<option value="">-- 選擇情境 --</option>' +
         scenarios.map(s => `<option value="${s.ScenarioID}">${s.ScenarioName || s.ScenarioID}</option>`).join('');
@@ -157,7 +172,7 @@ function loadScenarioSelector(preferredId) {
       } else {
         currentScenarioId = '';
       }
-    })
+    }))
     .withFailureHandler(showGlobalError)
     .getScenarios();
 }
@@ -260,7 +275,7 @@ function submitEntityForm(evt, key) {
 function loadEntityData(key, cfg) {
   const args = cfg.scoped ? [currentScenarioId] : [];
   google.script.run
-    .withSuccessHandler(rows => { clearGlobalError(); renderTable(key, cfg, rows); })
+    .withSuccessHandler(safeHandler(rows => renderTable(key, cfg, rows || [])))
     .withFailureHandler(showGlobalError)
     [cfg.getFn](...args);
 }
@@ -312,7 +327,7 @@ function refreshDashboard() {
   }
   panel.querySelector('#dashboard-content').innerHTML = '<p class="muted">計算中...</p>';
   google.script.run
-    .withSuccessHandler(result => renderDashboard(result))
+    .withSuccessHandler(safeHandler(result => renderDashboard(result)))
     .withFailureHandler(err => { panel.querySelector('#dashboard-content').innerHTML = '<p class="status-msg err">計算失敗：' + err.message + '</p>'; })
     .calculatePLAllVehicles(currentScenarioId);
 }
