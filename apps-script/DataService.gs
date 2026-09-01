@@ -15,7 +15,7 @@ function withLock_(fn) {
 
 // ---- Vehicles ----
 function getVehicles() {
-  return sheetToObjects_(SHEETS.VEHICLES);
+  return sheetToObjects_(SHEETS.VEHICLES) || [];
 }
 function saveVehicle(rowObj) {
   return withLock_(function () { return upsertRow_(SHEETS.VEHICLES, 'VehicleID', rowObj); });
@@ -26,7 +26,7 @@ function deleteVehicle(vehicleId) {
 
 // ---- Scenarios ----
 function getScenarios() {
-  return sheetToObjects_(SHEETS.SCENARIOS);
+  return sheetToObjects_(SHEETS.SCENARIOS) || [];
 }
 function saveScenario(rowObj) {
   return withLock_(function () { return upsertRow_(SHEETS.SCENARIOS, 'ScenarioID', rowObj); });
@@ -37,7 +37,7 @@ function deleteScenario(scenarioId) {
 
 // ---- SalesMix ----
 function getSalesMix(scenarioId) {
-  var rows = sheetToObjects_(SHEETS.SALES_MIX);
+  var rows = sheetToObjects_(SHEETS.SALES_MIX) || [];
   return scenarioId ? rows.filter(function (r) { return r.ScenarioID === scenarioId; }) : rows;
 }
 function saveSalesMixRow(rowObj) {
@@ -49,7 +49,7 @@ function deleteSalesMixRow(rowId) {
 
 // ---- MaterialCost ----
 function getMaterialCost(scenarioId, vehicleId) {
-  var rows = sheetToObjects_(SHEETS.MATERIAL_COST);
+  var rows = sheetToObjects_(SHEETS.MATERIAL_COST) || [];
   return rows.filter(function (r) {
     return (!scenarioId || r.ScenarioID === scenarioId) && (!vehicleId || r.VehicleID === vehicleId);
   });
@@ -69,7 +69,7 @@ function getMaterialCostCategories() {
 
 // ---- DevInvestment ----
 function getDevInvestment(scenarioId) {
-  var rows = sheetToObjects_(SHEETS.DEV_INVESTMENT);
+  var rows = sheetToObjects_(SHEETS.DEV_INVESTMENT) || [];
   return scenarioId ? rows.filter(function (r) { return r.ScenarioID === scenarioId; }) : rows;
 }
 function saveDevInvestmentRow(rowObj) {
@@ -80,7 +80,7 @@ function deleteDevInvestmentRow(rowId) {
 }
 /** 部門清單允許自由新增：回傳目前已出現過的部門，前端用來做輸入建議(datalist)，非強制下拉 */
 function getKnownDepartments() {
-  var rows = sheetToObjects_(SHEETS.DEV_INVESTMENT);
+  var rows = sheetToObjects_(SHEETS.DEV_INVESTMENT) || [];
   var set = {};
   rows.forEach(function (r) { if (r.Department) set[r.Department] = true; });
   return Object.keys(set);
@@ -88,7 +88,7 @@ function getKnownDepartments() {
 
 // ---- OperatingExpense ----
 function getOperatingExpense(scenarioId, vehicleId) {
-  var rows = sheetToObjects_(SHEETS.OPERATING_EXPENSE);
+  var rows = sheetToObjects_(SHEETS.OPERATING_EXPENSE) || [];
   return rows.filter(function (r) {
     return (!scenarioId || r.ScenarioID === scenarioId) && (!vehicleId || r.VehicleID === vehicleId);
   });
@@ -102,7 +102,7 @@ function deleteOperatingExpenseRow(rowId) {
 
 // ---- Parameters ----
 function getParameters(scenarioId) {
-  var rows = sheetToObjects_(SHEETS.PARAMETERS);
+  var rows = sheetToObjects_(SHEETS.PARAMETERS) || [];
   return scenarioId ? rows.filter(function (r) { return !r.ScenarioID || r.ScenarioID === scenarioId; }) : rows;
 }
 function saveParameterRow(rowObj) {
@@ -126,5 +126,31 @@ function lookupParam_(paramsForScenario, paramName, vehicleId) {
 
 // ---- PLLineItems (唯讀參照表) ----
 function getPLLineItems() {
-  return sheetToObjects_(SHEETS.PL_LINE_ITEMS).sort(function (a, b) { return a.SortOrder - b.SortOrder; });
+  return (sheetToObjects_(SHEETS.PL_LINE_ITEMS) || []).sort(function (a, b) { return a.SortOrder - b.SortOrder; });
+}
+
+/**
+ * 系統診斷：回傳目前這個部署實際綁定的 Google Sheet 檔案，以及每個分頁的列數。
+ * 前端「系統診斷」按鈕會呼叫這個函式，用來確認：
+ *   1. 網頁應用程式是否真的連到你以為的那個 Google Sheet
+ *   2. 每張表 Apps Script 實際讀到幾列資料（跟你人眼在 Sheet 上看到的是否一致）
+ */
+function runDiagnostics() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss) {
+    return { ok: false, error: 'SpreadsheetApp.getActiveSpreadsheet() 回傳 null，代表這個部署沒有正確綁定到任何 Google Sheet。' };
+  }
+  var sheetsInfo = ss.getSheets().map(function (s) {
+    return { name: s.getName(), lastRow: s.getLastRow(), lastCol: s.getLastColumn() };
+  });
+  var missing = Object.keys(SHEETS).map(function (k) { return SHEETS[k]; })
+    .filter(function (name) { return sheetsInfo.every(function (s) { return s.name !== name; }); });
+  return {
+    ok: true,
+    spreadsheetId: ss.getId(),
+    spreadsheetName: ss.getName(),
+    spreadsheetUrl: ss.getUrl(),
+    sheets: sheetsInfo,
+    missingExpectedSheets: missing
+  };
 }

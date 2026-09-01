@@ -11,7 +11,9 @@
       情境：
       <select id="scenario-selector" onchange="onScenarioChange(this.value)"></select>
     </label>
+    <button type="button" class="btn secondary" style="margin-left:auto;" onclick="runDiagnostics()">系統診斷</button>
   </header>
+  <pre id="diagnostics-output" style="display:none; margin:0; padding:12px 20px; background:#1a202c; color:#68d391; font-size:12px; overflow:auto;"></pre>
 
   <div id="global-error" style="display:none; background:#fed7d7; color:#822727; padding:10px 20px; font-size:13px;"></div>
 

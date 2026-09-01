@@ -395,6 +395,16 @@ function drawCharts(result) {
   });
 }
 
+function runDiagnostics() {
+  const out = document.getElementById('diagnostics-output');
+  out.style.display = 'block';
+  out.textContent = '執行中...';
+  google.script.run
+    .withSuccessHandler(result => { out.textContent = JSON.stringify(result, null, 2); })
+    .withFailureHandler(err => { out.textContent = '診斷失敗：' + err.message; })
+    .runDiagnostics();
+}
+
 /* ---------------- 初始化 ---------------- */
 window.addEventListener('DOMContentLoaded', () => {
   google.charts.load('current', { packages: ['corechart'] });
