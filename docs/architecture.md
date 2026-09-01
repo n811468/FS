@@ -92,18 +92,18 @@ function saveSalesMixRow(rowObj) {
 function calculatePL(scenarioId, vehicleId) {
   // 1. 讀取該 scenario+vehicle 的 SalesMix、CostOfSales、DevInvestment、OperatingExpense、Parameters
   //    (比率參數一律以百分比數值儲存，取用時經 pct_() 除以 100)
-  // 2. 依序算出（P1~P8 售價結構會逐列輸出到儀表板，不再只是中間變數）：
-  //    P3 實際零售價(含稅) = P1 建議零售價(含稅) - P2 廢車處理費(換算含稅)
-  //    P4 營業稅 = P3 - P3/(1+稅率)          → 內含稅反推
-  //    P5 銷售佣金 = P3 × 佣金率
-  //    P6 實際零售價(未稅) = P3 - P4
-  //    P7 廠價(未稅) = P6 - P5
-  //    A 收入 = P7 + P8 強配件售價
+  // 2. 依序算出（P1~P9 售價結構會逐列輸出到儀表板，不再只是中間變數）：
+  //    P3 建議零售價(不含強配,含稅) = P1 建議零售價(含稅) - P2 強配件售價
+  //    P5 實際零售價(含稅) = P3 - P4 廢車處理費(換算含稅)
+  //    P6 營業稅 = P5 × 稅率/(1+稅率)        → 內含稅反推
+  //    P7 銷售佣金 = P5 × 佣金率
+  //    P8 廠價(未稅) = P5 - P6 - P7
+  //    A 收入(未稅,含強配) = P8 + P9 強配收入
   //    B 銷貨成本 = Σ(手動輸入的成本科目，外幣以現況匯率換算)
   //               + b5 模具攤提 + b8 設備攤提 (開發總投 ÷ LC總台數)
   //               + b13 貨物稅 (廠價 × 貨物稅率)
   //    C 生產毛利 = A - B
-  //    E 銷貨毛利 = C - Σd(廣宣/促銷/批標售/索賠 + d4 季Margin = P6 × 季Margin率)
+  //    E 銷貨毛利 = C - Σd(廣宣/促銷/批標售/索賠 + d4 季Margin = (P5-P6) × 季Margin率)
   //    G 產品貢獻 = E - Σf(直接歸屬費用 + 車型專案開發費用，由 DevInvestment 分攤單台成本得出)
   //    I 營業淨利(未扣前瞻) = G - Σh(固定營業費用/品牌廣宣/特別加發)
   //    K 營業淨利 = I - J(前瞻費用)
@@ -130,16 +130,27 @@ LIFE CYCLE 總台數 = Σ(SalesMix.MonthlyVolume × 12 × LifeCycleYears)   // �
 
 ## 5. 前端頁面設計
 
-- **input_*.html**：表格式輸入（可用簡單的 HTML table + 動態新增列，或用 Google Sheet 內建的資料驗證下拉選單先做，前端表單第二階段再優化成更好用的 UI）。
-  - 送出後呼叫 `google.script.run.withSuccessHandler(onSaved).saveXxxRow(formData)`
-  - 存檔成功後自動呼叫 `calculatePL()` 更新儀表板快取
+前端分兩種頁面型態：
+
+- **主檔維護頁**（車型 / 車系 / 情境 / 科目設定）：沿用「表單 + 列表」通用元件，逐筆新增與刪除。
+
+- **表格編輯頁**（銷售構成 / 銷貨成本 / 開發總投 / 營業費用 / 稅務費用比率 / 匯率設定）：
+  一次看到全部資料、直接在格子裡改、最後按一次「儲存」整批送出，避免逐筆開表單輸入。
+  - 銷售構成：依車系自動列出，台數與構成比即時互相連動（`getSalesMixGrid` / `saveSalesMixGrid`）。
+  - 銷貨成本 / 營業費用：矩陣式（列 = 科目、欄 = 車系），科目可直接在該頁新增/刪除
+    （`getCostOfSalesMatrix` / `saveCostOfSalesMatrix`、`addLineItemInline` / `deleteLineItemInline`）。
+  - 開發總投：目標情境才顯示挑戰低減目標欄位，並可用 `copyScenarioData()` 從其他情境整批帶入資料；
+    表格下方即時顯示 LIFE CYCLE 總台數與各科目單台攤提金額。
+  - 稅務費用比率：「全車系適用」一欄 + 各車系覆寫欄，留白自動沿用（`getRateGrid` / `saveRateGrid`）。
+  - 匯率設定：以幣別 × 匯率種類管理（`getFxGrid` / `saveFxGrid`），設定過現況匯率的幣別才會出現在銷貨成本的幣別選單。
 
 - **dashboard.html（多車型維度比較）**：
   - 上方：比較欄位建立器 —— 每個欄位 = 車型 × 情境(GATE) × 車系（或該情境的「加權平均」）。
     可同時加入**不同車型**的欄位並排比較（如 DA GATE F 目標 vs DE GATE F 現況）。
   - 中間：損益表（依 PLLineItems 的 SortOrder 排序）。因為不同車型的科目不見得相同，
     只列出至少一個欄位真的算出數字的科目；某欄位沒有該科目時顯示「—」而非 0。
-    自動計算科目（售價結構 P1~P8、貨物稅、季Margin、開發攤提）標示「自動」標籤。
+    自動計算科目（售價結構 P1~P9、貨物稅、季Margin、開發攤提）標示「自動」標籤。
+  - 「匯出 CSV」可把整張比較表複製貼進 Excel。
   - 下方：各比較欄位的「收入(A) vs 營業淨利(K)」長條圖（Google Charts，Apps Script 原生支援）。
   - 後端 API：`getComparisonOptions()` 取得車型→情境/車系選項樹；
     `calculateComparison([{ScenarioID, VehicleID}])` 回傳各欄位金額與科目聯集。
@@ -158,5 +169,5 @@ LIFE CYCLE 總台數 = Σ(SalesMix.MonthlyVolume × 12 × LifeCycleYears)   // �
 
 1. 使用者是否需要 Google 帳號登入權限控管？（決定部署存取權設定）
 2. 是否需要「核准/鎖定」機制，避免情境定案後被誤改？（`Scenarios.Locked` 已預留欄位）
-3. 開發總投的部門清單是否固定，或需要讓使用者自行新增部門？
+3. 開發總投的部門清單是否固定，或需要讓使用者自行新增部門？（現況：自由輸入，並提供已用過的部門建議）
 4. Chart.js 走 CDN 是否符合貴公司資安規範，或需要改用 Google Charts（Apps Script 原生支援，不需外部 CDN）？

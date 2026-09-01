@@ -26,24 +26,30 @@ var SHEETS = {
 // 車型階層：VehicleTypes(車型，如 DA) 為上層主檔，Vehicles(車系，如 3人貨車) 為下層，
 // 需先在「車型主檔」選擇/建立車型，才能在「車系設定」底下新增車系。
 var SCHEMA = {
-  VehicleTypes: ['VehicleTypeID', 'VehicleTypeName', 'Notes'],
+  VehicleTypes: ['VehicleTypeID', 'Notes'],
   Vehicles: ['VehicleID', 'VehicleTypeID', 'VehicleCode', 'Notes'],
-  Scenarios: ['ScenarioID', 'Gate', 'ScenarioName', 'VehicleTypeID', 'CreatedBy', 'CreatedDate', 'Notes'],
+  Scenarios: ['ScenarioID', 'Gate', 'ScenarioName', 'ScenarioType', 'VehicleTypeID',
+    'CreatedBy', 'CreatedDate', 'Notes'],
   SalesMix: ['RowID', 'ScenarioID', 'VehicleID', 'SalesMixPct', 'MonthlyVolume', 'LifeCycleYears',
     'ListPriceTaxIncl', 'MandatoryAccessoryPrice', 'ScrapFee', 'ScrapFeeTaxStatus', 'EffectiveDate', 'Notes'],
   CostOfSales: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'Currency',
-    'Source', 'Notes', 'EffectiveDate'],
+    'Notes', 'EffectiveDate'],
   DevInvestment: ['RowID', 'ScenarioID', 'Department', 'AssetType',
     'Amount', 'ChallengeReductionPct', 'Notes', 'EffectiveDate'],
   OperatingExpense: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'Notes', 'EffectiveDate'],
-  Parameters: ['ParamID', 'ScenarioID', 'VehicleID', 'ParamName', 'Value', 'EffectiveDate'],
+  Parameters: ['ParamID', 'ScenarioID', 'VehicleID', 'ParamName', 'Currency', 'Value', 'EffectiveDate'],
   PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'SortOrder', 'AutoSource'],
   PLResult: ['ResultID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'PctOfRevenue', 'CalcTimestamp']
 };
 
-// 情境代號改用 GATE 別；同一個 GATE 底下可以有多個情境(如 GATE F 現況 / GATE F 目標)，
+// 情境代號改用 GATE 別；同一個 GATE 底下可以有多個情境(GATE F 現況 / GATE F 目標)，
 // 情境名稱由使用者自訂，ScenarioID 由系統自動產生，不需使用者自行編碼。
 var GATE_OPTIONS = ['GATE F', 'GATE E', 'GATE D', 'GATE C', 'GATE B', 'GATE A', 'GATE Z'];
+
+// 情境性質：現況情境沒有「挑戰低減目標」(一律視為 0)；目標情境才需要填低減目標，
+// 且可以從其他情境把開發總投等資料整批帶入後再調整。
+var SCENARIO_TYPES = ['現況', '目標'];
+var SCENARIO_TYPE_BASELINE = '現況';
 
 // 廢車處理費稅別選項：讓損益試算全程稅別口徑一致(一律換算為含稅金額後再從零售價扣除)。
 var SCRAP_FEE_TAX_STATUS = ['含稅', '未稅'];
@@ -55,7 +61,12 @@ var DEV_ASSET_TYPES = ['模具', '設備', '費用'];
 var TAX_RATE_PARAM_NAMES = ['營業稅率', '銷售佣金率', '季Margin率', '貨物稅率'];
 var FX_PARAM_NAMES = ['集團預算匯率', '現況匯率'];
 
-// 銷貨成本以外幣登打時，用這個匯率參數換算成台幣（於「匯率設定」頁面維護）。
+// 匯率設定以「幣別 × 匯率種類」管理，1 外幣 = Value 台幣。
+// 本位幣不需設定匯率；銷貨成本頁的幣別選單就是這裡設定過的幣別。
+var BASE_CURRENCY = 'TWD';
+var DEFAULT_FX_CURRENCIES = ['CNY', 'USD', 'JPY', 'EUR'];
+
+// 銷貨成本以外幣登打時，用這個匯率種類換算成台幣（於「匯率設定」頁面維護）。
 var COST_FX_PARAM_NAME = '現況匯率';
 
 // 自動計算科目的來源代碼（PLLineItems.AutoSource）。有 AutoSource 的科目不出現在
@@ -78,15 +89,16 @@ var PROTECTED_LINE_CODES = ['A', 'B', 'C', 'E', 'G', 'I', 'K'];
 var PL_LINE_ITEMS = [
   // ---- 售價結構(P*)：全部由 SalesMix 售價欄位與比率設定推算，讓儀表板看得到中間過程 ----
   { LineCode: 'P1', LineName: '建議零售價(含稅)', ParentLine: '', Category: '售價結構', SortOrder: 1, AutoSource: AUTO_SOURCE.PRICE },
-  { LineCode: 'P2', LineName: '廢車處理費(換算含稅)', ParentLine: '', Category: '售價結構', SortOrder: 2, AutoSource: AUTO_SOURCE.PRICE },
-  { LineCode: 'P3', LineName: '實際零售價(含稅)(=P1-P2)', ParentLine: '', Category: '售價結構', SortOrder: 3, AutoSource: AUTO_SOURCE.PRICE },
-  { LineCode: 'P4', LineName: '營業稅(內含反推)', ParentLine: '', Category: '售價結構', SortOrder: 4, AutoSource: AUTO_SOURCE.PRICE },
-  { LineCode: 'P5', LineName: '銷售佣金', ParentLine: '', Category: '售價結構', SortOrder: 5, AutoSource: AUTO_SOURCE.PRICE },
-  { LineCode: 'P6', LineName: '實際零售價(未稅)', ParentLine: '', Category: '售價結構', SortOrder: 6, AutoSource: AUTO_SOURCE.PRICE },
-  { LineCode: 'P7', LineName: '廠價(未稅)', ParentLine: '', Category: '售價結構', SortOrder: 7, AutoSource: AUTO_SOURCE.PRICE },
-  { LineCode: 'P8', LineName: '強配件售價', ParentLine: '', Category: '售價結構', SortOrder: 8, AutoSource: AUTO_SOURCE.PRICE },
+  { LineCode: 'P2', LineName: '強配件售價', ParentLine: '', Category: '售價結構', SortOrder: 2, AutoSource: AUTO_SOURCE.PRICE },
+  { LineCode: 'P3', LineName: '建議零售價(不含強配,含稅)(=P1-P2)', ParentLine: '', Category: '售價結構', SortOrder: 3, AutoSource: AUTO_SOURCE.PRICE },
+  { LineCode: 'P4', LineName: '廢車處理費(換算含稅)', ParentLine: '', Category: '售價結構', SortOrder: 4, AutoSource: AUTO_SOURCE.PRICE },
+  { LineCode: 'P5', LineName: '實際零售價(含稅)(=P3-P4)', ParentLine: '', Category: '售價結構', SortOrder: 5, AutoSource: AUTO_SOURCE.PRICE },
+  { LineCode: 'P6', LineName: '營業稅(=P5×稅率/(1+稅率))', ParentLine: '', Category: '售價結構', SortOrder: 6, AutoSource: AUTO_SOURCE.PRICE },
+  { LineCode: 'P7', LineName: '銷售佣金', ParentLine: '', Category: '售價結構', SortOrder: 7, AutoSource: AUTO_SOURCE.PRICE },
+  { LineCode: 'P8', LineName: '廠價(未稅)(=P5-P6-P7)', ParentLine: '', Category: '售價結構', SortOrder: 8, AutoSource: AUTO_SOURCE.PRICE },
+  { LineCode: 'P9', LineName: '強配收入', ParentLine: '', Category: '售價結構', SortOrder: 9, AutoSource: AUTO_SOURCE.PRICE },
 
-  { LineCode: 'A', LineName: '收入(未稅,含強配)', ParentLine: '', Category: '收入', SortOrder: 10, AutoSource: '' },
+  { LineCode: 'A', LineName: '收入(未稅,含強配)(=P8+P9)', ParentLine: '', Category: '收入', SortOrder: 10, AutoSource: '' },
   { LineCode: 'B', LineName: '銷貨成本合計', ParentLine: '', Category: '成本', SortOrder: 20, AutoSource: '' },
   { LineCode: 'b1', LineName: '材料成本-LP', ParentLine: 'B', Category: '成本明細', SortOrder: 21, AutoSource: '' },
   { LineCode: 'b2', LineName: '材料成本-KD(含內陸運雜)', ParentLine: 'B', Category: '成本明細', SortOrder: 22, AutoSource: '' },

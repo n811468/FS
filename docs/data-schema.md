@@ -28,7 +28,6 @@
 | 欄位 | 型別 | 說明 |
 |---|---|---|
 | VehicleTypeID (PK) | text | 車型代號，如 `DA`、`DE`、`DH`、`DX` |
-| VehicleTypeName | text | 車型名稱（選填） |
 | Notes | text | 備註 |
 
 ### 2.1 `Vehicles` 車系設定（下層，隸屬某個車型）
@@ -55,6 +54,7 @@
 | ScenarioID (PK) | text | 系統自動產生（`SC-xxxxxxxx`），使用者不需自行編碼 |
 | Gate | text | GATE 別：`GATE F` / `GATE E` / `GATE D` / `GATE C` / `GATE B` / `GATE A` / `GATE Z` |
 | ScenarioName | text | 使用者自訂，如 現況 / 目標 / 已知低減方向 |
+| ScenarioType | text | 情境性質：`現況` / `目標`。現況情境沒有挑戰低減目標（計算時一律以原始金額），目標情境才套用低減率，並可從其他情境整批帶入資料 |
 | VehicleTypeID (FK) | text | 對應 `VehicleTypes.VehicleTypeID` |
 | CreatedBy / CreatedDate | text/date | 建立者、日期 |
 | Notes | text | 備註 |
@@ -85,15 +85,25 @@
 >
 > **LIFE CYCLE 總台數**（供 `DevInvestment` 單台攤提使用）= `MonthlyVolume × 12 × LifeCycleYears`，屬計算欄位不落地存。
 >
-> **銷售構成雙向輸入**：`SalesMixPct`（百分比）與 `MonthlyVolume`（台數）兩欄位皆可直接輸入；
-> 前端「銷售構成」頁面提供「依台數重算百分比」「依百分比反推台數」兩個工具按鈕，
-> 呼叫 `recalcSalesMixPctByVolume(scenarioId)` / `recalcSalesMixVolumeByPct(scenarioId, totalMonthlyVolume)`
-> 對同一情境（= 同一車型）下的所有車系列做批次換算並回寫。
+> **銷售構成表格**：畫面依「車系設定」自動列出該車型底下每個車系一列（`getSalesMixGrid`），
+> 使用者不需要自己一列一列新增。台數與構成比在前端即時互相連動，永遠保持一致：
+>
+> | 改動的欄位 | 連動結果 |
+> |---|---|
+> | 某車系月台數 | 車型月總台數 = 各車系加總；所有構成比依台數重算 |
+> | 某車系構成比% | 以車型月總台數反推該車系台數；其餘車系構成比依台數回算 |
+> | 車型月總台數 | 各車系依目前構成比重新分配台數 |
+>
+> 構成比合計不等於 100% 時合計列會標紅提醒。整張表以 `saveSalesMixGrid` 一次送出。
 
 ### 2.4 `CostOfSales` 銷貨成本明細（原「材料成本」）
 
 銷貨成本即 B 科目（b1~b13）。LP（在地採購）與 KD（進口）皆為成本項目，不區分採購模式；
-**成本項目本身就是損益科目**，直接引用 `PLLineItems.LineCode`，可在「科目設定」頁面自由新增/刪除。
+**成本項目本身就是損益科目**，直接引用 `PLLineItems.LineCode`，可**直接在銷貨成本頁面新增/刪除**
+（`addLineItemInline` / `deleteLineItemInline`，刪除項目會一併清掉該項目已輸入的金額），不需要另外跑到「科目設定」頁。
+
+輸入介面為矩陣式表格（`getCostOfSalesMatrix` / `saveCostOfSalesMatrix`）：一列 = 一個成本項目，
+一欄 = 一個車系，所有金額填完按一次儲存；清空的格子代表該項目在該車系沒有金額，會刪除對應資料列。
 
 | 欄位 | 型別 | 說明 |
 |---|---|---|
@@ -102,9 +112,8 @@
 | VehicleID (FK) | text | |
 | LineCode (FK) | text | 對應 `PLLineItems`（ParentLine = `B` 且非自動計算科目） |
 | Amount | currency | 原幣別金額 |
-| Currency | text | TWD / CNY；非 TWD 時由 CalcEngine 直接引用「匯率設定」頁的**現況匯率**換算，不在本表逐筆填匯率 |
-| Source | text | 資料來源說明，如「8/4 BASE廠報價」 |
-| Notes | text | 備註 |
+| Currency | text | 本位幣或「匯率設定」頁設定過現況匯率的幣別；非本位幣時由 CalcEngine 依該幣別的現況匯率換算，不在本表逐筆填匯率 |
+| Notes | text | 備註（幣別與備註在畫面上是「列(科目)層級」設定，儲存時寫入該列各車系的儲存格） |
 | EffectiveDate | date | |
 
 > **不在本頁輸入的成本科目**（會重複計列）：
@@ -148,15 +157,20 @@
 |---|---|---|
 | ParamID (PK) | text | |
 | ScenarioID | text | 空白代表全域預設值 |
-| VehicleID | text | 空白代表不分車系（如佣金率因車系而異時才填） |
+| VehicleID | text | 空白代表全車系適用；只有某個車系費率不同時才填該車系覆寫值 |
 | ParamName | text | 營業稅率 / 銷售佣金率 / 貨物稅率 / 季Margin率 / 集團預算匯率 / 現況匯率 |
-| Value | number | |
+| Currency | text | 只有匯率列會填（1 外幣 = Value 台幣）；比率列留空 |
+| Value | number | 比率為 0~100 百分比數值；匯率為原始匯率數值 |
 | EffectiveDate | date | |
+
+> **費率沿用機制**：同一車型各車系費率大多相同，畫面上只需填「全車系適用」那一欄（`VehicleID` 空白）。
+> 車系欄位留白就自動沿用全車系值，只有真的不同的車系才會產生覆寫列。
+> 尚未設定過的比率會帶入 `DEFAULT_PARAMS` 的系統預設值。
 
 ### 2.7 `PLLineItems` 損益科目定義（「科目設定」頁面可增刪）
 
-損益結構表，程式依此逐科目 rollup。明細科目（b*/d*/f1/h*/J）可在「科目設定」頁面自由新增與刪除，
-新增的科目會自動出現在「銷貨成本」或「營業費用」頁面的科目下拉選單中（依 `ParentLine` 決定）。
+損益結構表，程式依此逐科目 rollup。明細科目（b*/d*/f1/h*/J）可直接在「銷貨成本」「營業費用」頁面
+新增與刪除（新增時 `LineCode` 依父科目自動編號），「科目設定」頁面則用來調整科目名稱與排序。
 
 欄位：`LineCode` / `LineName` / `ParentLine` / `Category` / `SortOrder` / `AutoSource`。
 
@@ -166,7 +180,7 @@
 
 | AutoSource | 適用科目 | 計算方式 |
 |---|---|---|
-| `PRICE` | P1~P8 售價結構 | 由 `SalesMix` 售價欄位 + 營業稅率/銷售佣金率推算 |
+| `PRICE` | P1~P9 售價結構 | 由 `SalesMix` 售價欄位 + 營業稅率/銷售佣金率推算 |
 | `DEV_MOLD` / `DEV_EQUIP` | b5 / b8 | 開發總投(模具/設備)低減後金額 ÷ LIFE CYCLE 總台數 |
 | `RATE_COMMODITY_TAX` | b13 貨物稅 | 廠價(未稅) × 貨物稅率 |
 | `RATE_QUARTER_MARGIN` | d4 季Margin | 實際零售價(未稅) × 季Margin率 |
@@ -176,7 +190,7 @@
 
 | LineCode | LineName | ParentLine | Category |
 |---|---|---|---|
-| P1~P8 | 建議零售價(含稅)/廢車處理費/實際零售價(含稅)/營業稅/銷售佣金/實際零售價(未稅)/廠價(未稅)/強配件售價 | - | 售價結構(自動) |
+| P1~P9 | 建議零售價(含稅)/強配件售價/建議零售價(不含強配,含稅)/廢車處理費/實際零售價(含稅)/營業稅/銷售佣金/廠價(未稅)/強配收入 | - | 售價結構(自動) |
 | A | 收入(未稅,含強配) | - | 收入 |
 | B | 銷貨成本合計 | - | 成本 |
 | b1 | 材料成本-LP | B | 成本明細 |

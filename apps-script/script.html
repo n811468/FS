@@ -1,7 +1,9 @@
 <script>
 /* ---------------------------------------------------------------
- * 設定驅動的通用 CRUD 元件：每個 entity 定義欄位後，
- * 表單與表格會自動產生，不用每個分頁各寫一份 HTML/JS。
+ * 前端分成兩種頁面：
+ *   1. ENTITIES  — 單純的主檔維護(車型/車系/情境/科目)，沿用「表單 + 列表」通用元件。
+ *   2. 表格編輯頁 — 銷售構成、銷貨成本、營業費用、開發總投、費率、匯率，
+ *      改成一次看到全部、直接在格子裡改、最後按一次「儲存」的表格式介面。
  * ------------------------------------------------------------- */
 const ENTITIES = {
   vehicletypes: {
@@ -9,8 +11,7 @@ const ENTITIES = {
     getFn: 'getVehicleTypes', saveFn: 'saveVehicleType', deleteFn: 'deleteVehicleType',
     scopedBy: null,
     fields: [
-      { name: 'VehicleTypeID', label: '車型代號(如DA)', required: true },
-      { name: 'VehicleTypeName', label: '車型名稱' },
+      { name: 'VehicleTypeID', label: '車型代號', required: true },
       { name: 'Notes', label: '備註' }
     ]
   },
@@ -18,145 +19,127 @@ const ENTITIES = {
     label: '車系設定', pk: 'VehicleID',
     getFn: 'getVehicles', saveFn: 'saveVehicle', deleteFn: 'deleteVehicle',
     scopedBy: 'vehicleType',
+    note: '車系建立後，「銷售構成」「銷貨成本」「營業費用」等頁面會自動帶出對應的欄位，不必再重複輸入車系。',
     fields: [
-      { name: 'VehicleID', label: '車系代號(如DA-3T)', required: true },
-      { name: 'VehicleCode', label: '車系名稱(如3人貨車/9人客貨車)' },
+      { name: 'VehicleID', label: '車系代號', required: true },
+      { name: 'VehicleCode', label: '車系名稱' },
       { name: 'Notes', label: '備註' }
     ]
   },
   scenarios: {
-    label: '情境設定（同一個 GATE 可以有多個情境，如 GATE F 現況 / GATE F 目標）', pk: 'ScenarioID',
+    label: '情境設定', pk: 'ScenarioID',
     getFn: 'getScenarios', saveFn: 'saveScenario', deleteFn: 'deleteScenario',
     scopedBy: 'vehicleType',
+    note: '同一個 GATE 底下可以有多個情境。情境性質選「現況」時沒有挑戰低減目標；選「目標」才需要填低減目標，並可從其他情境整批帶入資料。',
     fields: [
       { name: 'ScenarioID', label: 'ScenarioID', hiddenOnCreate: true },
       { name: 'Gate', label: 'GATE 別', required: true, type: 'select',
         options: ['GATE F', 'GATE E', 'GATE D', 'GATE C', 'GATE B', 'GATE A', 'GATE Z'] },
-      { name: 'ScenarioName', label: '情境名稱(自訂，如現況/目標)', required: true },
+      { name: 'ScenarioName', label: '情境名稱', required: true },
+      { name: 'ScenarioType', label: '情境性質', required: true, type: 'select', options: ['現況', '目標'] },
       { name: 'CreatedDate', label: '建立日期', type: 'date' },
       { name: 'Notes', label: '備註' }
     ]
   },
-  salesmix: {
-    label: '銷售構成與售價', pk: 'RowID',
-    getFn: 'getSalesMix', saveFn: 'saveSalesMixRow', deleteFn: 'deleteSalesMixRow',
-    scopedBy: 'scenario',
-    fields: [
-      { name: 'RowID', label: 'RowID', readOnlyOnEdit: true, hiddenOnCreate: true },
-      { name: 'VehicleID', label: '車系代號', required: true, type: 'select', dynamicVehicleOptions: true },
-      { name: 'SalesMixPct', label: '銷售構成比%(0~100)', type: 'number' },
-      { name: 'MonthlyVolume', label: '預估銷售台數(月)', type: 'number' },
-      { name: 'LifeCycleYears', label: 'LC年限', type: 'number' },
-      { name: 'ListPriceTaxIncl', label: '建議零售價(含稅)', type: 'number' },
-      { name: 'MandatoryAccessoryPrice', label: '強配件售價', type: 'number' },
-      { name: 'ScrapFee', label: '廢車處理費', type: 'number' },
-      { name: 'ScrapFeeTaxStatus', label: '廢車處理費稅別', type: 'select', options: ['含稅', '未稅'] },
-      { name: 'EffectiveDate', label: '生效日', type: 'date' },
-      { name: 'Notes', label: '備註' }
-    ]
-  },
-  costofsales: {
-    label: '銷貨成本（成本項目可在「科目設定」頁自由增刪；外幣自動以匯率設定換算）', pk: 'RowID',
-    getFn: 'getCostOfSales', saveFn: 'saveCostOfSalesRow', deleteFn: 'deleteCostOfSalesRow',
-    scopedBy: 'scenario',
-    note: '模具費用、新增專屬設備由「開發總投」÷ LIFE CYCLE 總台數自動帶入，貨物稅由貨物稅率自動計算，皆不在此頁輸入。',
-    fields: [
-      { name: 'RowID', label: 'RowID', hiddenOnCreate: true },
-      { name: 'VehicleID', label: '車系代號', required: true, type: 'select', dynamicVehicleOptions: true },
-      { name: 'LineCode', label: '成本項目', required: true, type: 'select', optionsFn: 'getCostOfSalesLineOptions' },
-      { name: 'Amount', label: '金額', type: 'number' },
-      { name: 'Currency', label: '幣別(非TWD時以現況匯率換算)', type: 'select', options: ['TWD', 'CNY'] },
-      { name: 'Source', label: '來源說明' },
-      { name: 'Notes', label: '備註' },
-      { name: 'EffectiveDate', label: '生效日', type: 'date' }
-    ]
-  },
-  devinvestment: {
-    label: '開發總投', pk: 'RowID',
-    getFn: 'getDevInvestment', saveFn: 'saveDevInvestmentRow', deleteFn: 'deleteDevInvestmentRow',
-    scopedBy: 'scenario',
-    note: '模具/設備類攤提進銷貨成本(b5/b8)，費用類攤提為車型專案開發費用(f3/f4)，分母為 LIFE CYCLE 總台數。挑戰低減目標屬於本情境的假設，同一 GATE 的「現況」與「目標」情境各自填寫。',
-    fields: [
-      { name: 'RowID', label: 'RowID', hiddenOnCreate: true },
-      { name: 'Department', label: '部門(可自行輸入新部門，逐列可刪除)', type: 'text-suggest', optionsFn: 'getKnownDepartments' },
-      { name: 'AssetType', label: '資產類型', required: true, type: 'select', options: ['模具', '設備', '費用'] },
-      { name: 'Amount', label: '金額', type: 'number' },
-      { name: 'ChallengeReductionPct', label: '挑戰低減目標%(請輸入0~100)', type: 'number' },
-      { name: 'Notes', label: '備註' },
-      { name: 'EffectiveDate', label: '生效日', type: 'date' }
-    ]
-  },
-  operatingexpense: {
-    label: '營業費用(d/f1/h/J科目)', pk: 'RowID',
-    getFn: 'getOperatingExpense', saveFn: 'saveOperatingExpenseRow', deleteFn: 'deleteOperatingExpenseRow',
-    scopedBy: 'scenario',
-    note: '科目可在「科目設定」頁自由增刪。季Margin(d4) 由「稅務費用比率」的季Margin率自動計算，車型專案開發費用(f3/f4) 由開發總投攤提，皆不在此頁輸入。',
-    fields: [
-      { name: 'RowID', label: 'RowID', hiddenOnCreate: true },
-      { name: 'VehicleID', label: '車系代號', required: true, type: 'select', dynamicVehicleOptions: true },
-      { name: 'LineCode', label: '科目', required: true, type: 'select', optionsFn: 'getOperatingExpenseLineOptions' },
-      { name: 'Amount', label: '金額', type: 'number' },
-      { name: 'Notes', label: '備註' },
-      { name: 'EffectiveDate', label: '生效日', type: 'date' }
-    ]
-  },
   lineitems: {
-    label: '科目設定（損益科目表）', pk: 'LineCode',
+    label: '科目設定', pk: 'LineCode',
     getFn: 'getPLLineItems', saveFn: 'savePLLineItem', deleteFn: 'deletePLLineItem',
     scopedBy: null,
-    note: '明細科目可自由新增/刪除；結構科目(A/B/C/E/G/I/K)與自動計算科目(AutoSource 有值者)不可刪除。'
-      + ' 父科目：B=銷貨成本、E=銷售費用、G=產品貢獻前費用、I=固定營業費用。',
+    note: '一般情況不需要用到這頁 —— 成本項目與費用科目可以直接在「銷貨成本」「營業費用」頁面新增/刪除。'
+      + ' 這裡只用來調整科目名稱與排序。結構科目與自動計算科目不可刪除。',
     fields: [
-      { name: 'LineCode', label: '科目代碼(如b14)', required: true },
+      { name: 'LineCode', label: '科目代碼', required: true },
       { name: 'LineName', label: '科目名稱', required: true },
       { name: 'ParentLine', label: '父科目', type: 'select', options: [
-        ['B', 'B 銷貨成本'], ['E', 'E 銷售費用(d類)'], ['G', 'G 產品貢獻前費用(f類)'], ['I', 'I 固定營業費用(h類)']
+        ['B', 'B 銷貨成本'], ['E', 'E 銷售費用'], ['G', 'G 產品貢獻前費用'], ['I', 'I 固定營業費用']
       ] },
-      { name: 'Category', label: '分類(如成本明細/費用明細)' },
+      { name: 'Category', label: '分類' },
       { name: 'SortOrder', label: '排序值', type: 'number' },
-      { name: 'AutoSource', label: '自動計算來源(系統維護，勿手動填)', readOnly: true }
-    ]
-  },
-  paramrates: {
-    label: '參數設定 - 稅務/費用比率', pk: 'ParamID',
-    getFn: 'getTaxRateParameters', saveFn: 'saveParameterRow', deleteFn: 'deleteParameterRow',
-    scopedBy: 'scenario',
-    fields: [
-      { name: 'ParamID', label: 'ParamID', hiddenOnCreate: true },
-      { name: 'VehicleID', label: '車系代號(留空=全車系適用)', type: 'select', dynamicVehicleOptions: true },
-      { name: 'ParamName', label: '參數名稱', required: true, type: 'select', options: ['營業稅率', '銷售佣金率', '季Margin率', '貨物稅率'] },
-      { name: 'Value', label: '比率%(請輸入0~100，如5代表5%)', type: 'number' },
-      { name: 'EffectiveDate', label: '生效日', type: 'date' }
-    ]
-  },
-  paramfx: {
-    label: '參數設定 - 匯率設定', pk: 'ParamID',
-    getFn: 'getFxParameters', saveFn: 'saveParameterRow', deleteFn: 'deleteParameterRow',
-    scopedBy: 'scenario',
-    note: '「現況匯率」會直接帶入銷貨成本頁的外幣金額換算，不需在成本列逐筆填匯率。',
-    fields: [
-      { name: 'ParamID', label: 'ParamID', hiddenOnCreate: true },
-      { name: 'VehicleID', label: '車系代號(留空=全車系適用)', type: 'select', dynamicVehicleOptions: true },
-      { name: 'ParamName', label: '參數名稱', required: true, type: 'select', options: ['集團預算匯率', '現況匯率'] },
-      { name: 'Value', label: '匯率數值(非比率，不需轉百分比)', type: 'number' },
-      { name: 'EffectiveDate', label: '生效日', type: 'date' }
+      { name: 'AutoSource', label: '自動計算來源', readOnly: true }
     ]
   }
 };
 
+// 表格編輯頁：key -> 渲染函式名稱
+const GRID_PANELS = {
+  salesmix: 'renderSalesMixPanel',
+  costofsales: 'renderCostOfSalesPanel',
+  operatingexpense: 'renderOperatingExpensePanel',
+  devinvestment: 'renderDevInvestmentPanel',
+  paramrates: 'renderRatePanel',
+  paramfx: 'renderFxPanel'
+};
+
 let currentVehicleTypeId = '';
 let currentScenarioId = '';
+let currentScenario = null;      // 目前情境的完整資料(含 Gate / ScenarioType)
+let scenarioCache = [];
 let currentTab = 'vehicletypes';
 
+/* ---------------- 共用工具 ---------------- */
+function num(v) { const n = Number(v); return isNaN(n) ? 0 : n; }
+function fmt(v, digits) {
+  if (v === '' || v === null || v === undefined) return '';
+  return Number(v).toLocaleString(undefined, { maximumFractionDigits: digits === undefined ? 0 : digits });
+}
+function esc(s) { return String(s === undefined || s === null ? '' : s).replace(/"/g, '&quot;'); }
+function val(id) { const el = document.getElementById(id); return el ? el.value : ''; }
+
+function showGlobalError(err) {
+  const box = document.getElementById('global-error');
+  const msg = '發生錯誤：' + (err && err.message ? err.message : err);
+  console.error(err);
+  if (!box) return;
+  box.textContent = msg;
+  box.style.display = 'block';
+}
+function clearGlobalError() {
+  const box = document.getElementById('global-error');
+  if (box) box.style.display = 'none';
+}
+/** 包住 success handler：伺服器呼叫成功後前端渲染若丟例外，也要顯示在畫面上 */
+function safeHandler(fn) {
+  return function () {
+    try { clearGlobalError(); return fn.apply(null, arguments); }
+    catch (e) { showGlobalError(e); }
+  };
+}
+function setStatus(key, text, cls) {
+  const el = document.getElementById('status-' + key);
+  if (el) { el.textContent = text; el.className = 'status-msg' + (cls ? ' ' + cls : ''); }
+}
+/** 表格編輯頁的共用外框：標題 + 說明 + 工具列 + 狀態 + 內容 */
+function gridShell(key, title, note) {
+  return `
+    <h3>${title}</h3>
+    ${note ? `<p class="muted">${note}</p>` : ''}
+    <div id="toolbar-${key}" class="toolbar"></div>
+    <div id="status-${key}" class="status-msg"></div>
+    <div id="grid-${key}"></div>
+  `;
+}
+function scenarioLabel(s) {
+  return [s.Gate, s.ScenarioName].filter(v => v).join(' ') || s.ScenarioID;
+}
+function requireScope(key, needScenario) {
+  const panel = document.getElementById('panel-' + key);
+  if (!currentVehicleTypeId) { panel.innerHTML = '<p class="muted">請先在上方選擇車型</p>'; return false; }
+  if (needScenario && !currentScenarioId) { panel.innerHTML = '<p class="muted">請先在上方選擇情境</p>'; return false; }
+  return true;
+}
+
+/* ---------------- 頁籤 / 上方選單 ---------------- */
 function switchTab(key) {
   currentTab = key;
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === key));
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + key));
-  if (key === 'dashboard') {
-    loadComparisonPicker(); // 每次進入儀表板重抓車型/情境選項，才看得到剛新增的資料
-  } else if (ENTITIES[key]) {
-    renderEntityPanel(key);
-  }
+  renderTab(key);
+}
+
+function renderTab(key) {
+  if (key === 'dashboard') loadComparisonPicker();
+  else if (GRID_PANELS[key]) window[GRID_PANELS[key]]();
+  else if (ENTITIES[key]) renderEntityPanel(key);
 }
 
 function loadVehicleTypeSelector(preferredId) {
@@ -165,7 +148,7 @@ function loadVehicleTypeSelector(preferredId) {
       types = types || [];
       const sel = document.getElementById('vehicletype-selector');
       sel.innerHTML = '<option value="">-- 選擇車型 --</option>' +
-        types.map(t => `<option value="${t.VehicleTypeID}">${t.VehicleTypeID}${t.VehicleTypeName ? ' - ' + t.VehicleTypeName : ''}</option>`).join('');
+        types.map(t => `<option value="${esc(t.VehicleTypeID)}">${esc(t.VehicleTypeID)}</option>`).join('');
       const ids = types.map(t => t.VehicleTypeID);
       const pick = (preferredId && ids.indexOf(preferredId) !== -1) ? preferredId
         : (currentVehicleTypeId && ids.indexOf(currentVehicleTypeId) !== -1) ? currentVehicleTypeId
@@ -180,64 +163,25 @@ function loadVehicleTypeSelector(preferredId) {
 function onVehicleTypeChange(value) {
   currentVehicleTypeId = value;
   currentScenarioId = '';
-  if (ENTITIES[currentTab] && ENTITIES[currentTab].scopedBy === 'vehicleType') {
-    renderEntityPanel(currentTab);
-  }
+  currentScenario = null;
+  if (ENTITIES[currentTab] && ENTITIES[currentTab].scopedBy === 'vehicleType') renderEntityPanel(currentTab);
   loadScenarioSelector();
-}
-
-function onScenarioChange(value) {
-  currentScenarioId = value;
-  document.querySelectorAll('.scenario-label').forEach(el => el.textContent = value || '(尚未選擇情境)');
-  if (currentTab === 'dashboard') refreshDashboard();
-  else if (ENTITIES[currentTab]) renderEntityPanel(currentTab);
-}
-
-function showGlobalError(err) {
-  const box = document.getElementById('global-error');
-  const msg = '發生錯誤：' + (err && err.message ? err.message : err);
-  console.error(err);
-  if (!box) { return; }
-  box.textContent = msg;
-  box.style.display = 'block';
-}
-function clearGlobalError() {
-  const box = document.getElementById('global-error');
-  if (box) box.style.display = 'none';
-}
-
-/** 包住 success handler 本體：伺服器呼叫成功後，前端渲染若還是丟例外，
- *  也要顯示在畫面上，而不是被 google.script.run 靜默吞掉、只留 console trace。 */
-function safeHandler(fn) {
-  return function () {
-    try {
-      clearGlobalError();
-      return fn.apply(null, arguments);
-    } catch (e) {
-      showGlobalError(e);
-    }
-  };
-}
-
-/** 情境顯示名稱：GATE 別 + 自訂情境名稱（同一 GATE 下可有多個情境） */
-function scenarioLabel(s) {
-  return [s.Gate, s.ScenarioName].filter(v => v).join(' ') || s.ScenarioID;
 }
 
 function loadScenarioSelector(preferredId) {
   const sel = document.getElementById('scenario-selector');
   if (!currentVehicleTypeId) {
     sel.innerHTML = '<option value="">-- 請先選車型 --</option>';
+    scenarioCache = [];
     onScenarioChange('');
     return;
   }
   google.script.run
     .withSuccessHandler(safeHandler(scenarios => {
-      scenarios = scenarios || [];
+      scenarioCache = scenarios || [];
       sel.innerHTML = '<option value="">-- 選擇情境 --</option>' +
-        scenarios.map(s => `<option value="${s.ScenarioID}">${scenarioLabel(s)}</option>`).join('');
-      const ids = scenarios.map(s => s.ScenarioID);
-      // 優先順序：剛新增/編輯的情境 > 目前已選的情境(若還存在) > 第一筆
+        scenarioCache.map(s => `<option value="${esc(s.ScenarioID)}">${esc(scenarioLabel(s))}</option>`).join('');
+      const ids = scenarioCache.map(s => s.ScenarioID);
       const pick = (preferredId && ids.indexOf(preferredId) !== -1) ? preferredId
         : (currentScenarioId && ids.indexOf(currentScenarioId) !== -1) ? currentScenarioId
         : ids[0] || '';
@@ -248,16 +192,23 @@ function loadScenarioSelector(preferredId) {
     .getScenarios(currentVehicleTypeId);
 }
 
-/* ---------------- 通用表單/表格渲染 ---------------- */
+function onScenarioChange(value) {
+  currentScenarioId = value;
+  currentScenario = scenarioCache.filter(s => s.ScenarioID === value)[0] || null;
+  const badge = document.getElementById('scenario-type-badge');
+  if (badge) {
+    badge.textContent = currentScenario ? (currentScenario.ScenarioType || '現況') : '';
+    badge.style.display = currentScenario ? 'inline-block' : 'none';
+  }
+  renderTab(currentTab);
+}
+
+/* ---------------- 主檔維護（表單 + 列表） ---------------- */
 function renderEntityPanel(key) {
   const cfg = ENTITIES[key];
   const panel = document.getElementById('panel-' + key);
   if (cfg.scopedBy === 'vehicleType' && !currentVehicleTypeId) {
     panel.innerHTML = '<p class="muted">請先在上方選擇車型</p>';
-    return;
-  }
-  if (cfg.scopedBy === 'scenario' && (!currentVehicleTypeId || !currentScenarioId)) {
-    panel.innerHTML = '<p class="muted">請先在上方選擇車型與情境</p>';
     return;
   }
   panel.innerHTML = `
@@ -269,23 +220,16 @@ function renderEntityPanel(key) {
   `;
   renderForm(key, cfg);
   loadEntityData(key, cfg);
-  if (key === 'salesmix') renderSalesMixTools();
 }
 
 function renderForm(key, cfg) {
   const container = document.getElementById('form-container-' + key);
   const fieldsHtml = cfg.fields.map(f => {
     const id = `f-${key}-${f.name}`;
-    if (f.hiddenOnCreate) {
-      // RowID/ParamID 等系統自動產生的主鍵欄位：不用讓使用者看到空文字框，
-      // 但編輯既有資料時(editRow)仍要能寫回這個 id，所以保留一個 hidden input。
-      return `<input type="hidden" id="${id}"/>`;
-    }
+    if (f.hiddenOnCreate) return `<input type="hidden" id="${id}"/>`;
     let control;
     if (f.type === 'select') {
       control = `<select id="${id}"><option value=""></option></select>`;
-    } else if (f.type === 'text-suggest') {
-      control = `<input id="${id}" type="text" list="dl-${id}"/><datalist id="dl-${id}"></datalist>`;
     } else {
       control = `<input id="${id}" type="${f.type || 'text'}" step="any"${f.required ? ' required' : ''}${f.readOnly ? ' readonly' : ''}/>`;
     }
@@ -295,118 +239,73 @@ function renderForm(key, cfg) {
   container.innerHTML = `
     <form class="entry-form" onsubmit="return submitEntityForm(event, '${key}')">
       ${fieldsHtml}
-      <input type="hidden" id="edit-pk-${key}" value=""/>
       <button type="submit" class="btn">儲存</button>
       <button type="button" class="btn secondary" onclick="resetForm('${key}')">清空</button>
     </form>
   `;
 
   cfg.fields.forEach(f => {
-    if (f.dynamicVehicleOptions) {
-      // 車系代號選單依「目前選擇的車型」動態帶出底下的車系，而非固定選項或全域清單。
-      google.script.run
-        .withSuccessHandler(safeHandler(list => {
-          const sel = document.getElementById(`f-${key}-${f.name}`);
-          (list || []).forEach(v => sel.insertAdjacentHTML('beforeend', `<option value="${v.VehicleID}">${v.VehicleID}${v.VehicleCode ? ' - ' + v.VehicleCode : ''}</option>`));
-        }))
-        .withFailureHandler(showGlobalError)
-        .getVehicles(currentVehicleTypeId);
-    } else if (f.type === 'select' && f.options) {
+    if (f.type === 'select' && f.options) {
       const sel = document.getElementById(`f-${key}-${f.name}`);
       f.options.forEach(opt => {
-        const [val, text] = Array.isArray(opt) ? opt : [opt, opt];
-        sel.insertAdjacentHTML('beforeend', `<option value="${val}">${text}</option>`);
+        const [v, text] = Array.isArray(opt) ? opt : [opt, opt];
+        sel.insertAdjacentHTML('beforeend', `<option value="${esc(v)}">${esc(text)}</option>`);
       });
-    } else if (f.optionsFn) {
-      google.script.run
-        .withSuccessHandler(safeHandler(list => {
-          list = list || [];
-          if (f.type === 'text-suggest') {
-            const dl = document.getElementById(`dl-f-${key}-${f.name}`);
-            dl.innerHTML = list.map(v => `<option value="${v}">`).join('');
-          } else {
-            // 選項可以是純字串，也可以是 {value, label}（科目選單用後者，值存代碼、顯示名稱）
-            const sel = document.getElementById(`f-${key}-${f.name}`);
-            list.forEach(v => {
-              const val = (v && v.value !== undefined) ? v.value : v;
-              const text = (v && v.label !== undefined) ? v.label : v;
-              sel.insertAdjacentHTML('beforeend', `<option value="${val}">${text}</option>`);
-            });
-          }
-        }))
-        .withFailureHandler(showGlobalError)
-        [f.optionsFn]();
     }
   });
 }
 
 function resetForm(key) {
   ENTITIES[key].fields.forEach(f => { document.getElementById(`f-${key}-${f.name}`).value = ''; });
-  document.getElementById(`edit-pk-${key}`).value = '';
 }
 
 function submitEntityForm(evt, key) {
   evt.preventDefault();
   const cfg = ENTITIES[key];
   const rowObj = {};
-  cfg.fields.forEach(f => { rowObj[f.name] = document.getElementById(`f-${key}-${f.name}`).value; });
-  if (cfg.scopedBy === 'scenario') rowObj.ScenarioID = currentScenarioId;
+  cfg.fields.forEach(f => { rowObj[f.name] = val(`f-${key}-${f.name}`); });
   if (cfg.scopedBy === 'vehicleType') rowObj.VehicleTypeID = currentVehicleTypeId;
 
-  const statusEl = document.getElementById(`status-${key}`);
-  statusEl.textContent = '儲存中...';
-  statusEl.className = 'status-msg';
-
+  setStatus(key, '儲存中...');
   google.script.run
-    .withSuccessHandler(() => {
-      statusEl.textContent = '已儲存';
-      statusEl.className = 'status-msg ok';
+    .withSuccessHandler(saved => {
+      setStatus(key, '已儲存', 'ok');
       resetForm(key);
       loadEntityData(key, cfg);
       if (key === 'vehicletypes') loadVehicleTypeSelector(rowObj.VehicleTypeID);
-      if (key === 'scenarios') loadScenarioSelector(rowObj.ScenarioID);
+      if (key === 'scenarios') loadScenarioSelector((saved && saved.ScenarioID) || rowObj.ScenarioID);
     })
-    .withFailureHandler(err => {
-      statusEl.textContent = '錯誤：' + err.message;
-      statusEl.className = 'status-msg err';
-    })
+    .withFailureHandler(err => setStatus(key, '錯誤：' + err.message, 'err'))
     [cfg.saveFn](rowObj);
   return false;
 }
 
 function loadEntityData(key, cfg) {
-  const args = cfg.scopedBy === 'scenario' ? [currentScenarioId]
-    : cfg.scopedBy === 'vehicleType' ? [currentVehicleTypeId]
-    : [];
+  const args = cfg.scopedBy === 'vehicleType' ? [currentVehicleTypeId] : [];
   google.script.run
-    .withSuccessHandler(safeHandler(rows => renderTable(key, cfg, rows || [])))
+    .withSuccessHandler(safeHandler(rows => renderEntityTable(key, cfg, rows || [])))
     .withFailureHandler(showGlobalError)
     [cfg.getFn](...args);
 }
 
-function renderTable(key, cfg, rows) {
+function renderEntityTable(key, cfg, rows) {
   const container = document.getElementById('table-container-' + key);
-  if (!rows.length) {
-    container.innerHTML = '<p class="muted">尚無資料</p>';
-    return;
-  }
+  if (!rows.length) { container.innerHTML = '<p class="muted">尚無資料</p>'; return; }
   const cols = cfg.fields.map(f => f.name);
   container.innerHTML = `
     <table>
-      <thead><tr>${cols.map(c => `<th>${c}</th>`).join('')}<th>操作</th></tr></thead>
+      <thead><tr>${cfg.fields.map(f => `<th>${f.label}</th>`).join('')}<th>操作</th></tr></thead>
       <tbody>
-        ${rows.map((r, i) => `
+        ${rows.map(r => `
           <tr>
-            ${cols.map(c => `<td>${r[c] !== undefined ? r[c] : ''}</td>`).join('')}
+            ${cols.map(c => `<td>${esc(r[c] !== undefined ? r[c] : '')}</td>`).join('')}
             <td>
               <button class="btn secondary" onclick='editRow("${key}", ${JSON.stringify(r).replace(/'/g, "&#39;")})'>編輯</button>
-              <button class="btn danger" onclick="deleteRow('${key}', '${r[cfg.pk]}')">刪除</button>
+              <button class="btn danger" onclick="deleteEntityRow('${key}', '${esc(r[cfg.pk])}')">刪除</button>
             </td>
-          </tr>
-        `).join('')}
+          </tr>`).join('')}
       </tbody>
-    </table>
-  `;
+    </table>`;
 }
 
 function editRow(key, rowObj) {
@@ -416,58 +315,602 @@ function editRow(key, rowObj) {
   });
 }
 
-function deleteRow(key, pkValue) {
+function deleteEntityRow(key, pkValue) {
   if (!confirm('確定要刪除這筆資料嗎？')) return;
   const cfg = ENTITIES[key];
-  google.script.run.withSuccessHandler(() => {
-    loadEntityData(key, cfg);
-    if (key === 'vehicletypes') loadVehicleTypeSelector();
-    if (key === 'scenarios') loadScenarioSelector();
-  })[cfg.deleteFn](pkValue);
+  google.script.run
+    .withSuccessHandler(() => {
+      loadEntityData(key, cfg);
+      if (key === 'vehicletypes') loadVehicleTypeSelector();
+      if (key === 'scenarios') loadScenarioSelector();
+    })
+    .withFailureHandler(err => setStatus(key, '錯誤：' + err.message, 'err'))
+    [cfg.deleteFn](pkValue);
 }
 
-/* ---------------- 銷售構成：台數/百分比雙向換算工具列 ---------------- */
-function renderSalesMixTools() {
+/* ================= 銷售構成（依車系自動列出，台數/構成比動態連動） ================= */
+let salesMixRows = [];
+
+function renderSalesMixPanel() {
+  if (!requireScope('salesmix', true)) return;
   const panel = document.getElementById('panel-salesmix');
-  const tableContainer = document.getElementById('table-container-salesmix');
-  const toolbar = document.createElement('div');
-  toolbar.className = 'toolbar';
-  toolbar.innerHTML = `
-    <button type="button" class="btn secondary" onclick="recalcSalesMixByVolume()">依台數重算百分比</button>
-    <label style="display:flex;align-items:center;gap:6px;">
-      情境總銷售台數(月)：<input id="salesmix-total-volume" type="number" step="any" style="width:100px;">
+  panel.innerHTML = gridShell('salesmix', '銷售構成與售價',
+    '車系由「車系設定」自動帶出。輸入車型月總台數後填構成比，台數會自動算出；直接改台數則構成比自動回算，兩者永遠一致。');
+  google.script.run
+    .withSuccessHandler(safeHandler(data => {
+      salesMixRows = data.rows || [];
+      drawSalesMixGrid();
+    }))
+    .withFailureHandler(showGlobalError)
+    .getSalesMixGrid(currentScenarioId, currentVehicleTypeId);
+}
+
+function drawSalesMixGrid() {
+  const grid = document.getElementById('grid-salesmix');
+  if (!salesMixRows.length) {
+    document.getElementById('toolbar-salesmix').innerHTML = '';
+    grid.innerHTML = '<p class="muted">這個車型還沒有車系，請先到「車系設定」建立車系。</p>';
+    return;
+  }
+  const totalUnits = salesMixRows.reduce((s, r) => s + num(r.MonthlyVolume), 0);
+
+  document.getElementById('toolbar-salesmix').innerHTML = `
+    <label style="display:flex;align-items:center;gap:6px;">車型月總台數：
+      <input id="sm-total" type="number" step="any" style="width:110px;" value="${totalUnits || ''}"
+             oninput="onSalesMixTotalInput()">
     </label>
-    <button type="button" class="btn secondary" onclick="recalcSalesMixByPct()">依百分比反推台數</button>
-    <span class="muted">LIFE CYCLE總台數 = 預估銷售台數(月) &times; 12 &times; LC年限，於損益試算時自動計算</span>
+    <button type="button" class="btn" onclick="saveSalesMixGrid()">儲存</button>
+    <span class="muted">LIFE CYCLE 總台數 = 月台數 × 12 × LC年限</span>
   `;
-  panel.insertBefore(toolbar, tableContainer);
+
+  grid.innerHTML = `
+    <table class="grid-table">
+      <thead><tr>
+        <th>車系</th><th>構成比%</th><th>月台數</th><th>LC年限</th><th>LC總台數</th>
+        <th>建議零售價(含稅)</th><th>強配件售價</th><th>廢車處理費</th><th>稅別</th><th>備註</th>
+      </tr></thead>
+      <tbody>
+        ${salesMixRows.map((r, i) => `
+          <tr>
+            <td class="row-head">${esc(r.VehicleID)}${r.VehicleCode ? ' - ' + esc(r.VehicleCode) : ''}</td>
+            <td><input type="number" step="any" value="${esc(r.SalesMixPct)}" oninput="onSalesMixPctInput(${i}, this.value)"></td>
+            <td><input type="number" step="any" value="${esc(r.MonthlyVolume)}" oninput="onSalesMixVolumeInput(${i}, this.value)"></td>
+            <td><input type="number" step="any" value="${esc(r.LifeCycleYears)}" oninput="onSalesMixField(${i}, 'LifeCycleYears', this.value)"></td>
+            <td class="calc" id="sm-lc-${i}">${fmt(num(r.MonthlyVolume) * 12 * num(r.LifeCycleYears))}</td>
+            <td><input type="number" step="any" value="${esc(r.ListPriceTaxIncl)}" oninput="onSalesMixField(${i}, 'ListPriceTaxIncl', this.value)"></td>
+            <td><input type="number" step="any" value="${esc(r.MandatoryAccessoryPrice)}" oninput="onSalesMixField(${i}, 'MandatoryAccessoryPrice', this.value)"></td>
+            <td><input type="number" step="any" value="${esc(r.ScrapFee)}" oninput="onSalesMixField(${i}, 'ScrapFee', this.value)"></td>
+            <td><select onchange="onSalesMixField(${i}, 'ScrapFeeTaxStatus', this.value)">
+              ${['含稅', '未稅'].map(o => `<option value="${o}"${r.ScrapFeeTaxStatus === o ? ' selected' : ''}>${o}</option>`).join('')}
+            </select></td>
+            <td><input type="text" value="${esc(r.Notes)}" oninput="onSalesMixField(${i}, 'Notes', this.value)"></td>
+          </tr>`).join('')}
+      </tbody>
+      <tfoot><tr>
+        <td class="row-head">合計</td>
+        <td id="sm-sum-pct" class="calc"></td>
+        <td id="sm-sum-units" class="calc"></td>
+        <td></td><td id="sm-sum-lc" class="calc"></td>
+        <td colspan="5"></td>
+      </tr></tfoot>
+    </table>`;
+  updateSalesMixTotals();
 }
 
-function recalcSalesMixByVolume() {
+function onSalesMixField(i, field, value) { salesMixRows[i][field] = value; updateSalesMixTotals(); }
+
+/** 改台數：總台數 = 各車系台數加總，所有構成比依台數重算 */
+function onSalesMixVolumeInput(i, value) {
+  salesMixRows[i].MonthlyVolume = value === '' ? '' : num(value);
+  const total = salesMixRows.reduce((s, r) => s + num(r.MonthlyVolume), 0);
+  salesMixRows.forEach(r => { r.SalesMixPct = total > 0 ? round2(num(r.MonthlyVolume) / total * 100) : ''; });
+  document.getElementById('sm-total').value = total || '';
+  syncSalesMixInputs({ skipVolumeIndex: i });
+}
+
+/** 改構成比：以車型月總台數為基準反推該車系台數，其餘車系的構成比再依台數回算 */
+function onSalesMixPctInput(i, value) {
+  salesMixRows[i].SalesMixPct = value === '' ? '' : num(value);
+  const total = num(val('sm-total'));
+  if (total > 0) {
+    salesMixRows[i].MonthlyVolume = Math.round(num(value) / 100 * total);
+  }
+  syncSalesMixInputs({ skipPctIndex: i });
+}
+
+/** 改車型月總台數：各車系依目前構成比重新分配台數 */
+function onSalesMixTotalInput() {
+  const total = num(val('sm-total'));
+  if (total > 0) {
+    salesMixRows.forEach(r => { r.MonthlyVolume = Math.round(num(r.SalesMixPct) / 100 * total); });
+  }
+  syncSalesMixInputs({});
+}
+
+function round2(n) { return Math.round(n * 100) / 100; }
+
+/** 把 salesMixRows 的值寫回輸入框（跳過使用者正在輸入的那一格，避免游標跳動） */
+function syncSalesMixInputs(opts) {
+  const rows = document.querySelectorAll('#grid-salesmix tbody tr');
+  salesMixRows.forEach((r, i) => {
+    const tr = rows[i];
+    if (!tr) return;
+    const pctInput = tr.children[1].querySelector('input');
+    const volInput = tr.children[2].querySelector('input');
+    if (opts.skipPctIndex !== i) pctInput.value = r.SalesMixPct === '' ? '' : r.SalesMixPct;
+    if (opts.skipVolumeIndex !== i) volInput.value = r.MonthlyVolume === '' ? '' : r.MonthlyVolume;
+  });
+  updateSalesMixTotals();
+}
+
+function updateSalesMixTotals() {
+  const sumPct = salesMixRows.reduce((s, r) => s + num(r.SalesMixPct), 0);
+  const sumUnits = salesMixRows.reduce((s, r) => s + num(r.MonthlyVolume), 0);
+  let sumLc = 0;
+  salesMixRows.forEach((r, i) => {
+    const lc = num(r.MonthlyVolume) * 12 * num(r.LifeCycleYears);
+    sumLc += lc;
+    const cell = document.getElementById('sm-lc-' + i);
+    if (cell) cell.textContent = fmt(lc);
+  });
+  const pctCell = document.getElementById('sm-sum-pct');
+  if (pctCell) {
+    pctCell.textContent = fmt(sumPct, 2) + '%';
+    // 構成比合計不是 100% 時標紅，避免加權平均被算錯還沒發現
+    pctCell.className = 'calc' + (Math.abs(sumPct - 100) > 0.01 && sumPct !== 0 ? ' negative' : '');
+  }
+  const unitCell = document.getElementById('sm-sum-units');
+  if (unitCell) unitCell.textContent = fmt(sumUnits);
+  const lcCell = document.getElementById('sm-sum-lc');
+  if (lcCell) lcCell.textContent = fmt(sumLc);
+}
+
+function saveSalesMixGrid() {
+  setStatus('salesmix', '儲存中...');
   google.script.run
-    .withSuccessHandler(safeHandler(rows => renderTable('salesmix', ENTITIES.salesmix, rows || [])))
-    .withFailureHandler(showGlobalError)
-    .recalcSalesMixPctByVolume(currentScenarioId);
+    .withSuccessHandler(safeHandler(data => {
+      salesMixRows = data.rows || [];
+      drawSalesMixGrid();
+      setStatus('salesmix', '已儲存', 'ok');
+    }))
+    .withFailureHandler(err => setStatus('salesmix', '錯誤：' + err.message, 'err'))
+    .saveSalesMixGrid(currentScenarioId, currentVehicleTypeId, salesMixRows);
 }
 
-function recalcSalesMixByPct() {
-  const total = document.getElementById('salesmix-total-volume').value;
+/* ================= 金額矩陣（銷貨成本 / 營業費用共用） ================= */
+const MATRIX_CONFIG = {
+  costofsales: {
+    title: '銷貨成本',
+    note: '一列 = 一個成本項目，一欄 = 一個車系，直接在格子裡填金額，最後按一次儲存。'
+      + ' 模具費用、新增專屬設備由「開發總投」自動攤提，貨物稅由貨物稅率自動計算，不在這裡輸入。',
+    getFn: 'getCostOfSalesMatrix', saveFn: 'saveCostOfSalesMatrix',
+    parentLine: 'B', hasCurrency: true
+  },
+  operatingexpense: {
+    title: '營業費用',
+    note: '一列 = 一個費用科目，一欄 = 一個車系。季Margin 由季Margin率自動計算、車型專案開發費用由開發總投攤提，不在這裡輸入。',
+    getFn: 'getOperatingExpenseMatrix', saveFn: 'saveOperatingExpenseMatrix',
+    parentLine: 'E', hasCurrency: false,
+    parentOptions: [['E', '銷售費用(銷貨毛利前)'], ['G', '產品貢獻前費用'], ['I', '固定營業費用']]
+  }
+};
+
+let matrixData = {};   // key -> {lines, vehicles, values, currencies}
+
+function renderCostOfSalesPanel() { renderMatrixPanel('costofsales'); }
+function renderOperatingExpensePanel() { renderMatrixPanel('operatingexpense'); }
+
+function renderMatrixPanel(key) {
+  if (!requireScope(key, true)) return;
+  const cfg = MATRIX_CONFIG[key];
+  document.getElementById('panel-' + key).innerHTML = gridShell(key, cfg.title, cfg.note);
   google.script.run
-    .withSuccessHandler(safeHandler(rows => renderTable('salesmix', ENTITIES.salesmix, rows || [])))
+    .withSuccessHandler(safeHandler(data => { matrixData[key] = data; drawMatrix(key); }))
     .withFailureHandler(showGlobalError)
-    .recalcSalesMixVolumeByPct(currentScenarioId, total);
+    [cfg.getFn](currentScenarioId, currentVehicleTypeId);
 }
 
-/* ---------------- 儀表板：多車型 / 多情境比較 ---------------- */
-let comparisonOptions = [];               // 車型 -> 情境/車系 選項樹
-let comparisonSelections = [];            // [{ScenarioID, VehicleID}]，VehicleID 空字串 = 加權平均
+function drawMatrix(key) {
+  const cfg = MATRIX_CONFIG[key];
+  const data = matrixData[key];
+  const grid = document.getElementById('grid-' + key);
+
+  const parentSelect = cfg.parentOptions
+    ? `<select id="${key}-new-parent">${cfg.parentOptions.map(o => `<option value="${o[0]}">${o[1]}</option>`).join('')}</select>`
+    : '';
+  document.getElementById('toolbar-' + key).innerHTML = `
+    <button type="button" class="btn" onclick="saveMatrix('${key}')">儲存</button>
+    <span class="toolbar-sep"></span>
+    ${parentSelect}
+    <input id="${key}-new-name" type="text" placeholder="新增項目名稱" style="width:160px;">
+    <button type="button" class="btn secondary" onclick="addMatrixLine('${key}')">新增項目</button>
+  `;
+
+  if (!data.vehicles.length) {
+    grid.innerHTML = '<p class="muted">這個車型還沒有車系，請先到「車系設定」建立車系。</p>';
+    return;
+  }
+
+  const currencyCell = line => {
+    if (!cfg.hasCurrency) return '';
+    const cur = firstCellProp(data, line.value, 'Currency') || 'TWD';
+    const opts = (data.currencies || ['TWD']).slice();
+    if (opts.indexOf(cur) === -1) opts.push(cur);
+    return `<td><select id="${key}-cur-${esc(line.value)}">
+      ${opts.map(c => `<option value="${c}"${c === cur ? ' selected' : ''}>${c}</option>`).join('')}
+    </select></td>`;
+  };
+
+  grid.innerHTML = `
+    <table class="grid-table">
+      <thead><tr>
+        <th>項目</th>
+        ${cfg.hasCurrency ? '<th>幣別</th>' : ''}
+        ${data.vehicles.map(v => `<th>${esc(v.VehicleCode || v.VehicleID)}</th>`).join('')}
+        <th>合計</th><th>備註</th><th></th>
+      </tr></thead>
+      <tbody>
+        ${data.lines.map(line => `
+          <tr data-line="${esc(line.value)}">
+            <td class="row-head">${esc(line.label)}</td>
+            ${currencyCell(line)}
+            ${data.vehicles.map(v => {
+              const cell = (data.values[line.value] || {})[v.VehicleID] || {};
+              return `<td><input type="number" step="any" value="${esc(cell.Amount)}"
+                data-line="${esc(line.value)}" data-vehicle="${esc(v.VehicleID)}" data-rowid="${esc(cell.RowID)}"
+                oninput="updateMatrixTotals('${key}')"></td>`;
+            }).join('')}
+            <td class="calc" id="${key}-sum-${esc(line.value)}"></td>
+            <td><input type="text" id="${key}-note-${esc(line.value)}" value="${esc(firstCellProp(data, line.value, 'Notes'))}"></td>
+            <td><button type="button" class="btn danger" onclick="deleteMatrixLine('${key}', '${esc(line.value)}')">刪除</button></td>
+          </tr>`).join('')}
+      </tbody>
+      <tfoot><tr>
+        <td class="row-head">合計</td>
+        ${cfg.hasCurrency ? '<td></td>' : ''}
+        ${data.vehicles.map(v => `<td class="calc" id="${key}-colsum-${esc(v.VehicleID)}"></td>`).join('')}
+        <td class="calc" id="${key}-grandsum"></td><td colspan="2"></td>
+      </tr></tfoot>
+    </table>`;
+  updateMatrixTotals(key);
+}
+
+/** 同一列(科目)的幣別/備註是列層級設定，讀取時取該列第一個有值的格子 */
+function firstCellProp(data, lineCode, prop) {
+  const row = data.values[lineCode] || {};
+  const key = Object.keys(row).filter(k => row[k] && row[k][prop])[0];
+  return key ? row[key][prop] : '';
+}
+
+function updateMatrixTotals(key) {
+  const cfg = MATRIX_CONFIG[key];
+  const data = matrixData[key];
+  const colSum = {};
+  let grand = 0;
+  data.lines.forEach(line => {
+    let rowSum = 0;
+    document.querySelectorAll(`#grid-${key} input[data-line="${line.value}"]`).forEach(inp => {
+      const v = num(inp.value);
+      rowSum += v;
+      colSum[inp.dataset.vehicle] = (colSum[inp.dataset.vehicle] || 0) + v;
+    });
+    grand += rowSum;
+    const cell = document.getElementById(`${key}-sum-${line.value}`);
+    if (cell) cell.textContent = fmt(rowSum);
+  });
+  data.vehicles.forEach(v => {
+    const cell = document.getElementById(`${key}-colsum-${v.VehicleID}`);
+    if (cell) cell.textContent = fmt(colSum[v.VehicleID] || 0);
+  });
+  const g = document.getElementById(`${key}-grandsum`);
+  if (g) g.textContent = fmt(grand);
+}
+
+function saveMatrix(key) {
+  const cfg = MATRIX_CONFIG[key];
+  const cells = [];
+  document.querySelectorAll(`#grid-${key} input[data-line]`).forEach(inp => {
+    const line = inp.dataset.line;
+    const cell = {
+      RowID: inp.dataset.rowid || '',
+      VehicleID: inp.dataset.vehicle,
+      LineCode: line,
+      Amount: inp.value === '' ? '' : num(inp.value),
+      Notes: val(`${key}-note-${line}`)
+    };
+    if (cfg.hasCurrency) cell.Currency = val(`${key}-cur-${line}`) || 'TWD';
+    cells.push(cell);
+  });
+
+  setStatus(key, '儲存中...');
+  google.script.run
+    .withSuccessHandler(() => { setStatus(key, '已儲存', 'ok'); renderMatrixPanel(key); })
+    .withFailureHandler(err => setStatus(key, '錯誤：' + err.message, 'err'))
+    [cfg.saveFn](currentScenarioId, cells);
+}
+
+function addMatrixLine(key) {
+  const cfg = MATRIX_CONFIG[key];
+  const name = val(`${key}-new-name`);
+  if (!name) { setStatus(key, '請先輸入項目名稱', 'err'); return; }
+  const parent = cfg.parentOptions ? val(`${key}-new-parent`) : cfg.parentLine;
+  setStatus(key, '新增中...');
+  google.script.run
+    .withSuccessHandler(() => { setStatus(key, '已新增項目', 'ok'); renderMatrixPanel(key); })
+    .withFailureHandler(err => setStatus(key, '錯誤：' + err.message, 'err'))
+    .addLineItemInline(parent, name);
+}
+
+function deleteMatrixLine(key, lineCode) {
+  if (!confirm('刪除這個項目會一併清掉它在各車系已輸入的金額，確定嗎？')) return;
+  setStatus(key, '刪除中...');
+  google.script.run
+    .withSuccessHandler(() => { setStatus(key, '已刪除項目', 'ok'); renderMatrixPanel(key); })
+    .withFailureHandler(err => setStatus(key, '錯誤：' + err.message, 'err'))
+    .deleteLineItemInline(lineCode);
+}
+
+/* ================= 開發總投 ================= */
+let devRows = [];
+let devSummary = null;
+
+function renderDevInvestmentPanel() {
+  if (!requireScope('devinvestment', true)) return;
+  const isTarget = currentScenario && currentScenario.ScenarioType === '目標';
+  document.getElementById('panel-devinvestment').innerHTML = gridShell('devinvestment', '開發總投',
+    isTarget
+      ? '目標情境：可從其他情境整批帶入資料後，再逐列填挑戰低減目標%。'
+      : '現況情境：不需要填挑戰低減目標（一律以原始金額計算）。若要做低減試算，請在情境設定新增一個「目標」情境。');
+
+  google.script.run
+    .withSuccessHandler(safeHandler(summary => {
+      devSummary = summary;
+      devRows = summary.rows.map(r => Object.assign({}, r));
+      drawDevGrid();
+    }))
+    .withFailureHandler(showGlobalError)
+    .getDevInvestmentSummary(currentScenarioId);
+}
+
+function drawDevGrid() {
+  const isTarget = !devSummary.isBaseline;
+  const others = scenarioCache.filter(s => s.ScenarioID !== currentScenarioId);
+
+  document.getElementById('toolbar-devinvestment').innerHTML = `
+    <button type="button" class="btn" onclick="saveDevGrid()">儲存</button>
+    <button type="button" class="btn secondary" onclick="addDevRow()">新增一列</button>
+    ${isTarget ? `
+      <span class="toolbar-sep"></span>
+      <label style="display:flex;align-items:center;gap:6px;">從其他情境帶入：
+        <select id="dev-copy-source">
+          <option value="">-- 選擇來源情境 --</option>
+          ${others.map(s => `<option value="${esc(s.ScenarioID)}">${esc(scenarioLabel(s))}</option>`).join('')}
+        </select>
+      </label>
+      <button type="button" class="btn secondary" onclick="copyFromScenario()">帶入</button>` : ''}
+  `;
+
+  document.getElementById('grid-devinvestment').innerHTML = `
+    <table class="grid-table">
+      <thead><tr>
+        <th>部門</th><th>資產類型</th><th>金額</th>
+        ${isTarget ? '<th>挑戰低減目標%</th><th>低減後金額</th>' : ''}
+        <th>備註</th><th></th>
+      </tr></thead>
+      <tbody>
+        ${devRows.map((r, i) => `
+          <tr>
+            <td><input type="text" list="dev-departments" value="${esc(r.Department)}" oninput="onDevField(${i}, 'Department', this.value)"></td>
+            <td><select onchange="onDevField(${i}, 'AssetType', this.value)">
+              ${['', '模具', '設備', '費用'].map(o => `<option value="${o}"${r.AssetType === o ? ' selected' : ''}>${o || '(請選擇)'}</option>`).join('')}
+            </select></td>
+            <td><input type="number" step="any" value="${esc(r.Amount)}" oninput="onDevField(${i}, 'Amount', this.value)"></td>
+            ${isTarget ? `
+              <td><input type="number" step="any" value="${esc(r.ChallengeReductionPct)}" oninput="onDevField(${i}, 'ChallengeReductionPct', this.value)"></td>
+              <td class="calc" id="dev-reduced-${i}">${fmt(num(r.Amount) * (1 - num(r.ChallengeReductionPct) / 100))}</td>` : ''}
+            <td><input type="text" value="${esc(r.Notes)}" oninput="onDevField(${i}, 'Notes', this.value)"></td>
+            <td><button type="button" class="btn danger" onclick="removeDevRow(${i})">刪除</button></td>
+          </tr>`).join('')}
+      </tbody>
+    </table>
+    <datalist id="dev-departments"></datalist>
+    <div class="summary-box">
+      <div><span class="muted">LIFE CYCLE 總台數</span><strong>${fmt(devSummary.lifeCycleUnits)}</strong></div>
+      <div><span class="muted">模具/台 (b5)</span><strong>${fmt(devSummary.perUnit.moldPerUnit)}</strong></div>
+      <div><span class="muted">設備/台 (b8)</span><strong>${fmt(devSummary.perUnit.equipPerUnit)}</strong></div>
+      <div><span class="muted">開發費-CMC/台 (f3)</span><strong>${fmt(devSummary.perUnit.cmcExpensePerUnit)}</strong></div>
+      <div><span class="muted">開發費-BASE廠/台 (f4)</span><strong>${fmt(devSummary.perUnit.baseExpensePerUnit)}</strong></div>
+    </div>`;
+
+  google.script.run.withSuccessHandler(safeHandler(list => {
+    const dl = document.getElementById('dev-departments');
+    if (dl) dl.innerHTML = (list || []).map(v => `<option value="${esc(v)}">`).join('');
+  })).getKnownDepartments();
+}
+
+function onDevField(i, field, value) {
+  devRows[i][field] = value;
+  const cell = document.getElementById('dev-reduced-' + i);
+  if (cell) cell.textContent = fmt(num(devRows[i].Amount) * (1 - num(devRows[i].ChallengeReductionPct) / 100));
+}
+function addDevRow() {
+  devRows.push({ RowID: '', Department: '', AssetType: '', Amount: '', ChallengeReductionPct: '', Notes: '' });
+  drawDevGrid();
+}
+function removeDevRow(i) {
+  // 清空欄位即可：儲存時後端會把空白列(含既有 RowID)刪掉
+  devRows[i] = { RowID: devRows[i].RowID, Department: '', AssetType: '', Amount: '', ChallengeReductionPct: '', Notes: '' };
+  drawDevGrid();
+}
+
+function saveDevGrid() {
+  setStatus('devinvestment', '儲存中...');
+  google.script.run
+    .withSuccessHandler(safeHandler(summary => {
+      devSummary = summary;
+      devRows = summary.rows.map(r => Object.assign({}, r));
+      drawDevGrid();
+      setStatus('devinvestment', '已儲存', 'ok');
+    }))
+    .withFailureHandler(err => setStatus('devinvestment', '錯誤：' + err.message, 'err'))
+    .saveDevInvestmentGrid(currentScenarioId, devRows);
+}
+
+function copyFromScenario() {
+  const source = val('dev-copy-source');
+  if (!source) { setStatus('devinvestment', '請先選擇來源情境', 'err'); return; }
+  if (!confirm('帶入會覆蓋目前情境的銷售構成、銷貨成本、開發總投、營業費用與費率設定，確定嗎？')) return;
+  setStatus('devinvestment', '帶入中...');
+  google.script.run
+    .withSuccessHandler(safeHandler(() => {
+      setStatus('devinvestment', '已帶入來源情境資料，挑戰低減目標已清空，請重新填寫', 'ok');
+      renderDevInvestmentPanel();
+    }))
+    .withFailureHandler(err => setStatus('devinvestment', '錯誤：' + err.message, 'err'))
+    .copyScenarioData(source, currentScenarioId, ['salesmix', 'costofsales', 'devinvestment', 'operatingexpense', 'parameters']);
+}
+
+/* ================= 稅務費用比率 ================= */
+let rateData = null;
+
+function renderRatePanel() {
+  if (!requireScope('paramrates', true)) return;
+  document.getElementById('panel-paramrates').innerHTML = gridShell('paramrates', '稅務費用比率',
+    '同一車型各車系的費率大多相同，只要填「全車系適用」那一欄即可；某個車系不同時才填該欄，留白就自動沿用全車系值。比率請輸入 0~100 的百分比數值。');
+  google.script.run
+    .withSuccessHandler(safeHandler(data => { rateData = data; drawRateGrid(); }))
+    .withFailureHandler(showGlobalError)
+    .getRateGrid(currentScenarioId, currentVehicleTypeId);
+}
+
+function drawRateGrid() {
+  document.getElementById('toolbar-paramrates').innerHTML =
+    '<button type="button" class="btn" onclick="saveRateGrid()">儲存</button>';
+
+  document.getElementById('grid-paramrates').innerHTML = `
+    <table class="grid-table">
+      <thead><tr>
+        <th>比率項目</th><th>全車系適用</th>
+        ${rateData.vehicles.map(v => `<th>${esc(v.VehicleCode || v.VehicleID)}</th>`).join('')}
+      </tr></thead>
+      <tbody>
+        ${rateData.rates.map(rate => `
+          <tr>
+            <td class="row-head">${esc(rate.ParamName)}${rate.isDefault ? ' <span class="auto-tag">預設值</span>' : ''}</td>
+            <td><input type="number" step="any" class="rate-global" data-name="${esc(rate.ParamName)}"
+              data-paramid="${esc(rate.globalParamID)}" value="${esc(rate.globalValue)}"
+              oninput="updateRatePlaceholders('${esc(rate.ParamName)}')"></td>
+            ${rateData.vehicles.map(v => {
+              const o = rate.overrides[v.VehicleID] || {};
+              return `<td><input type="number" step="any" class="rate-override" data-name="${esc(rate.ParamName)}"
+                data-vehicle="${esc(v.VehicleID)}" data-paramid="${esc(o.ParamID)}" value="${esc(o.Value)}"
+                placeholder="${esc(rate.globalValue)}"></td>`;
+            }).join('')}
+          </tr>`).join('')}
+      </tbody>
+    </table>
+    <p class="muted">車系欄位留白 = 沿用全車系適用的值（灰字為目前沿用的數值）。</p>`;
+}
+
+/** 改全車系值時，同步更新各車系欄位的提示值，一眼看得出沿用的是多少 */
+function updateRatePlaceholders(paramName) {
+  const globalInput = document.querySelector(`.rate-global[data-name="${paramName}"]`);
+  document.querySelectorAll(`.rate-override[data-name="${paramName}"]`)
+    .forEach(inp => { inp.placeholder = globalInput.value; });
+}
+
+function saveRateGrid() {
+  const rows = [];
+  document.querySelectorAll('#grid-paramrates .rate-global').forEach(inp => {
+    rows.push({ ParamID: inp.dataset.paramid || '', ParamName: inp.dataset.name, VehicleID: '', Value: inp.value === '' ? '' : num(inp.value) });
+  });
+  document.querySelectorAll('#grid-paramrates .rate-override').forEach(inp => {
+    rows.push({ ParamID: inp.dataset.paramid || '', ParamName: inp.dataset.name, VehicleID: inp.dataset.vehicle, Value: inp.value === '' ? '' : num(inp.value) });
+  });
+  setStatus('paramrates', '儲存中...');
+  google.script.run
+    .withSuccessHandler(() => { setStatus('paramrates', '已儲存', 'ok'); renderRatePanel(); })
+    .withFailureHandler(err => setStatus('paramrates', '錯誤：' + err.message, 'err'))
+    .saveRateGrid(currentScenarioId, rows);
+}
+
+/* ================= 匯率設定 ================= */
+let fxData = null;
+
+function renderFxPanel() {
+  if (!requireScope('paramfx', true)) return;
+  document.getElementById('panel-paramfx').innerHTML = gridShell('paramfx', '匯率設定',
+    '以幣別管理匯率，1 外幣 = ? 台幣。設定過「現況匯率」的幣別，才會出現在銷貨成本頁的幣別選單中。');
+  google.script.run
+    .withSuccessHandler(safeHandler(data => { fxData = data; drawFxGrid(); }))
+    .withFailureHandler(showGlobalError)
+    .getFxGrid(currentScenarioId);
+}
+
+function drawFxGrid() {
+  document.getElementById('toolbar-paramfx').innerHTML = `
+    <button type="button" class="btn" onclick="saveFxGrid()">儲存</button>
+    <span class="toolbar-sep"></span>
+    <input id="fx-new-currency" type="text" placeholder="新增幣別代碼" style="width:130px;">
+    <button type="button" class="btn secondary" onclick="addFxCurrency()">新增幣別</button>
+  `;
+
+  document.getElementById('grid-paramfx').innerHTML = `
+    <table class="grid-table">
+      <thead><tr><th>幣別</th>${fxData.paramNames.map(n => `<th>${esc(n)}</th>`).join('')}</tr></thead>
+      <tbody>
+        <tr><td class="row-head">${esc(fxData.baseCurrency)}（本位幣）</td>
+          ${fxData.paramNames.map(() => '<td class="calc">1</td>').join('')}</tr>
+        ${fxData.rows.map(row => `
+          <tr>
+            <td class="row-head">${esc(row.Currency)}</td>
+            ${fxData.paramNames.map(name => {
+              const cell = row.cells[name] || {};
+              return `<td><input type="number" step="any" class="fx-cell" data-currency="${esc(row.Currency)}"
+                data-name="${esc(name)}" data-paramid="${esc(cell.ParamID)}" value="${esc(cell.Value)}"></td>`;
+            }).join('')}
+          </tr>`).join('')}
+      </tbody>
+    </table>
+    <p class="muted">留白 = 未設定該幣別的匯率；銷貨成本以外幣登打時會用「現況匯率」換算。</p>`;
+}
+
+function addFxCurrency() {
+  const c = val('fx-new-currency').trim().toUpperCase();
+  if (!c) { setStatus('paramfx', '請輸入幣別代碼', 'err'); return; }
+  if (c === fxData.baseCurrency) { setStatus('paramfx', '本位幣不需要設定匯率', 'err'); return; }
+  if (fxData.rows.some(r => r.Currency === c)) { setStatus('paramfx', '這個幣別已經在列表中', 'err'); return; }
+  const cells = {};
+  fxData.paramNames.forEach(n => { cells[n] = { ParamID: '', Value: '' }; });
+  fxData.rows.push({ Currency: c, cells: cells });
+  drawFxGrid();
+}
+
+function saveFxGrid() {
+  const cells = [];
+  document.querySelectorAll('#grid-paramfx .fx-cell').forEach(inp => {
+    cells.push({
+      ParamID: inp.dataset.paramid || '', Currency: inp.dataset.currency,
+      ParamName: inp.dataset.name, Value: inp.value === '' ? '' : num(inp.value)
+    });
+  });
+  setStatus('paramfx', '儲存中...');
+  google.script.run
+    .withSuccessHandler(safeHandler(data => { fxData = data; drawFxGrid(); setStatus('paramfx', '已儲存', 'ok'); }))
+    .withFailureHandler(err => setStatus('paramfx', '錯誤：' + err.message, 'err'))
+    .saveFxGrid(currentScenarioId, cells);
+}
+
+/* ================= 儀表板：多車型 / 多情境比較 ================= */
+let comparisonOptions = [];
+let comparisonSelections = [];
+let lastComparison = null;
 
 function loadComparisonPicker() {
   google.script.run
     .withSuccessHandler(safeHandler(options => {
       comparisonOptions = options || [];
       renderComparisonPicker();
-      // 首次進入時，用目前上方選到的車型/情境的加權平均當預設比較欄位
       if (!comparisonSelections.length && currentScenarioId) {
         comparisonSelections.push({ ScenarioID: currentScenarioId, VehicleID: '' });
       }
@@ -487,39 +930,54 @@ function renderComparisonPicker() {
   picker.innerHTML = `
     <label style="display:flex;align-items:center;gap:6px;">車型：
       <select id="cmp-vehicletype" onchange="onComparisonTypeChange()">
-        ${comparisonOptions.map(t => `<option value="${t.VehicleTypeID}">${t.VehicleTypeID}${t.VehicleTypeName ? ' - ' + t.VehicleTypeName : ''}</option>`).join('')}
+        ${comparisonOptions.map(t => `<option value="${esc(t.VehicleTypeID)}">${esc(t.VehicleTypeID)}</option>`).join('')}
       </select>
     </label>
     <label style="display:flex;align-items:center;gap:6px;">情境：<select id="cmp-scenario"></select></label>
     <label style="display:flex;align-items:center;gap:6px;">車系：<select id="cmp-vehicle"></select></label>
     <button type="button" class="btn" onclick="addComparisonColumn()">加入比較欄位</button>
+    <button type="button" class="btn secondary" onclick="addAllVehiclesOfScenario()">加入該情境全部車系</button>
   `;
   onComparisonTypeChange();
 }
 
 function onComparisonTypeChange() {
-  const typeId = document.getElementById('cmp-vehicletype').value;
+  const typeId = val('cmp-vehicletype');
   const type = comparisonOptions.find(t => t.VehicleTypeID === typeId);
   const scenarioSel = document.getElementById('cmp-scenario');
   const vehicleSel = document.getElementById('cmp-vehicle');
   if (!type) { scenarioSel.innerHTML = ''; vehicleSel.innerHTML = ''; return; }
 
   scenarioSel.innerHTML = type.scenarios.length
-    ? type.scenarios.map(s => `<option value="${s.ScenarioID}">${scenarioLabel(s)}</option>`).join('')
+    ? type.scenarios.map(s => `<option value="${esc(s.ScenarioID)}">${esc(scenarioLabel(s))}</option>`).join('')
     : '<option value="">(此車型尚無情境)</option>';
-  // 車系可以個別選，也可以選該情境的加權平均
   vehicleSel.innerHTML = '<option value="">加權平均</option>' +
-    type.vehicles.map(v => `<option value="${v.VehicleID}">${v.VehicleID}${v.VehicleCode ? ' - ' + v.VehicleCode : ''}</option>`).join('');
+    type.vehicles.map(v => `<option value="${esc(v.VehicleID)}">${esc(v.VehicleCode || v.VehicleID)}</option>`).join('');
 }
 
 function addComparisonColumn() {
-  const scenarioId = document.getElementById('cmp-scenario').value;
-  const vehicleId = document.getElementById('cmp-vehicle').value;
+  const scenarioId = val('cmp-scenario');
+  const vehicleId = val('cmp-vehicle');
   if (!scenarioId) { showGlobalError('此車型尚無情境，請先在「情境設定」建立情境。'); return; }
-  if (comparisonSelections.some(s => s.ScenarioID === scenarioId && s.VehicleID === vehicleId)) return;
-  comparisonSelections.push({ ScenarioID: scenarioId, VehicleID: vehicleId });
+  pushSelection(scenarioId, vehicleId);
   renderComparisonColumns();
   refreshDashboard();
+}
+
+/** 一次把某情境底下所有車系都加進來比較（常用：看單一情境各車系的差異） */
+function addAllVehiclesOfScenario() {
+  const scenarioId = val('cmp-scenario');
+  const type = comparisonOptions.find(t => t.VehicleTypeID === val('cmp-vehicletype'));
+  if (!scenarioId || !type) return;
+  type.vehicles.forEach(v => pushSelection(scenarioId, v.VehicleID));
+  pushSelection(scenarioId, '');
+  renderComparisonColumns();
+  refreshDashboard();
+}
+
+function pushSelection(scenarioId, vehicleId) {
+  if (comparisonSelections.some(s => s.ScenarioID === scenarioId && s.VehicleID === vehicleId)) return;
+  comparisonSelections.push({ ScenarioID: scenarioId, VehicleID: vehicleId });
 }
 
 function removeComparisonColumn(idx) {
@@ -527,13 +985,15 @@ function removeComparisonColumn(idx) {
   renderComparisonColumns();
   refreshDashboard();
 }
+function clearComparisonColumns() {
+  comparisonSelections = [];
+  renderComparisonColumns();
+  refreshDashboard();
+}
 
 function renderComparisonColumns() {
   const box = document.getElementById('comparison-columns');
-  if (!comparisonSelections.length) {
-    box.innerHTML = '<p class="muted">尚未加入比較欄位。</p>';
-    return;
-  }
+  if (!comparisonSelections.length) { box.innerHTML = '<p class="muted">尚未加入比較欄位。</p>'; return; }
   box.innerHTML = '<div class="toolbar">' + comparisonSelections.map((sel, i) => {
     const type = comparisonOptions.find(t => t.scenarios.some(s => s.ScenarioID === sel.ScenarioID));
     const scenario = type && type.scenarios.find(s => s.ScenarioID === sel.ScenarioID);
@@ -543,9 +1003,9 @@ function renderComparisonColumns() {
       scenario ? scenarioLabel(scenario) : sel.ScenarioID,
       sel.VehicleID ? ((vehicle && vehicle.VehicleCode) || sel.VehicleID) : '加權平均'
     ].filter(p => p).join(' / ');
-    return `<span class="cmp-chip">${label}
+    return `<span class="cmp-chip">${esc(label)}
       <button type="button" class="btn danger" onclick="removeComparisonColumn(${i})">移除</button></span>`;
-  }).join('') + '</div>';
+  }).join('') + `<button type="button" class="btn secondary" onclick="clearComparisonColumns()">全部清除</button></div>`;
 }
 
 function refreshDashboard() {
@@ -557,7 +1017,7 @@ function refreshDashboard() {
   }
   content.innerHTML = '<p class="muted">計算中...</p>';
   google.script.run
-    .withSuccessHandler(safeHandler(result => renderDashboard(result)))
+    .withSuccessHandler(safeHandler(result => { lastComparison = result; renderDashboard(result); }))
     .withFailureHandler(err => { content.innerHTML = '<p class="status-msg err">計算失敗：' + err.message + '</p>'; })
     .calculateComparison(comparisonSelections);
 }
@@ -573,19 +1033,40 @@ function renderDashboard(result) {
       return v === undefined || v === null ? '<td class="muted">—</td>' : fmtCell(v);
     }).join('');
     const autoTag = line.AutoSource ? ' <span class="auto-tag">自動</span>' : '';
-    return `<tr><td>${line.LineCode}</td><td>${line.LineName}${autoTag}</td>${cells}</tr>`;
+    const cls = ['A', 'B', 'C', 'E', 'G', 'I', 'K'].indexOf(line.LineCode) !== -1 ? ' class="subtotal"' : '';
+    return `<tr${cls}><td>${esc(line.LineCode)}</td><td>${esc(line.LineName)}${autoTag}</td>${cells}</tr>`;
   }).join('');
 
   content.innerHTML = `
+    <div class="toolbar">
+      <button type="button" class="btn secondary" onclick="showComparisonCsv()">匯出 CSV</button>
+    </div>
+    <div id="csv-output" style="display:none;"></div>
     <table class="pl-table">
-      <thead><tr><th>科目</th><th>項目</th>${cols.map(c => `<th>${c.label}</th>`).join('')}</tr></thead>
+      <thead><tr><th>科目</th><th>項目</th>${cols.map(c => `<th>${esc(c.label)}</th>`).join('')}</tr></thead>
       <tbody>${rowsHtml}</tbody>
     </table>
-    <div class="charts-row">
-      <div class="chart-box" id="chart-revenue"></div>
-    </div>
+    <div class="charts-row"><div class="chart-box" id="chart-revenue"></div></div>
   `;
   drawCharts(result);
+}
+
+/** Apps Script 沙箱不方便直接下載檔案，改成把 CSV 內容顯示出來供複製貼上到 Excel */
+function showComparisonCsv() {
+  if (!lastComparison) return;
+  const cols = lastComparison.columns;
+  const lines = [['科目', '項目'].concat(cols.map(c => c.label))];
+  lastComparison.lines.forEach(line => {
+    lines.push([line.LineCode, line.LineName].concat(cols.map(c => {
+      const v = c.amounts[line.LineCode];
+      return v === undefined || v === null ? '' : Math.round(v);
+    })));
+  });
+  const csv = lines.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const box = document.getElementById('csv-output');
+  box.style.display = 'block';
+  box.innerHTML = `<p class="muted">全選複製後可直接貼進 Excel：</p><textarea class="csv-box">${csv}</textarea>`;
+  box.querySelector('textarea').select();
 }
 
 function fmtCell(v) {
@@ -596,7 +1077,6 @@ function fmtCell(v) {
 
 function drawCharts(result) {
   google.charts.setOnLoadCallback(() => {
-    // 各比較欄位的收入(A) vs 營業淨利(K)
     const revData = new google.visualization.DataTable();
     revData.addColumn('string', '比較欄位');
     revData.addColumn('number', '收入(A)');
