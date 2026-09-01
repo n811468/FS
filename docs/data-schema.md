@@ -139,7 +139,23 @@
 | PctOfRevenue | % | 佔 A 的比例 |
 | CalcTimestamp | datetime | 計算時間，用來判斷是否為最新結果 |
 
-### 2.9 `AuditLog` 異動紀錄（選配，建議加）
+### 2.9 `OperatingExpense` 營業費用明細（d / f1 / h 科目）
+
+材料成本表只涵蓋 B 銷貨成本（b1~b13）。E 之後的廣宣、促銷、費用類科目（d1~d5、f1、h1、h3、h4）另立一張表，結構與 `MaterialCost` 相同、只是科目集合不同，方便同一輸入表單的邏輯重用。
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| RowID (PK) | text | |
+| ScenarioID (FK) | text | |
+| VehicleID (FK) | text | |
+| LineCode | text | d1廣宣費用 / d2促銷 / d3批標售 / d4margin / d5索賠 / f1直接歸屬費用 / h1固定營業費用 / h3品牌廣宣費用 / h4特別加發 / J前瞻費用 |
+| Amount | currency | |
+| Notes | text | |
+| EffectiveDate | date | |
+
+> f3（車型專案開發費用-CMC）、f4（車型專案開發費用-BASE廠）不在此表手動輸入，而是由 `CalcEngine` 依 `DevInvestment` 總投金額 ÷ 該情境總銷售台數（LC年限 × 月台數 × 12）自動攤提得出「單台開發成本」。
+
+### 2.10 `AuditLog` 異動紀錄（選配，建議加）
 
 | 欄位 | 型別 | 說明 |
 |---|---|---|
