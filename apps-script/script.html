@@ -128,14 +128,21 @@ function onScenarioChange(value) {
   else if (ENTITIES[currentTab]) renderEntityPanel(currentTab);
 }
 
-function loadScenarioSelector() {
+function loadScenarioSelector(preferredId) {
   google.script.run.withSuccessHandler(scenarios => {
     const sel = document.getElementById('scenario-selector');
     sel.innerHTML = '<option value="">-- 選擇情境 --</option>' +
       scenarios.map(s => `<option value="${s.ScenarioID}">${s.ScenarioName || s.ScenarioID}</option>`).join('');
-    if (scenarios.length && !currentScenarioId) {
-      sel.value = scenarios[0].ScenarioID;
-      onScenarioChange(scenarios[0].ScenarioID);
+    const ids = scenarios.map(s => s.ScenarioID);
+    // 優先順序：剛新增/編輯的情境 > 目前已選的情境(若還存在) > 第一筆
+    const pick = (preferredId && ids.indexOf(preferredId) !== -1) ? preferredId
+      : (currentScenarioId && ids.indexOf(currentScenarioId) !== -1) ? currentScenarioId
+      : ids[0] || '';
+    if (pick) {
+      sel.value = pick;
+      onScenarioChange(pick);
+    } else {
+      currentScenarioId = '';
     }
   }).getScenarios();
 }
@@ -225,6 +232,7 @@ function submitEntityForm(evt, key) {
       statusEl.className = 'status-msg ok';
       resetForm(key);
       loadEntityData(key, cfg);
+      if (key === 'scenarios') loadScenarioSelector(rowObj.ScenarioID);
     })
     .withFailureHandler(err => {
       statusEl.textContent = '錯誤：' + err.message;
