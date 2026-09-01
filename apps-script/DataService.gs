@@ -145,12 +145,26 @@ function runDiagnostics() {
   });
   var missing = Object.keys(SHEETS).map(function (k) { return SHEETS[k]; })
     .filter(function (name) { return sheetsInfo.every(function (s) { return s.name !== name; }); });
+
+  // 直接用跟 getScenarios() 等函式相同的解析邏輯(sheetToObjects_)跑一次，
+  // 拿掉業務邏輯後單純比對「原始列數」vs「實際解析出幾筆物件」，藏在哪一步漏資料一看就知道。
+  var parseCheck = {};
+  Object.keys(SCHEMA).forEach(function (sheetName) {
+    try {
+      var raw = sheetToObjects_(sheetName);
+      parseCheck[sheetName] = { parsedCount: raw.length, sample: raw[0] || null };
+    } catch (e) {
+      parseCheck[sheetName] = { error: e.message };
+    }
+  });
+
   return {
     ok: true,
     spreadsheetId: ss.getId(),
     spreadsheetName: ss.getName(),
     spreadsheetUrl: ss.getUrl(),
     sheets: sheetsInfo,
-    missingExpectedSheets: missing
+    missingExpectedSheets: missing,
+    parseCheck: parseCheck
   };
 }
