@@ -133,7 +133,7 @@
 | RowID (PK) | text | |
 | ScenarioID (FK) | text | |
 | Department | text | 部門自由新增/刪除（如產專室 / 產工部 / 試驗部 / 開發部...），每一列投入金額皆可獨立刪除，不受限於固定清單 |
-| AssetType | text | 模具 / 設備 / 費用 |
+| AssetType | text | 攤提落點：模具 / 設備 / 費用-CMC / 費用-BASE廠（舊資料可能還是「費用」） |
 | Amount | currency | 原始投入金額 |
 | Currency | text | 投入金額的幣別（BASE廠開發費常以 CNY 計價），非本位幣時依匯率設定換算 |
 | ChallengeReductionPct | number | 挑戰低減目標%（0~100）。屬於**情境層級的假設**：同一個 GATE 下的「現況」與「目標」情境各自填自己的低減目標，以此呈現低減前後的損益差異 |
@@ -144,12 +144,17 @@
 > （優先用情境的攤提基準 `AmortMonthlyVolume × 12 × AmortLifeCycleYears`，
 > 沒填才用銷售構成推算的 `Σ MonthlyVolume × 12 × LifeCycleYears`），並依 `AssetType` 落到不同科目：
 >
-> | AssetType | 落點科目 |
+> | AssetType（攤提落點） | 落點科目 |
 > |---|---|
 > | 模具 | `b5` 模具費用（銷貨成本） |
 > | 設備 | `b8` 新增專屬設備（銷貨成本） |
-> | 費用（Department ≠ BASE廠開發費） | `f3` 車型專案開發費用-CMC |
-> | 費用（Department = BASE廠開發費） | `f4` 車型專案開發費用-BASE廠 |
+> | 費用-CMC | `f3` 車型專案開發費用-CMC |
+> | 費用-BASE廠 | `f4` 車型專案開發費用-BASE廠 |
+>
+> 舊版的資產類型只有一個「費用」，落到 f3 還是 f4 是看 `Department` 是不是剛好等於
+> `BASE廠開發費` —— 部門是自由輸入欄位，打成「BASE廠」就會整筆跑到 f3，畫面上還看不出來
+> （f4 一直是 0）。現在落點是明確的選項，畫面上每一列旁邊直接顯示會攤到哪個科目。
+> 舊資料仍照原本的規則判讀，讀進畫面時自動轉成新的選項值。
 
 ### 2.6 `Parameters` 參數設定
 
@@ -180,9 +185,17 @@
 損益結構表，程式依此逐科目 rollup。明細科目（b*/d*/f1/h*/J）可直接在「銷貨成本」「營業費用」頁面
 新增與刪除，「科目設定」頁面則是整張表直接編輯（不必先按「編輯」），改完按一次儲存。
 
+**自動計算科目與結構科目的名稱由程式決定，不是 Sheet 上的資料。** 名稱寫的就是那條公式
+（`P8 廠價(未稅)(=P5-P6-P7)`、`C 生產毛利(=A-B)`），所以每次開啟頁面時 `getBootstrap()` 會呼叫
+`syncCodeOwnedLineItems_()` 把它們對回 `PL_LINE_ITEMS`。
+會需要這個自動修復，是因為舊版的售價結構只有 8 列（P2 是廢車處理費），改版重新編號成 9 列後，
+`seedPLLineItems_()` 又刻意不覆蓋既有科目（使用者可能改過名稱），於是新代碼配著舊名稱留在 Sheet 上，
+畫面上就變成欄位名稱跟數字對不起來。明細科目（b1/d1/f1/h1…）的名稱與排序仍屬於使用者，
+要整批回復用「科目設定」頁的「恢復內建科目預設值」（`restoreBuiltInLineItems()`）。
+
 `LineCode` 一律由系統自動編號，使用者不需要、也不能自己填：父科目字首（B→b、E→d、G→f、I→h）
 加上目前最小的未使用號碼，例如 `b15`、`d6`。新增列在儲存的當下才配號。
-結構科目（A/B/C/E/G/I/K）與自動計算科目只能改名稱與排序，父科目固定、也不能刪除。
+結構科目（A/B/C/E/G/I/K）與自動計算科目的名稱、父科目、排序都由程式擁有（見上），畫面上不開放修改，也不能刪除。
 
 欄位：`LineCode` / `LineName` / `ParentLine` / `Category` / `SortOrder` / `AutoSource` / `CommodityTaxDeduct`。
 

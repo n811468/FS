@@ -158,6 +158,102 @@ check('儀表板的小計驗算對正常資料不應報警', () => {
   assert(cmp.lines.some(l => l.isSubtotal), '應該標示出小計科目');
 });
 
+check('舊版留下的科目名稱會自動對回程式碼（欄位名稱不再跟數字對不起來）', () => {
+  // 重現使用者 Sheet 的狀態：舊版售價結構只有 8 列，P2 是廢車處理費、P7 才是廠價。
+  // 改版重新編號後 seedPLLineItems_ 不覆蓋既有名稱，於是新代碼配著舊名稱留在 Sheet 上。
+  const stale = {
+    P2: '廢車處理費(換算含稅)', P3: '實際零售價(含稅)(=P1-P2)', P4: '營業稅(內含反推)',
+    P5: '銷售佣金', P6: '實際零售價(未稅)', P7: '廠價(未稅)', P8: '強配件售價',
+    f3: '車型專案開發費用-CMC(單台攤提)'
+  };
+  Object.keys(stale).forEach(code => {
+    const row = gs.getPLLineItems().filter(d => d.LineCode === code)[0];
+    gs.upsertRow_('PLLineItems', 'LineCode', Object.assign({}, row, { LineName: stale[code] }));
+  });
+  assertEqual(gs.getPLLineItems().filter(d => d.LineCode === 'P2')[0].LineName, stale.P2, '前置：P2 應為舊名稱');
+
+  // 開啟頁面就會自動修好，使用者不必知道有維護選單
+  gs.getBootstrap('DA');
+
+  const nameOf = code => gs.getPLLineItems().filter(d => d.LineCode === code)[0].LineName;
+  assert(nameOf('P2').indexOf('強配件售價') === 0, `P2 應為強配件售價，實際 ${nameOf('P2')}`);
+  assert(nameOf('P4').indexOf('廢車處理費') === 0, `P4 應為廢車處理費，實際 ${nameOf('P4')}`);
+  assert(nameOf('P6').indexOf('營業稅') === 0, `P6 應為營業稅，實際 ${nameOf('P6')}`);
+  assert(nameOf('P8').indexOf('廠價(未稅)') === 0, `P8 應為廠價，實際 ${nameOf('P8')}`);
+  assert(nameOf('f3').indexOf('開發總投') !== -1, `f3 名稱應說明攤提來源，實際 ${nameOf('f3')}`);
+
+  // 名稱與數字必須指的是同一件事：P8 的數字就是廠價 = P5-P6-P7
+  const lines = gs.calculatePL(base.ScenarioID, 'V1').lines;
+  const v = code => lines.filter(l => l.LineCode === code)[0].Amount;
+  assert(Math.abs(v('P8') - (v('P5') - v('P6') - v('P7'))) < 0.01, 'P8 的數字應為 P5-P6-P7');
+});
+
+check('明細科目的名稱不會被自動修復蓋掉', () => {
+  gs.savePLLineItemGrid([{ LineCode: 'b1', LineName: '材料成本-LP(自己改的)', ParentLine: 'B', Category: '成本明細', SortOrder: 21 }]);
+  gs.getBootstrap('DA');
+  assertEqual(gs.getPLLineItems().filter(d => d.LineCode === 'b1')[0].LineName, '材料成本-LP(自己改的)',
+    '使用者改過的明細科目名稱應該保留');
+  // 一鍵回復才會把它還原
+  gs.restoreBuiltInLineItems();
+  assertEqual(gs.getPLLineItems().filter(d => d.LineCode === 'b1')[0].LineName, '材料成本-LP',
+    '回復內建預設值後的明細科目名稱');
+});
+
+check('開發總投的攤提落點由選項決定，f4 BASE廠不再靠部門名稱猜', () => {
+  const sid = gs.createScenarioFrom({
+    ScenarioID: '', Gate: 'GATE E', ScenarioName: '攤提測試', ScenarioType: '現況', VehicleTypeID: 'DA'
+  }, base.ScenarioID, ['salesmix']).ScenarioID;
+
+  gs.saveDevInvestmentGrid(sid, [
+    { RowID: '', Department: '生技部', AssetType: '模具', Amount: 1000, Currency: 'TWD' },
+    { RowID: '', Department: '生技部', AssetType: '設備', Amount: 2000, Currency: 'TWD' },
+    // 部門名稱刻意不叫「BASE廠開發費」—— 舊邏輯會把它整筆算進 f3
+    { RowID: '', Department: '中華 CMC', AssetType: '費用-CMC', Amount: 4000, Currency: 'TWD' },
+    { RowID: '', Department: '大陸廠', AssetType: '費用-BASE廠', Amount: 8000, Currency: 'TWD' }
+  ]);
+
+  const units = gs.getLifeCycleUnits(sid);
+  assert(units > 0, 'LIFE CYCLE 總台數應大於 0');
+  const summary = gs.getDevInvestmentSummary(sid);
+  const byLine = {};
+  summary.targets.forEach(t => { byLine[t.LineCode] = t.Total; });
+  assertEqual(byLine.b5, 1000, '模具應攤到 b5');
+  assertEqual(byLine.b8, 2000, '設備應攤到 b8');
+  assertEqual(byLine.f3, 4000, '費用-CMC 應攤到 f3');
+  assertEqual(byLine.f4, 8000, '費用-BASE廠 應攤到 f4（不看部門名稱）');
+
+  const lines = gs.calculatePL(sid, 'V1').lines;
+  const v = code => lines.filter(l => l.LineCode === code)[0].Amount;
+  assert(Math.abs(v('f4') - 8000 / units) < 1e-9, `f4 單台攤提應為 ${8000 / units}，實際 ${v('f4')}`);
+  assert(v('f4') > 0, 'f4 不應為 0');
+  // 每一列都看得到自己會攤到哪個科目
+  const baseRow = summary.rows.filter(r => r.Department === '大陸廠')[0];
+  assertEqual(baseRow.TargetLineCode, 'f4', '畫面上該列顯示的攤提落點');
+});
+
+check('舊的「費用」資料仍照原本的規則攤提，並自動轉成新選項', () => {
+  const sid = gs.createScenarioFrom({
+    ScenarioID: '', Gate: 'GATE D', ScenarioName: '舊資料', ScenarioType: '現況', VehicleTypeID: 'DA'
+  }, base.ScenarioID, ['salesmix']).ScenarioID;
+
+  // 直接寫入舊格式的列（AssetType = '費用'），模擬既有 Sheet
+  gs.saveDevInvestmentRow({ RowID: '', ScenarioID: sid, Department: 'BASE廠開發費', AssetType: '費用', Amount: 9000, Currency: 'TWD' });
+  gs.saveDevInvestmentRow({ RowID: '', ScenarioID: sid, Department: '研發處', AssetType: '費用', Amount: 3000, Currency: 'TWD' });
+
+  const summary = gs.getDevInvestmentSummary(sid);
+  const byLine = {};
+  summary.targets.forEach(t => { byLine[t.LineCode] = t.Total; });
+  assertEqual(byLine.f4, 9000, '舊資料的 BASE廠開發費仍應落在 f4');
+  assertEqual(byLine.f3, 3000, '舊資料的其他部門仍應落在 f3');
+  // 讀進畫面時就轉成新的選項值，使用者一存檔就寫回去
+  assertEqual(summary.rows.filter(r => r.Department === 'BASE廠開發費')[0].AssetType, '費用-BASE廠',
+    '舊「費用」應轉成費用-BASE廠');
+  assertEqual(summary.rows.filter(r => r.Department === '研發處')[0].AssetType, '費用-CMC',
+    '舊「費用」應轉成費用-CMC');
+  // 轉換後的值存得回去
+  gs.saveDevInvestmentGrid(sid, summary.rows);
+});
+
 const failed = results.filter(r => !r.ok);
 results.forEach(r => console.log((r.ok ? '  ✓ ' : '  ✗ ') + r.name + (r.ok ? '' : ' — ' + r.message)));
 console.log('');

@@ -124,12 +124,23 @@ assert(api('subtotalCheckHtml')(broken).indexOf('check-box') !== -1, '有差異�
 
 api("chartLineCodes = ['A', 'K']");
 const toolbar = api('dashboardToolbarHtml')(lines);
-assert(toolbar.indexOf('id="chart-lines"') !== -1, '工具列應該有圖表科目複選');
-assert(toolbar.indexOf('multiple') !== -1, '圖表科目應該可以複選');
-const chartSelect = toolbar.split('id="chart-lines"')[1].split('</select>')[0];
-assert((chartSelect.match(/ selected/g) || []).length === 2, '預設應選中 A 與 K 兩個科目');
-assert(toolbar.indexOf('P8') === -1 || toolbar.indexOf('<option value="P8"') === -1,
-  '售價結構科目不應出現在圖表科目選單');
+assert(toolbar.indexOf('id="chart-lines"') !== -1, '工具列應該有圖表科目選擇區');
+// 原生 multiple select 要按住 Ctrl 才能複選，等於選不動；必須是核取方塊
+assert(toolbar.indexOf('multiple') === -1, '圖表科目不該用原生 multiple select');
+const chartPicker = toolbar.split('id="chart-lines"')[1].split('</div>')[0];
+assert((chartPicker.match(/type="checkbox"/g) || []).length > 10, '每個科目都應該有一個核取方塊');
+assert((chartPicker.match(/ checked/g) || []).length === 2, '預設應勾選 A 與 K 兩個科目');
+assert(chartPicker.indexOf('onchange="onChartLineToggle') !== -1, '勾選應該即時重畫圖表');
+assert(chartPicker.indexOf('value="P8"') === -1, '售價結構科目不應出現在圖表科目選單');
+
+// 勾選/取消要真的改變圖表要畫的科目
+api("chartLineCodes = ['A', 'K']");
+ctx.__in.noop = () => { };
+api('drawCharts = __in.noop');            // 圖表本身在 Node 畫不了，只驗狀態變化
+api('onChartLineToggle')('C', true);
+assert(api('chartLineCodes').join(',') === 'A,K,C', `勾選後應加入科目，實際 ${api('chartLineCodes')}`);
+api('onChartLineToggle')('A', false);
+assert(api('chartLineCodes').join(',') === 'K,C', `取消勾選後應移除科目，實際 ${api('chartLineCodes')}`);
 
 /* ---- 6. 主檔表格：主鍵鎖定與自動編號提示 ---- */
 const ENTITIES = api('ENTITIES');
@@ -156,6 +167,20 @@ assert(entityCellHtml('vehicletypes', 0, idCol, { __existing: false, VehicleType
   '新增列的車型代號應該可以輸入');
 assert(entityRowActionHtml('lineitems', 0, { __existing: true, LineCode: 'B' }).indexOf('不可刪除') !== -1,
   '結構科目不該顯示刪除按鈕');
+
+/* ---- 6b. 開發總投：每一列都看得到自己會攤到哪個損益科目 ---- */
+gs.saveDevInvestmentGrid(sc.ScenarioID, [
+  { RowID: '', Department: '大陸廠', AssetType: '費用-BASE廠', Amount: 8000, Currency: 'TWD' }
+]);
+ctx.__in.devSummary = gs.getDevInvestmentSummary(sc.ScenarioID);
+api('devSummary = __in.devSummary');
+const devTargetLabel = api('devTargetLabel');
+assert(devTargetLabel('費用-BASE廠').indexOf('f4') === 0,
+  `費用-BASE廠 應顯示落點 f4，實際 ${devTargetLabel('費用-BASE廠')}`);
+assert(devTargetLabel('費用-CMC').indexOf('f3') === 0,
+  `費用-CMC 應顯示落點 f3，實際 ${devTargetLabel('費用-CMC')}`);
+assert(devTargetLabel('模具').indexOf('b5') === 0, '模具應顯示落點 b5');
+assert(devTargetLabel('').indexOf('不會攤提') !== -1, '沒選落點應明講不會攤提');
 
 /* ---- 7. CSV 匯出欄數 ---- */
 ctx.__in.comparison = comparison;

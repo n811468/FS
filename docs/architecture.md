@@ -144,7 +144,12 @@ LIFE CYCLE 總台數 = 情境的攤提基準(AmortMonthlyVolume × 12 × AmortLi
   跟其他修改一起送出（`saveVehicleTypeGrid` / `saveVehicleGrid` / `saveScenarioGrid` / `savePLLineItemGrid`）。
   - 主鍵欄位（車型代號、車系代號）建立後就鎖住：主鍵是所有資料的鍵值，改掉等於另開一筆、舊資料會變孤兒。
   - 科目設定的 `LineCode` 由後端自動編號（`nextLineCode_()`：父科目字首 + 最小未使用號碼），
-    使用者只選父科目、填名稱；新增列在儲存當下才配號。結構科目與自動計算科目的父科目固定、不可刪除。
+    使用者只選父科目、填名稱；新增列在儲存當下才配號。
+  - **自動計算科目與結構科目的名稱由程式擁有**：名稱寫的就是它的公式，畫面上不開放修改，
+    且 `getBootstrap()` 每次都會呼叫 `syncCodeOwnedLineItems_()` 把 Sheet 上的舊名稱對回程式碼。
+    改版重新編號（售價結構從 8 列變 9 列）之後，舊 Sheet 上會出現欄位名稱與數字對不起來的情形，
+    而 `seedPLLineItems_()` 為了保留使用者改過的名稱不會覆蓋既有科目 —— 名稱是描述公式的，
+    就該由公式那一邊決定。明細科目的名稱仍屬使用者，要整批回復用 `restoreBuiltInLineItems()`。
   - 情境設定另有「以既有情境為基礎建立」（`createScenarioFrom()`）與「帶入目前情境」
     （`copyScenarioData()`），限同一車型 —— 跨車型的車系對不上，會產生看不見卻仍被計入損益的資料。
 
@@ -155,8 +160,12 @@ LIFE CYCLE 總台數 = 情境的攤提基準(AmortMonthlyVolume × 12 × AmortLi
     （`getCostOfSalesMatrix` / `saveCostOfSalesMatrix`、`addLineItemInline` / `deleteLineItemInline`）。
     最右欄是**加權平均**而非跨車系合計：一列是同一個成本項目在各車系的單台金額，相加沒有意義；
     矩陣 API 會一併回傳各車系的 `SalesMixPct`，前端據此算 Σ(金額×構成比)÷Σ構成比。
-  - 開發總投：目標情境才顯示挑戰低減目標欄位，並可用 `copyScenarioData()` 從其他情境整批帶入資料；
-    表格下方即時顯示 LIFE CYCLE 總台數與各科目單台攤提金額。
+  - 開發總投：每一列選「攤提落點」(`DEV_ASSET_TYPES`)，落點直接對應損益科目
+    （`DEV_ASSET_TYPE_TARGET`：模具→b5、設備→b8、費用-CMC→f3、費用-BASE廠→f4），
+    同一列旁邊就顯示會攤到哪個科目，下方另有各落點的投資總額與單台攤提對照表。
+    舊版靠 `Department === 'BASE廠開發費'` 這個字串來分 f3/f4，部門是自由輸入欄位，
+    打成別的字就整筆落到 f3、而且畫面上看不出來（f4 永遠是 0）；舊資料仍照原規則判讀後自動轉換。
+    目標情境才顯示挑戰低減目標欄位，並可用 `copyScenarioData()` 從其他情境整批帶入資料。
   - 稅務費用比率：「全車系適用」一欄 + 各車系覆寫欄，留白自動沿用（`getRateGrid` / `saveRateGrid`）。
   - 匯率設定：以幣別管理（`getFxGrid` / `saveFxGrid`），設定過匯率的幣別才會出現在銷貨成本的幣別選單。
     只有一種「現況匯率」；舊版的「集團預算匯率」沒有任何計算讀它，已移除。
@@ -179,8 +188,9 @@ LIFE CYCLE 總台數 = 情境的攤提基準(AmortMonthlyVolume × 12 × AmortLi
     否則畫面上少了幾列，看到的明細加起來會對不上 B 銷貨成本合計，看起來就像加總算錯。
     自動計算科目（售價結構 P1~P9、貨物稅、季Margin、開發攤提）標示「自動」標籤。
   - 「匯出 CSV」把整張比較表（含 % 欄）複製貼進 Excel。
-  - 下方：長條圖，**要畫哪幾個科目由使用者複選**（預設 A 收入與 K 營業淨利），
-    不再寫死（Google Charts，Apps Script 原生支援）。
+  - 下方：長條圖，**要畫哪幾個科目由使用者勾選**（預設 A 收入與 K 營業淨利），勾了就即時重畫。
+    用核取方塊而不是 `<select multiple>` —— 原生多選要按住 Ctrl 才選得動，一般點擊只會把其他選項取消，
+    等於選不動（Google Charts，Apps Script 原生支援）。
   - 後端 API：`getComparisonOptions()` 取得車型→情境/車系選項樹；
     `calculateComparison([{ScenarioID, VehicleID}])` 回傳各欄位金額、兩種百分比基準、
     科目聯集（含 ParentLine 供縮排）與小計驗算結果。

@@ -118,8 +118,8 @@ function buildScenario(gs) {
   gs.saveDevInvestmentGrid(sid, [
     { RowID: '', Department: '生技部', AssetType: '模具', Amount: PER_UNIT.mold * LC_UNITS, Currency: 'TWD' },
     { RowID: '', Department: '生技部', AssetType: '設備', Amount: PER_UNIT.equip * LC_UNITS, Currency: 'TWD' },
-    { RowID: '', Department: 'CMC開發費', AssetType: '費用', Amount: PER_UNIT.cmcExpense * LC_UNITS, Currency: 'TWD' },
-    { RowID: '', Department: 'BASE廠開發費', AssetType: '費用', Amount: PER_UNIT.baseExpense * LC_UNITS, Currency: 'TWD' }
+    { RowID: '', Department: 'CMC開發費', AssetType: '費用-CMC', Amount: PER_UNIT.cmcExpense * LC_UNITS, Currency: 'TWD' },
+    { RowID: '', Department: 'BASE廠開發費', AssetType: '費用-BASE廠', Amount: PER_UNIT.baseExpense * LC_UNITS, Currency: 'TWD' }
   ]);
 
   const costCells = [];

@@ -70,10 +70,14 @@ const ENTITIES = {
     scopedBy: null,
     note: '科目代碼由系統自動編號（父科目字首 + 流水號，如 b1、d2、f5），不需要自己填，新增列存檔時才會配號。'
       + ' 一般情況不太需要用到這頁 —— 成本項目與費用科目也可以直接在「銷貨成本」「營業費用」頁面新增/刪除。'
-      + ' 結構科目(A/B/C/E/G/I/K)與自動計算科目只能改名稱與排序，不能改父科目、也不能刪除。',
+      + ' 結構科目(A/B/C/E/G/I/K)與自動計算科目的名稱、父科目、排序都由程式決定（名稱寫的就是它的公式），'
+      + '不開放修改也不能刪除 —— 改了只會讓欄位名稱跟算出來的數字對不起來。'
+      + ' 自己改過的明細科目名稱想一次回復成預設值，按下方的「恢復內建科目預設值」。',
+    restorable: true,
     columns: [
       { name: 'LineCode', label: '科目代碼', auto: true, width: 80 },
-      { name: 'LineName', label: '科目名稱', width: 280 },
+      // 自動計算科目與結構科目的名稱寫的就是它的公式，由程式決定；改了只會讓名稱跟數字對不起來
+      { name: 'LineName', label: '科目名稱', width: 280, lockIf: r => r.__existing && isFixedLineItem(r) },
       { name: 'ParentLine', label: '父科目', type: 'select', options: LINE_PARENT_OPTIONS, width: 190,
         lockIf: r => r.__existing && isFixedLineItem(r) },
       { name: 'Category', label: '分類', width: 110 },
@@ -293,6 +297,7 @@ function drawEntityGrid(key) {
     <button type="button" class="btn" onclick="saveEntityGrid('${key}')">儲存</button>
     ${cfg.createUi === 'scenario' ? '' :
       `<button type="button" class="btn secondary" onclick="addEntityRow('${key}')">新增一列</button>`}
+    ${cfg.restorable ? '<button type="button" class="btn secondary" onclick="restoreBuiltInLines()">恢復內建科目預設值</button>' : ''}
     <span class="muted">直接在格子裡修改，改完按「儲存」。</span>
   ` + (cfg.createUi === 'scenario' ? scenarioToolbarHtml() : '');
 
@@ -405,6 +410,24 @@ function saveEntityGrid(key) {
     }))
     .withFailureHandler(err => setStatus(key, '錯誤：' + err.message, 'err'))
     [cfg.saveGridFn](...args);
+}
+
+/**
+ * 把內建科目的名稱、父科目、分類、排序整個回復成程式預設值。
+ * 自動計算科目的名稱平常就會自動對回程式碼（開頁時 getBootstrap 會同步），
+ * 這顆按鈕是給明細科目的名稱與排序被改亂之後用的。
+ */
+function restoreBuiltInLines() {
+  if (!confirm('會把所有內建科目的名稱、父科目、分類與排序回復成系統預設值（自己新增的科目不受影響），確定嗎？')) return;
+  setStatus('lineitems', '回復中...');
+  google.script.run
+    .withSuccessHandler(safeHandler(rows => {
+      entityRows.lineitems = (rows || []).map(r => Object.assign({}, r, { __existing: true }));
+      drawEntityGrid('lineitems');
+      setStatus('lineitems', '已回復內建科目的預設名稱與排序', 'ok');
+    }))
+    .withFailureHandler(err => setStatus('lineitems', '錯誤：' + err.message, 'err'))
+    .restoreBuiltInLineItems();
 }
 
 /** 車型/情境改動後，上方的選單也要跟著更新（但不要重畫目前這個分頁，會蓋掉剛顯示的訊息） */
@@ -877,9 +900,12 @@ function renderDevInvestmentPanel() {
   if (!requireScope('devinvestment', true)) return;
   const isTarget = currentScenario && currentScenario.ScenarioType === '目標';
   document.getElementById('panel-devinvestment').innerHTML = gridShell('devinvestment', '開發總投',
-    isTarget
-      ? '目標情境：可從其他情境整批帶入資料後，再逐列填挑戰低減目標%。'
-      : '現況情境：不需要填挑戰低減目標（一律以原始金額計算）。若要做低減試算，請在情境設定新增一個「目標」情境。');
+    '每一列選「攤提落點」決定這筆投資要攤到哪個損益科目（模具→b5、設備→b8、'
+    + '費用-CMC→f3 車型專案開發費用-CMC、費用-BASE廠→f4 車型專案開發費用-BASE廠），'
+    + '旁邊會直接顯示對應的科目。'
+    + (isTarget
+      ? ' 目標情境：可從其他情境整批帶入資料後，再逐列填挑戰低減目標%。'
+      : ' 現況情境：不需要填挑戰低減目標（一律以原始金額計算）。若要做低減試算，請在情境設定新增一個「目標」情境。'));
   // 攤提基準台數可與銷售構成的預估台數不同（如銷售估 365 台/月，開發投資以 300 台/月 × 12 年攤提）
 
   google.script.run
@@ -920,7 +946,7 @@ function drawDevGrid() {
     <div class="grid-scroll">
     <table class="grid-table">
       <thead><tr>
-        <th>部門</th><th>資產類型</th><th>金額</th><th>幣別</th>
+        <th>部門</th><th>攤提落點</th><th>攤提到的損益科目</th><th>金額</th><th>幣別</th>
         ${isTarget ? '<th>挑戰低減目標%</th><th>低減後金額</th>' : ''}
         <th>備註</th><th></th>
       </tr></thead>
@@ -929,8 +955,10 @@ function drawDevGrid() {
           <tr>
             <td><input type="text" list="dev-departments" value="${esc(r.Department)}" oninput="onDevField(${i}, 'Department', this.value)"></td>
             <td><select onchange="onDevField(${i}, 'AssetType', this.value)">
-              ${['', '模具', '設備', '費用'].map(o => `<option value="${o}"${r.AssetType === o ? ' selected' : ''}>${o || '(請選擇)'}</option>`).join('')}
+              ${[''].concat(devSummary.assetTypes || []).map(o =>
+                `<option value="${esc(o)}"${r.AssetType === o ? ' selected' : ''}>${esc(o) || '(請選擇)'}</option>`).join('')}
             </select></td>
+            <td class="calc" id="dev-target-${i}">${esc(devTargetLabel(r.AssetType))}</td>
             <td><input type="number" step="any" value="${esc(r.Amount)}" oninput="onDevField(${i}, 'Amount', this.value)"></td>
             <td><select onchange="onDevField(${i}, 'Currency', this.value)">
               ${(devSummary.currencies || ['TWD']).map(c => `<option value="${c}"${(r.Currency || 'TWD') === c ? ' selected' : ''}>${c}</option>`).join('')}
@@ -948,11 +976,21 @@ function drawDevGrid() {
     <div class="summary-box">
       <div><span class="muted">攤提用 LIFE CYCLE 總台數</span><strong>${fmt(devSummary.lifeCycleUnits)}</strong></div>
       <div><span class="muted">銷售構成推算台數</span><strong>${fmt(devSummary.salesMixLifeCycleUnits)}</strong></div>
-      <div><span class="muted">模具/台 (b5)</span><strong>${fmt(devSummary.perUnit.moldPerUnit)}</strong></div>
-      <div><span class="muted">設備/台 (b8)</span><strong>${fmt(devSummary.perUnit.equipPerUnit)}</strong></div>
-      <div><span class="muted">開發費-CMC/台 (f3)</span><strong>${fmt(devSummary.perUnit.cmcExpensePerUnit)}</strong></div>
-      <div><span class="muted">開發費-BASE廠/台 (f4)</span><strong>${fmt(devSummary.perUnit.baseExpensePerUnit)}</strong></div>
-    </div>`;
+    </div>
+    <table class="grid-table" style="max-width:760px;">
+      <thead><tr><th>攤提落點</th><th>損益科目</th><th>投資總額(低減後)</th><th>單台攤提</th></tr></thead>
+      <tbody>
+        ${(devSummary.targets || []).map(t => `
+          <tr>
+            <td class="row-head">${esc(t.AssetType)}</td>
+            <td class="row-head">${esc(t.LineCode)} ${esc(t.LineName)}</td>
+            <td class="calc">${fmt(t.Total)}</td>
+            <td class="calc">${fmt(t.PerUnit)}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>
+    <p class="muted">上表每一列的「單台攤提」就是損益表上那個科目的金額（投資總額 ÷ LIFE CYCLE 總台數）。
+      某個科目是 0，代表沒有任何一列的攤提落點選到它。</p>`;
 
   google.script.run.withSuccessHandler(safeHandler(list => {
     const dl = document.getElementById('dev-departments');
@@ -960,10 +998,18 @@ function drawDevGrid() {
   })).getKnownDepartments();
 }
 
+/** 這一列的錢會攤到哪個損益科目：直接查 getDevInvestmentSummary 回傳的落點對照表 */
+function devTargetLabel(assetType) {
+  const target = (devSummary.targets || []).filter(t => t.AssetType === assetType)[0];
+  return target ? target.LineCode + ' ' + target.LineName : '(未選擇，不會攤提)';
+}
+
 function onDevField(i, field, value) {
   devRows[i][field] = value;
   const cell = document.getElementById('dev-reduced-' + i);
   if (cell) cell.textContent = fmt(num(devRows[i].Amount) * (1 - num(devRows[i].ChallengeReductionPct) / 100));
+  const targetCell = document.getElementById('dev-target-' + i);
+  if (targetCell && field === 'AssetType') targetCell.textContent = devTargetLabel(value);
 }
 function addDevRow() {
   devRows.push({ RowID: '', Department: '', AssetType: '', Amount: '', Currency: 'TWD', ChallengeReductionPct: '', Notes: '' });
@@ -1313,21 +1359,33 @@ function dashboardToolbarHtml(lines) {
         顯示售價結構(P1~P9)
       </label>
       <span class="toolbar-sep"></span>
-      <label>圖表科目（可複選）
-        <select id="chart-lines" multiple size="4" style="min-width:260px;" onchange="onChartLinesChange()">
-          ${chartable.map(l => `<option value="${esc(l.LineCode)}"${chartLineCodes.indexOf(l.LineCode) !== -1 ? ' selected' : ''}
-            >${esc(l.LineCode)} ${esc(l.LineName)}</option>`).join('')}
-        </select>
-      </label>
       <button type="button" class="btn secondary" onclick="showComparisonCsv()">匯出 CSV</button>
+    </div>
+    <div class="toolbar-block">
+      <div class="toolbar-block-title">下方柱狀圖要畫哪幾個科目（可複選，勾了就即時重畫）</div>
+      <div class="chip-picker" id="chart-lines">
+        ${chartable.map(l => `<label class="chk">
+          <input type="checkbox" value="${esc(l.LineCode)}"${chartLineCodes.indexOf(l.LineCode) !== -1 ? ' checked' : ''}
+            onchange="onChartLineToggle(this.value, this.checked)">
+          ${esc(l.LineCode)} ${esc(shortLineName(l.LineName))}</label>`).join('')}
+      </div>
     </div>`;
 }
 
 function setPctBase(v) { pctBase = v; renderDashboard(lastComparison); }
 function setShowPriceStructure(v) { showPriceStructure = v; renderDashboard(lastComparison); }
-function onChartLinesChange() {
-  const sel = document.getElementById('chart-lines');
-  chartLineCodes = Array.prototype.filter.call(sel.options, o => o.selected).map(o => o.value);
+
+/** 勾選框標籤用短名稱：科目名稱後面那串公式(如「營業淨利(=I-J)」)在這裡只會佔空間 */
+function shortLineName(name) {
+  const s = String(name || '');
+  const cut = s.indexOf('(');
+  return cut > 1 ? s.slice(0, cut) : s;
+}
+
+function onChartLineToggle(code, checked) {
+  const at = chartLineCodes.indexOf(code);
+  if (checked && at === -1) chartLineCodes.push(code);
+  if (!checked && at !== -1) chartLineCodes.splice(at, 1);
   drawCharts(lastComparison);
 }
 

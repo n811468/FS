@@ -91,17 +91,8 @@ function seedPLLineItems_() {
  * 使用者自行新增的科目(不在 PL_LINE_ITEMS 內)完全不受影響。
  */
 function resetPLLineItemDefaults() {
-  var updated = withLock_(function () {
-    var count = 0;
-    PL_LINE_ITEMS.forEach(function (line) {
-      var row = {};
-      SCHEMA.PLLineItems.forEach(function (h) { row[h] = line[h] !== undefined ? line[h] : ''; });
-      upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', row);
-      count++;
-    });
-    return count;
-  });
-  reportMaintenance_('已重設 ' + updated + ' 個內建科目的名稱與排序（自訂科目未變動）。');
+  restoreBuiltInLineItems();
+  reportMaintenance_('已重設 ' + PL_LINE_ITEMS.length + ' 個內建科目的名稱與排序（自訂科目未變動）。');
 }
 
 /**

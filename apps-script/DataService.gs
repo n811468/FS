@@ -25,6 +25,11 @@ function withLock_(fn) {
  * 每趟 google.script.run 往返都是數百毫秒，合併成一次可以明顯縮短開場等待。
  */
 function getBootstrap(preferredVehicleTypeId) {
+  // 開頁時順手把「由程式定義的科目名稱」對回來。做成自動修復而不是維護選單，
+  // 是因為名稱對不上數字的畫面看起來就是「系統算錯了」，不該要使用者先知道有這支維護功能。
+  // 只有真的對不上時才寫入，之後每次開頁都只是一次讀取。
+  withLock_(function () { return syncCodeOwnedLineItems_(); });
+
   var types = getVehicleTypes();
   var ids = types.map(function (t) { return t.VehicleTypeID; });
   var pick = (preferredVehicleTypeId && ids.indexOf(preferredVehicleTypeId) !== -1)
@@ -349,6 +354,27 @@ function deleteLineItemInline(lineCode) {
 }
 
 // ---- DevInvestment ----
+
+/**
+ * 一列開發總投要攤提到哪個科目（b5 模具 / b8 設備 / f3 開發費-CMC / f4 開發費-BASE廠）。
+ * 舊資料的資產類型只有一個「費用」，落點是靠 Department 剛好等於 'BASE廠開發費' 判斷的 ——
+ * 部門是自由輸入欄位，打成「BASE廠」就會整筆跑到 f3，畫面上還看不出來。
+ * 新資料直接用資產類型決定；舊資料仍沿用原本的判斷，讀進畫面時會順手轉成新的選項值。
+ */
+function devAmortTargetOf_(row) {
+  var type = row.AssetType;
+  if (type === DEV_ASSET_TYPE_LEGACY_EXPENSE) {
+    return row.Department === DEV_INVESTMENT_BASE_FACTORY_DEPT ? 'f4' : 'f3';
+  }
+  return DEV_ASSET_TYPE_TARGET[type] || '';
+}
+
+/** 舊的「費用」資產類型轉成新的「費用-CMC」/「費用-BASE廠」 */
+function normalizeDevAssetType_(row) {
+  if (row.AssetType !== DEV_ASSET_TYPE_LEGACY_EXPENSE) return row.AssetType;
+  return row.Department === DEV_INVESTMENT_BASE_FACTORY_DEPT ? '費用-BASE廠' : '費用-CMC';
+}
+
 function getDevInvestment(scenarioId) {
   var rows = sheetToObjects_(SHEETS.DEV_INVESTMENT) || [];
   return scenarioId ? rows.filter(function (r) { return r.ScenarioID === scenarioId; }) : rows;
@@ -368,9 +394,10 @@ function saveDevInvestmentGrid(scenarioId, rows) {
         if (r.RowID) deleteRow_(SHEETS.DEV_INVESTMENT, 'RowID', r.RowID);
         return;
       }
-      // 沒選資產類型的話會被當成費用類攤提到 f3，靜靜地算錯，所以直接擋下來
-      if (toNumber_(r.Amount) && DEV_ASSET_TYPES.indexOf(r.AssetType) === -1) {
-        throw new Error('「' + (r.Department || '未命名部門') + '」有金額但沒有選資產類型，請選擇 模具 / 設備 / 費用。');
+      // 沒選資產類型的列不會被攤提到任何科目，金額等於憑空消失，所以直接擋下來
+      if (toNumber_(r.Amount) && DEV_ASSET_TYPES_ACCEPTED.indexOf(r.AssetType) === -1) {
+        throw new Error('「' + (r.Department || '未命名部門') + '」有金額但沒有選攤提落點，請選擇 ' +
+          DEV_ASSET_TYPES.join(' / ') + '。');
       }
       r.ScenarioID = scenarioId;
       upsertRow_(SHEETS.DEV_INVESTMENT, 'RowID', r);
@@ -631,6 +658,63 @@ function lookupParam_(paramsForScenario, paramName, vehicleId) {
 }
 
 // ---- PLLineItems 科目設定（明細科目可自由新增/刪除） ----
+
+/**
+ * 把「由程式定義」的科目名稱與位置對回程式碼。
+ *
+ * 有兩類科目的名稱不屬於使用者：
+ *   - 自動計算科目(AutoSource 有值)：金額是公式算出來的，名稱寫的就是那條公式
+ *   - 結構科目(A/B/C/E/G/I/K)：名稱寫的是它跟哪些明細的加總關係
+ * 這兩類一旦跟程式對不起來，畫面上就會出現「欄位寫廢車處理費、數字卻是強配件售價」——
+ * 舊版的售價結構只有 8 列(P2 是廢車處理費)，改版重新編號成 9 列之後，
+ * seedPLLineItems_() 又刻意不覆蓋既有科目(使用者可能自己改過名稱)，
+ * 於是新代碼配著舊名稱一直留在 Sheet 上。名稱是描述公式的，就該由公式那一邊決定。
+ *
+ * 明細科目(b1/d1/f1/h1...)的名稱與排序仍然屬於使用者，這裡完全不動 ——
+ * 要整個回復成內建預設值請用 restoreBuiltInLineItems()。
+ */
+function syncCodeOwnedLineItems_() {
+  var existing = {};
+  getPLLineItems().forEach(function (d) { existing[d.LineCode] = d; });
+
+  var fixed = [];
+  PL_LINE_ITEMS.forEach(function (line) {
+    var isCodeOwned = line.AutoSource || PROTECTED_LINE_CODES.indexOf(line.LineCode) !== -1;
+    if (!isCodeOwned) return;
+    var current = existing[line.LineCode];
+    if (!current) return;                       // 還沒建立的科目交給 seedPLLineItems_() 補
+    var same = function (field) {
+      var a = current[field] === undefined || current[field] === null ? '' : current[field];
+      var b = line[field] === undefined || line[field] === null ? '' : line[field];
+      return String(a) === String(b);
+    };
+    if (['LineName', 'ParentLine', 'Category', 'SortOrder'].every(same)) return;
+
+    var row = {};
+    SCHEMA.PLLineItems.forEach(function (h) {
+      row[h] = line[h] !== undefined ? line[h] : (current[h] !== undefined ? current[h] : '');
+    });
+    upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', row);
+    fixed.push(line.LineCode);
+  });
+  return fixed;
+}
+
+/**
+ * 把所有內建科目(含明細科目)的名稱、父科目、分類、排序值整個回復成程式碼中的預設值。
+ * 使用者自己新增的科目不受影響。排序值會一併回到實際損益試算表的列序。
+ */
+function restoreBuiltInLineItems() {
+  return withLock_(function () {
+    PL_LINE_ITEMS.forEach(function (line) {
+      var row = {};
+      SCHEMA.PLLineItems.forEach(function (h) { row[h] = line[h] !== undefined ? line[h] : ''; });
+      upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', row);
+    });
+    return getPLLineItems();
+  });
+}
+
 function getPLLineItems() {
   return (sheetToObjects_(SHEETS.PL_LINE_ITEMS) || []).sort(function (a, b) { return a.SortOrder - b.SortOrder; });
 }

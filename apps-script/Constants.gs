@@ -55,8 +55,24 @@ var SCENARIO_TYPE_BASELINE = '現況';
 // 廢車處理費稅別選項：讓損益試算全程稅別口徑一致(一律換算為含稅金額後再從零售價扣除)。
 var SCRAP_FEE_TAX_STATUS = ['含稅', '未稅'];
 
-// 開發總投資產類型：模具/設備攤提進銷貨成本(b5/b8)，費用類攤提為車型專案開發費用(f3/f4)。
-var DEV_ASSET_TYPES = ['模具', '設備', '費用'];
+// 開發總投資產類型 = 這筆投資要攤提到哪一個科目。
+// 費用類原本只有一個「費用」，落到 f3 還是 f4 靠 Department 是不是剛好等於 'BASE廠開發費' 來決定 ——
+// 部門名稱是自由輸入的，打成「BASE廠」「BASE 廠開發費」就會整筆跑到 f3，而且畫面上完全看不出來。
+// 現在把落點直接做成選項，使用者選什麼就攤到什麼。
+var DEV_ASSET_TYPES = ['模具', '設備', '費用-CMC', '費用-BASE廠'];
+
+// 舊資料相容：以前只有一個「費用」，讀取時會依 Department 自動判斷後轉成新的選項值。
+var DEV_ASSET_TYPE_LEGACY_EXPENSE = '費用';
+var DEV_ASSET_TYPES_ACCEPTED = DEV_ASSET_TYPES.concat([DEV_ASSET_TYPE_LEGACY_EXPENSE]);
+
+// 資產類型 -> 攤提落點科目。畫面上會把落點科目直接寫在每一列旁邊，
+// 讓「開發總投填的錢跑去哪個科目」是看得見的，不必回頭翻文件。
+var DEV_ASSET_TYPE_TARGET = {
+  '模具': 'b5',
+  '設備': 'b8',
+  '費用-CMC': 'f3',
+  '費用-BASE廠': 'f4'
+};
 
 // Parameters 依用途分兩組管理：稅務/費用比率(0~100 百分比) vs 匯率設定(原始匯率數值)。
 // 貨物稅完稅價格計算率：貨物稅完稅價格 = (廠價 - 水平配件外移調降 - 廣促margin) × 本率 ÷ (1+貨物稅率)，
@@ -163,7 +179,8 @@ var DEFAULT_PARAMS = {
   '現況匯率': 1
 };
 
-var DEV_INVESTMENT_BASE_FACTORY_DEPT = 'BASE廠開發費'; // Department 欄位用這個值標記 f4 的攤提來源
+// 舊資料轉換用：資產類型還是舊的「費用」時，Department 等於這個值就視為 f4(BASE廠)，其餘為 f3(CMC)。
+var DEV_INVESTMENT_BASE_FACTORY_DEPT = 'BASE廠開發費';
 
 // ChallengeReductionPct 同樣以百分比數值(0~100)輸入及儲存(如 15 代表 15%)。
 // 挑戰低減目標屬於情境層級的假設：同一個 GATE 下的「現況」與「目標」情境各自填自己的低減目標，

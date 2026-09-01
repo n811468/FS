@@ -314,35 +314,34 @@ function getComparisonOptions() {
 function amortizeDevInvestmentPerUnit_(scenarioId) {
   var devRows = getDevInvestment(scenarioId);
   var totalUnits = getLifeCycleUnits(scenarioId);
-  var empty = { moldPerUnit: 0, equipPerUnit: 0, cmcExpensePerUnit: 0, baseExpensePerUnit: 0, totalUnits: totalUnits };
+  var empty = {
+    moldPerUnit: 0, equipPerUnit: 0, cmcExpensePerUnit: 0, baseExpensePerUnit: 0,
+    totalsByLine: { b5: 0, b8: 0, f3: 0, f4: 0 }, totalUnits: totalUnits
+  };
   if (totalUnits <= 0) return empty;
 
   // 現況情境沒有挑戰低減目標，一律用原始金額；目標情境才套用低減率。
   var isBaseline = isBaselineScenario_(scenarioId);
   var params = getParameters(scenarioId);
 
-  var moldTotal = 0, equipTotal = 0, cmcExpenseTotal = 0, baseExpenseTotal = 0;
+  // 依「攤提落點科目」分組，落點由 AssetType 直接決定(舊的「費用」才需要看 Department)
+  var totals = { b5: 0, b8: 0, f3: 0, f4: 0 };
   devRows.forEach(function (r) {
     // 投入金額可用外幣登打(如 BASE廠開發費以 CNY 計)，換算方式與銷貨成本一致
     var amount = toNumber_(r.Amount) * fxRateFor_(params, r.Currency, '');
     // ChallengeReductionPct 以 0~100 的百分比數值儲存(如 15 代表 15%)
     var reduced = amount * (isBaseline ? 1 : 1 - pct_(r.ChallengeReductionPct));
-    if (r.AssetType === '模具') {
-      moldTotal += reduced;
-    } else if (r.AssetType === '設備') {
-      equipTotal += reduced;
-    } else if (r.Department === DEV_INVESTMENT_BASE_FACTORY_DEPT) {
-      baseExpenseTotal += reduced;
-    } else {
-      cmcExpenseTotal += reduced;
-    }
+    var target = devAmortTargetOf_(r);
+    if (totals[target] === undefined) return;   // 沒選資產類型的列不攤提(儲存時已擋下有金額卻沒選的情形)
+    totals[target] += reduced;
   });
 
   return {
-    moldPerUnit: moldTotal / totalUnits,
-    equipPerUnit: equipTotal / totalUnits,
-    cmcExpensePerUnit: cmcExpenseTotal / totalUnits,
-    baseExpensePerUnit: baseExpenseTotal / totalUnits,
+    moldPerUnit: totals.b5 / totalUnits,
+    equipPerUnit: totals.b8 / totalUnits,
+    cmcExpensePerUnit: totals.f3 / totalUnits,
+    baseExpensePerUnit: totals.f4 / totalUnits,
+    totalsByLine: totals,
     totalUnits: totalUnits
   };
 }
@@ -380,23 +379,41 @@ function getSalesMixLifeCycleUnits(scenarioId) {
 function getDevInvestmentSummary(scenarioId) {
   var perUnit = amortizeDevInvestmentPerUnit_(scenarioId);
   var isBaseline = isBaselineScenario_(scenarioId);
+  var lineNames = {};
+  getPLLineItems().forEach(function (d) { lineNames[d.LineCode] = d.LineName; });
+
   var rows = getDevInvestment(scenarioId).map(function (r) {
     var pctValue = isBaseline ? 0 : toNumber_(r.ChallengeReductionPct);
+    var target = devAmortTargetOf_(r);
     return {
       RowID: r.RowID,
       Department: r.Department,
-      AssetType: r.AssetType,
+      // 舊的「費用」在這裡就轉成新的選項值，使用者一存檔就跟著寫回去
+      AssetType: normalizeDevAssetType_(r),
       Currency: r.Currency || BASE_CURRENCY,
       Notes: r.Notes || '',
       Amount: toNumber_(r.Amount),
       ChallengeReductionPct: pctValue,
-      ReducedAmount: toNumber_(r.Amount) * (1 - pctValue / 100)
+      ReducedAmount: toNumber_(r.Amount) * (1 - pctValue / 100),
+      // 這一列的錢會攤到哪個科目，直接寫在畫面上
+      TargetLineCode: target,
+      TargetLineName: target ? (lineNames[target] || target) : ''
     };
   });
   var scenario = getScenarios().filter(function (s) { return s.ScenarioID === scenarioId; })[0] || {};
   return {
     lifeCycleUnits: perUnit.totalUnits,
     salesMixLifeCycleUnits: getSalesMixLifeCycleUnits(scenarioId),
+    assetTypes: DEV_ASSET_TYPES,
+    // 每個落點科目的投資總額(低減後)與單台攤提，讓「開發總投 → 損益科目」對得起來
+    targets: DEV_ASSET_TYPES.map(function (type) {
+      var code = DEV_ASSET_TYPE_TARGET[type];
+      return {
+        AssetType: type, LineCode: code, LineName: lineNames[code] || code,
+        Total: perUnit.totalsByLine[code] || 0,
+        PerUnit: perUnit.totalUnits ? (perUnit.totalsByLine[code] || 0) / perUnit.totalUnits : 0
+      };
+    }),
     amortMonthlyVolume: scenario.AmortMonthlyVolume === undefined ? '' : scenario.AmortMonthlyVolume,
     amortLifeCycleYears: scenario.AmortLifeCycleYears === undefined ? '' : scenario.AmortLifeCycleYears,
     currencies: getConfiguredCurrencies(scenarioId),
