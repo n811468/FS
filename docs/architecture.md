@@ -128,8 +128,8 @@ DevInvestment → 單台成本分攤邏輯（對應 Excel 的 CMC單台/BASE廠�
   - 存檔成功後自動呼叫 `calculatePL()` 更新儀表板快取
 
 - **dashboard.html**：
-  - 上方：情境選擇器（下拉選單，可複選比較，如「現況」vs「目標」）
-  - 中間：損益表（依 PLLineItems 科目順序，逐車型 + 加權平均欄）
+  - 上方：車型選擇器（第一層，選擇 DA/DE/DH/DX 等）＋ 情境選擇器（第二層，隸屬所選車型，如「現況」vs「目標」）
+  - 中間：損益表（依 PLLineItems 科目順序，逐車系 + 加權平均欄）
   - 下方：圖表（收入結構堆疊圖、成本結構圓餅圖、多情境營業淨利對比長條圖）— 用 Chart.js（Apps Script HTML Service 可直接掛 CDN script）
 
 ---

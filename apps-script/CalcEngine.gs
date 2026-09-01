@@ -18,7 +18,10 @@ function calculatePL(scenarioId, vehicleId) {
 
   var listPrice = toNumber_(salesMixRow.ListPriceTaxIncl);
   var accessoryPrice = toNumber_(salesMixRow.MandatoryAccessoryPrice);
-  var scrapFee = toNumber_(salesMixRow.ScrapFee);
+  var scrapFeeRaw = toNumber_(salesMixRow.ScrapFee);
+  // 廢車處理費可能用含稅或未稅金額登打，一律換算成含稅金額後再扣，
+  // 確保跟 ListPriceTaxIncl(含稅零售價)口徑一致，全份損益試算稅別才不會混用。
+  var scrapFee = salesMixRow.ScrapFeeTaxStatus === '未稅' ? scrapFeeRaw * (1 + taxRate) : scrapFeeRaw;
 
   var actualRetailPrice = listPrice - scrapFee; // ③
   var salesTax = actualRetailPrice - actualRetailPrice / (1 + taxRate); // 內含稅反推
@@ -117,7 +120,8 @@ function amortizeDevInvestmentPerUnit_(scenarioId) {
 
   var cmcTotal = 0, baseTotal = 0;
   devRows.forEach(function (r) {
-    var reduced = toNumber_(r.Amount) * (1 - toNumber_(r.ChallengeReductionPct));
+    // ChallengeReductionPct 以 0~100 的百分比數值儲存(如 15 代表 15%)，換算時需 /100。
+    var reduced = toNumber_(r.Amount) * (1 - toNumber_(r.ChallengeReductionPct) / 100);
     if (r.Department === DEV_INVESTMENT_BASE_FACTORY_DEPT) {
       baseTotal += reduced;
     } else {

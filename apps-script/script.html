@@ -4,26 +4,33 @@
  * 表單與表格會自動產生，不用每個分頁各寫一份 HTML/JS。
  * ------------------------------------------------------------- */
 const ENTITIES = {
-  vehicles: {
-    label: '車型主檔', pk: 'VehicleID',
-    getFn: 'getVehicles', saveFn: 'saveVehicle', deleteFn: 'deleteVehicle',
-    scoped: false,
+  vehicletypes: {
+    label: '車型主檔', pk: 'VehicleTypeID',
+    getFn: 'getVehicleTypes', saveFn: 'saveVehicleType', deleteFn: 'deleteVehicleType',
+    scopedBy: null,
     fields: [
-      { name: 'VehicleID', label: '車型代號', required: true },
-      { name: 'VehicleSeries', label: '車系(如DA)' },
-      { name: 'VehicleCode', label: '車型名稱(如9人客貨車)' },
-      { name: 'Status', label: '狀態', type: 'select', options: ['現況', '開發中', '量產'] },
+      { name: 'VehicleTypeID', label: '車型代號(如DA)', required: true },
+      { name: 'VehicleTypeName', label: '車型名稱' },
+      { name: 'Notes', label: '備註' }
+    ]
+  },
+  vehicles: {
+    label: '車系設定', pk: 'VehicleID',
+    getFn: 'getVehicles', saveFn: 'saveVehicle', deleteFn: 'deleteVehicle',
+    scopedBy: 'vehicleType',
+    fields: [
+      { name: 'VehicleID', label: '車系代號(如DA-3T)', required: true },
+      { name: 'VehicleCode', label: '車系名稱(如3人貨車/9人客貨車)' },
       { name: 'Notes', label: '備註' }
     ]
   },
   scenarios: {
-    label: '情境主檔', pk: 'ScenarioID',
+    label: '情境設定', pk: 'ScenarioID',
     getFn: 'getScenarios', saveFn: 'saveScenario', deleteFn: 'deleteScenario',
-    scoped: false,
+    scopedBy: 'vehicleType',
     fields: [
       { name: 'ScenarioID', label: '情境代號', required: true },
       { name: 'ScenarioName', label: '情境名稱(如目標/現況)' },
-      { name: 'VehicleSeries', label: '車系' },
       { name: 'BaseScenarioID', label: '衍生自(情境代號)' },
       { name: 'CreatedDate', label: '建立日期', type: 'date' },
       { name: 'Notes', label: '備註' }
@@ -32,29 +39,29 @@ const ENTITIES = {
   salesmix: {
     label: '銷售構成與售價', pk: 'RowID',
     getFn: 'getSalesMix', saveFn: 'saveSalesMixRow', deleteFn: 'deleteSalesMixRow',
-    scoped: true,
+    scopedBy: 'scenario',
     fields: [
       { name: 'RowID', label: 'RowID', readOnlyOnEdit: true, hiddenOnCreate: true },
-      { name: 'VehicleID', label: '車型代號', required: true },
+      { name: 'VehicleID', label: '車系代號', required: true, type: 'select', dynamicVehicleOptions: true },
       { name: 'SalesMixPct', label: '銷售構成比(0~1)', type: 'number' },
       { name: 'MonthlyVolume', label: '預估銷售台數(月)', type: 'number' },
       { name: 'LifeCycleYears', label: 'LC年限', type: 'number' },
       { name: 'ListPriceTaxIncl', label: '建議零售價(含稅)', type: 'number' },
       { name: 'MandatoryAccessoryPrice', label: '強配件售價', type: 'number' },
       { name: 'ScrapFee', label: '廢車處理費', type: 'number' },
+      { name: 'ScrapFeeTaxStatus', label: '廢車處理費稅別', type: 'select', options: ['含稅', '未稅'] },
       { name: 'EffectiveDate', label: '生效日', type: 'date' },
       { name: 'Notes', label: '備註' }
     ]
   },
   materialcost: {
-    label: '材料成本', pk: 'RowID',
+    label: '材料成本(銷貨成本)', pk: 'RowID',
     getFn: 'getMaterialCost', saveFn: 'saveMaterialCostRow', deleteFn: 'deleteMaterialCostRow',
-    scoped: true,
+    scopedBy: 'scenario',
     fields: [
       { name: 'RowID', label: 'RowID', hiddenOnCreate: true },
-      { name: 'VehicleID', label: '車型代號', required: true },
-      { name: 'CostType', label: '採購模式', type: 'select', options: ['LP', 'KD'] },
-      { name: 'CostCategory', label: '成本項目', type: 'select', optionsFn: 'getMaterialCostCategories' },
+      { name: 'VehicleID', label: '車系代號', required: true, type: 'select', dynamicVehicleOptions: true },
+      { name: 'CostCategory', label: '成本項目(LP/KD皆屬銷貨成本)', type: 'select', optionsFn: 'getMaterialCostCategories' },
       { name: 'Amount', label: '金額', type: 'number' },
       { name: 'Currency', label: '幣別', type: 'select', options: ['TWD', 'CNY'] },
       { name: 'ExchangeRate', label: '匯率', type: 'number' },
@@ -65,14 +72,14 @@ const ENTITIES = {
   devinvestment: {
     label: '開發總投', pk: 'RowID',
     getFn: 'getDevInvestment', saveFn: 'saveDevInvestmentRow', deleteFn: 'deleteDevInvestmentRow',
-    scoped: true, scopedByVehicle: false,
+    scopedBy: 'scenario',
     fields: [
       { name: 'RowID', label: 'RowID', hiddenOnCreate: true },
-      { name: 'Department', label: '部門(可自行輸入新部門)', type: 'text-suggest', optionsFn: 'getKnownDepartments' },
+      { name: 'Department', label: '部門(可自行輸入新部門，逐列可刪除)', type: 'text-suggest', optionsFn: 'getKnownDepartments' },
       { name: 'AssetType', label: '資產類型', type: 'select', options: ['模具', '設備', '費用'] },
       { name: 'TNCAPFlag', label: 'TNCAP', type: 'select', options: ['對應TNCAP', '不對應TNCAP'] },
       { name: 'Amount', label: '金額', type: 'number' },
-      { name: 'ChallengeReductionPct', label: '挑戰低減目標%(0~1)', type: 'number' },
+      { name: 'ChallengeReductionPct', label: '挑戰低減目標%(請輸入0~100)', type: 'number' },
       { name: 'Notes', label: '備註' },
       { name: 'EffectiveDate', label: '生效日', type: 'date' }
     ]
@@ -80,10 +87,10 @@ const ENTITIES = {
   operatingexpense: {
     label: '營業費用(d/f1/h/J科目)', pk: 'RowID',
     getFn: 'getOperatingExpense', saveFn: 'saveOperatingExpenseRow', deleteFn: 'deleteOperatingExpenseRow',
-    scoped: true,
+    scopedBy: 'scenario',
     fields: [
       { name: 'RowID', label: 'RowID', hiddenOnCreate: true },
-      { name: 'VehicleID', label: '車型代號', required: true },
+      { name: 'VehicleID', label: '車系代號', required: true, type: 'select', dynamicVehicleOptions: true },
       { name: 'LineCode', label: '科目', type: 'select', options: [
         ['d1', 'd1 廣宣費用'], ['d2', 'd2 促銷'], ['d3', 'd3 批標售'], ['d4', 'd4 0.5%Margin'], ['d5', 'd5 索賠'],
         ['f1', 'f1 直接歸屬費用'], ['h1', 'h1 固定營業費用'], ['h3', 'h3 品牌廣宣費用'], ['h4', 'h4 特別加發'], ['J', 'J 前瞻費用']
@@ -93,22 +100,35 @@ const ENTITIES = {
       { name: 'EffectiveDate', label: '生效日', type: 'date' }
     ]
   },
-  parameters: {
-    label: '參數設定', pk: 'ParamID',
-    getFn: 'getParameters', saveFn: 'saveParameterRow', deleteFn: 'deleteParameterRow',
-    scoped: true,
+  paramrates: {
+    label: '參數設定 - 稅務/費用比率', pk: 'ParamID',
+    getFn: 'getTaxRateParameters', saveFn: 'saveParameterRow', deleteFn: 'deleteParameterRow',
+    scopedBy: 'scenario',
     fields: [
       { name: 'ParamID', label: 'ParamID', hiddenOnCreate: true },
-      { name: 'VehicleID', label: '車型代號(留空=全域)' },
-      { name: 'ParamName', label: '參數名稱', type: 'select', options: ['營業稅率', '銷售佣金率', '季Margin率', '貨物稅率', '集團預算匯率', '現況匯率'] },
+      { name: 'VehicleID', label: '車系代號(留空=全車系適用)', type: 'select', dynamicVehicleOptions: true },
+      { name: 'ParamName', label: '參數名稱', type: 'select', options: ['營業稅率', '銷售佣金率', '季Margin率', '貨物稅率'] },
       { name: 'Value', label: '數值(比率請輸入0~1小數)', type: 'number' },
+      { name: 'EffectiveDate', label: '生效日', type: 'date' }
+    ]
+  },
+  paramfx: {
+    label: '參數設定 - 匯率設定', pk: 'ParamID',
+    getFn: 'getFxParameters', saveFn: 'saveParameterRow', deleteFn: 'deleteParameterRow',
+    scopedBy: 'scenario',
+    fields: [
+      { name: 'ParamID', label: 'ParamID', hiddenOnCreate: true },
+      { name: 'VehicleID', label: '車系代號(留空=全車系適用)', type: 'select', dynamicVehicleOptions: true },
+      { name: 'ParamName', label: '參數名稱', type: 'select', options: ['集團預算匯率', '現況匯率'] },
+      { name: 'Value', label: '匯率數值', type: 'number' },
       { name: 'EffectiveDate', label: '生效日', type: 'date' }
     ]
   }
 };
 
+let currentVehicleTypeId = '';
 let currentScenarioId = '';
-let currentTab = 'vehicles';
+let currentTab = 'vehicletypes';
 
 function switchTab(key) {
   currentTab = key;
@@ -119,6 +139,33 @@ function switchTab(key) {
   } else if (ENTITIES[key]) {
     renderEntityPanel(key);
   }
+}
+
+function loadVehicleTypeSelector(preferredId) {
+  google.script.run
+    .withSuccessHandler(safeHandler(types => {
+      types = types || [];
+      const sel = document.getElementById('vehicletype-selector');
+      sel.innerHTML = '<option value="">-- 選擇車型 --</option>' +
+        types.map(t => `<option value="${t.VehicleTypeID}">${t.VehicleTypeID}${t.VehicleTypeName ? ' - ' + t.VehicleTypeName : ''}</option>`).join('');
+      const ids = types.map(t => t.VehicleTypeID);
+      const pick = (preferredId && ids.indexOf(preferredId) !== -1) ? preferredId
+        : (currentVehicleTypeId && ids.indexOf(currentVehicleTypeId) !== -1) ? currentVehicleTypeId
+        : ids[0] || '';
+      sel.value = pick;
+      onVehicleTypeChange(pick);
+    }))
+    .withFailureHandler(showGlobalError)
+    .getVehicleTypes();
+}
+
+function onVehicleTypeChange(value) {
+  currentVehicleTypeId = value;
+  currentScenarioId = '';
+  if (ENTITIES[currentTab] && ENTITIES[currentTab].scopedBy === 'vehicleType') {
+    renderEntityPanel(currentTab);
+  }
+  loadScenarioSelector();
 }
 
 function onScenarioChange(value) {
@@ -155,10 +202,15 @@ function safeHandler(fn) {
 }
 
 function loadScenarioSelector(preferredId) {
+  const sel = document.getElementById('scenario-selector');
+  if (!currentVehicleTypeId) {
+    sel.innerHTML = '<option value="">-- 請先選車型 --</option>';
+    onScenarioChange('');
+    return;
+  }
   google.script.run
     .withSuccessHandler(safeHandler(scenarios => {
       scenarios = scenarios || [];
-      const sel = document.getElementById('scenario-selector');
       sel.innerHTML = '<option value="">-- 選擇情境 --</option>' +
         scenarios.map(s => `<option value="${s.ScenarioID}">${s.ScenarioName || s.ScenarioID}</option>`).join('');
       const ids = scenarios.map(s => s.ScenarioID);
@@ -166,23 +218,23 @@ function loadScenarioSelector(preferredId) {
       const pick = (preferredId && ids.indexOf(preferredId) !== -1) ? preferredId
         : (currentScenarioId && ids.indexOf(currentScenarioId) !== -1) ? currentScenarioId
         : ids[0] || '';
-      if (pick) {
-        sel.value = pick;
-        onScenarioChange(pick);
-      } else {
-        currentScenarioId = '';
-      }
+      sel.value = pick;
+      onScenarioChange(pick);
     }))
     .withFailureHandler(showGlobalError)
-    .getScenarios();
+    .getScenarios(currentVehicleTypeId);
 }
 
 /* ---------------- 通用表單/表格渲染 ---------------- */
 function renderEntityPanel(key) {
   const cfg = ENTITIES[key];
   const panel = document.getElementById('panel-' + key);
-  if (cfg.scoped && !currentScenarioId) {
-    panel.innerHTML = '<p class="muted">請先在上方選擇情境</p>';
+  if (cfg.scopedBy === 'vehicleType' && !currentVehicleTypeId) {
+    panel.innerHTML = '<p class="muted">請先在上方選擇車型</p>';
+    return;
+  }
+  if (cfg.scopedBy === 'scenario' && (!currentVehicleTypeId || !currentScenarioId)) {
+    panel.innerHTML = '<p class="muted">請先在上方選擇車型與情境</p>';
     return;
   }
   panel.innerHTML = `
@@ -193,6 +245,7 @@ function renderEntityPanel(key) {
   `;
   renderForm(key, cfg);
   loadEntityData(key, cfg);
+  if (key === 'salesmix') renderSalesMixTools();
 }
 
 function renderForm(key, cfg) {
@@ -225,7 +278,16 @@ function renderForm(key, cfg) {
   `;
 
   cfg.fields.forEach(f => {
-    if (f.type === 'select' && f.options) {
+    if (f.dynamicVehicleOptions) {
+      // 車系代號選單依「目前選擇的車型」動態帶出底下的車系，而非固定選項或全域清單。
+      google.script.run
+        .withSuccessHandler(safeHandler(list => {
+          const sel = document.getElementById(`f-${key}-${f.name}`);
+          (list || []).forEach(v => sel.insertAdjacentHTML('beforeend', `<option value="${v.VehicleID}">${v.VehicleID}${v.VehicleCode ? ' - ' + v.VehicleCode : ''}</option>`));
+        }))
+        .withFailureHandler(showGlobalError)
+        .getVehicles(currentVehicleTypeId);
+    } else if (f.type === 'select' && f.options) {
       const sel = document.getElementById(`f-${key}-${f.name}`);
       f.options.forEach(opt => {
         const [val, text] = Array.isArray(opt) ? opt : [opt, opt];
@@ -259,7 +321,8 @@ function submitEntityForm(evt, key) {
   const cfg = ENTITIES[key];
   const rowObj = {};
   cfg.fields.forEach(f => { rowObj[f.name] = document.getElementById(`f-${key}-${f.name}`).value; });
-  if (cfg.scoped) rowObj.ScenarioID = currentScenarioId;
+  if (cfg.scopedBy === 'scenario') rowObj.ScenarioID = currentScenarioId;
+  if (cfg.scopedBy === 'vehicleType') rowObj.VehicleTypeID = currentVehicleTypeId;
 
   const statusEl = document.getElementById(`status-${key}`);
   statusEl.textContent = '儲存中...';
@@ -271,6 +334,7 @@ function submitEntityForm(evt, key) {
       statusEl.className = 'status-msg ok';
       resetForm(key);
       loadEntityData(key, cfg);
+      if (key === 'vehicletypes') loadVehicleTypeSelector(rowObj.VehicleTypeID);
       if (key === 'scenarios') loadScenarioSelector(rowObj.ScenarioID);
     })
     .withFailureHandler(err => {
@@ -282,7 +346,9 @@ function submitEntityForm(evt, key) {
 }
 
 function loadEntityData(key, cfg) {
-  const args = cfg.scoped ? [currentScenarioId] : [];
+  const args = cfg.scopedBy === 'scenario' ? [currentScenarioId]
+    : cfg.scopedBy === 'vehicleType' ? [currentVehicleTypeId]
+    : [];
   google.script.run
     .withSuccessHandler(safeHandler(rows => renderTable(key, cfg, rows || [])))
     .withFailureHandler(showGlobalError)
@@ -324,7 +390,43 @@ function editRow(key, rowObj) {
 function deleteRow(key, pkValue) {
   if (!confirm('確定要刪除這筆資料嗎？')) return;
   const cfg = ENTITIES[key];
-  google.script.run.withSuccessHandler(() => loadEntityData(key, cfg))[cfg.deleteFn](pkValue);
+  google.script.run.withSuccessHandler(() => {
+    loadEntityData(key, cfg);
+    if (key === 'vehicletypes') loadVehicleTypeSelector();
+    if (key === 'scenarios') loadScenarioSelector();
+  })[cfg.deleteFn](pkValue);
+}
+
+/* ---------------- 銷售構成：台數/百分比雙向換算工具列 ---------------- */
+function renderSalesMixTools() {
+  const panel = document.getElementById('panel-salesmix');
+  const tableContainer = document.getElementById('table-container-salesmix');
+  const toolbar = document.createElement('div');
+  toolbar.className = 'toolbar';
+  toolbar.innerHTML = `
+    <button type="button" class="btn secondary" onclick="recalcSalesMixByVolume()">依台數重算百分比</button>
+    <label style="display:flex;align-items:center;gap:6px;">
+      情境總銷售台數(月)：<input id="salesmix-total-volume" type="number" step="any" style="width:100px;">
+    </label>
+    <button type="button" class="btn secondary" onclick="recalcSalesMixByPct()">依百分比反推台數</button>
+    <span class="muted">LIFE CYCLE總台數 = 預估銷售台數(月) &times; 12 &times; LC年限，於損益試算時自動計算</span>
+  `;
+  panel.insertBefore(toolbar, tableContainer);
+}
+
+function recalcSalesMixByVolume() {
+  google.script.run
+    .withSuccessHandler(safeHandler(rows => renderTable('salesmix', ENTITIES.salesmix, rows || [])))
+    .withFailureHandler(showGlobalError)
+    .recalcSalesMixPctByVolume(currentScenarioId);
+}
+
+function recalcSalesMixByPct() {
+  const total = document.getElementById('salesmix-total-volume').value;
+  google.script.run
+    .withSuccessHandler(safeHandler(rows => renderTable('salesmix', ENTITIES.salesmix, rows || [])))
+    .withFailureHandler(showGlobalError)
+    .recalcSalesMixVolumeByPct(currentScenarioId, total);
 }
 
 /* ---------------- 儀表板 ---------------- */
@@ -417,7 +519,7 @@ function runDiagnostics() {
 /* ---------------- 初始化 ---------------- */
 window.addEventListener('DOMContentLoaded', () => {
   google.charts.load('current', { packages: ['corechart'] });
-  loadScenarioSelector();
-  switchTab('vehicles');
+  switchTab('vehicletypes');
+  loadVehicleTypeSelector();
 });
 </script>

@@ -4,6 +4,7 @@
  */
 
 var SHEETS = {
+  VEHICLE_TYPES: 'VehicleTypes',
   VEHICLES: 'Vehicles',
   SCENARIOS: 'Scenarios',
   SALES_MIX: 'SalesMix',
@@ -16,12 +17,15 @@ var SHEETS = {
 };
 
 // 每張表的欄位順序，同時作為 Sheet 標題列與 Apps Script 讀寫時的欄位對應。
+// 車型階層：VehicleTypes(車型，如 DA) 為上層主檔，Vehicles(車系，如 3人貨車) 為下層，
+// 需先在「車型主檔」選擇/建立車型，才能在「車系設定」底下新增車系。
 var SCHEMA = {
-  Vehicles: ['VehicleID', 'VehicleSeries', 'VehicleCode', 'Status', 'Notes'],
-  Scenarios: ['ScenarioID', 'ScenarioName', 'VehicleSeries', 'BaseScenarioID', 'CreatedBy', 'CreatedDate', 'Notes'],
+  VehicleTypes: ['VehicleTypeID', 'VehicleTypeName', 'Notes'],
+  Vehicles: ['VehicleID', 'VehicleTypeID', 'VehicleCode', 'Notes'],
+  Scenarios: ['ScenarioID', 'ScenarioName', 'VehicleTypeID', 'BaseScenarioID', 'CreatedBy', 'CreatedDate', 'Notes'],
   SalesMix: ['RowID', 'ScenarioID', 'VehicleID', 'SalesMixPct', 'MonthlyVolume', 'LifeCycleYears',
-    'ListPriceTaxIncl', 'MandatoryAccessoryPrice', 'ScrapFee', 'EffectiveDate', 'Notes'],
-  MaterialCost: ['RowID', 'ScenarioID', 'VehicleID', 'CostType', 'CostCategory', 'LineCode',
+    'ListPriceTaxIncl', 'MandatoryAccessoryPrice', 'ScrapFee', 'ScrapFeeTaxStatus', 'EffectiveDate', 'Notes'],
+  MaterialCost: ['RowID', 'ScenarioID', 'VehicleID', 'CostCategory', 'LineCode',
     'Amount', 'Currency', 'ExchangeRate', 'Source', 'EffectiveDate'],
   DevInvestment: ['RowID', 'ScenarioID', 'Department', 'AssetType', 'TNCAPFlag',
     'Amount', 'ChallengeReductionPct', 'Notes', 'EffectiveDate'],
@@ -30,6 +34,13 @@ var SCHEMA = {
   PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'SortOrder'],
   PLResult: ['ResultID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'PctOfRevenue', 'CalcTimestamp']
 };
+
+// 廢車處理費稅別選項：讓損益試算全程稅別口徑一致(一律換算為含稅金額後再從零售價扣除)。
+var SCRAP_FEE_TAX_STATUS = ['含稅', '未稅'];
+
+// Parameters 依用途分兩組管理：稅務/費用比率 vs 匯率設定(對應「參數設定」頁面拆分需求)。
+var TAX_RATE_PARAM_NAMES = ['營業稅率', '銷售佣金率', '季Margin率', '貨物稅率'];
+var FX_PARAM_NAMES = ['集團預算匯率', '現況匯率'];
 
 // 材料成本 CostCategory -> B 科目代碼對應（銷貨成本 b1~b13）
 var MATERIAL_COST_LINE_MAP = {
@@ -94,3 +105,6 @@ var DEFAULT_PARAMS = {
 };
 
 var DEV_INVESTMENT_BASE_FACTORY_DEPT = 'BASE廠開發費'; // Department 欄位用這個值標記 f4 的攤提來源
+
+// ChallengeReductionPct 以「百分比數值(0~100)」輸入及儲存(如 15 代表 15%)，
+// 與其他比例欄位存小數(0~1)的慣例不同，CalcEngine 換算低減後金額時需 /100。

@@ -8,6 +8,10 @@
   <header>
     <h1>車型損益試算系統</h1>
     <label style="color:#fff; font-size:13px; display:flex; align-items:center; gap:6px;">
+      車型：
+      <select id="vehicletype-selector" onchange="onVehicleTypeChange(this.value)"></select>
+    </label>
+    <label style="color:#fff; font-size:13px; display:flex; align-items:center; gap:6px;">
       情境：
       <select id="scenario-selector" onchange="onScenarioChange(this.value)"></select>
     </label>
@@ -18,24 +22,28 @@
   <div id="global-error" style="display:none; background:#fed7d7; color:#822727; padding:10px 20px; font-size:13px;"></div>
 
   <nav>
-    <button data-tab="vehicles" class="active" onclick="switchTab('vehicles')">車型主檔</button>
+    <button data-tab="vehicletypes" class="active" onclick="switchTab('vehicletypes')">車型主檔</button>
+    <button data-tab="vehicles" onclick="switchTab('vehicles')">車系設定</button>
     <button data-tab="scenarios" onclick="switchTab('scenarios')">情境設定</button>
     <button data-tab="salesmix" onclick="switchTab('salesmix')">銷售構成</button>
     <button data-tab="materialcost" onclick="switchTab('materialcost')">材料成本</button>
     <button data-tab="devinvestment" onclick="switchTab('devinvestment')">開發總投</button>
     <button data-tab="operatingexpense" onclick="switchTab('operatingexpense')">營業費用</button>
-    <button data-tab="parameters" onclick="switchTab('parameters')">參數設定</button>
+    <button data-tab="paramrates" onclick="switchTab('paramrates')">稅務費用比率</button>
+    <button data-tab="paramfx" onclick="switchTab('paramfx')">匯率設定</button>
     <button data-tab="dashboard" onclick="switchTab('dashboard')">損益儀表板</button>
   </nav>
 
   <main>
-    <div id="panel-vehicles" class="panel active"></div>
+    <div id="panel-vehicletypes" class="panel active"></div>
+    <div id="panel-vehicles" class="panel"></div>
     <div id="panel-scenarios" class="panel"></div>
     <div id="panel-salesmix" class="panel"></div>
     <div id="panel-materialcost" class="panel"></div>
     <div id="panel-devinvestment" class="panel"></div>
     <div id="panel-operatingexpense" class="panel"></div>
-    <div id="panel-parameters" class="panel"></div>
+    <div id="panel-paramrates" class="panel"></div>
+    <div id="panel-paramfx" class="panel"></div>
     <div id="panel-dashboard" class="panel">
       <h3>損益儀表板 &mdash; <span class="scenario-label">(尚未選擇情境)</span></h3>
       <button class="btn" onclick="refreshDashboard()">重新計算</button>

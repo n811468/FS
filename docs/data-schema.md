@@ -17,26 +17,41 @@
 
 ## 2. 分頁（表）設計
 
-### 2.1 `Vehicles` 車型主檔
+### 2.0 `VehicleTypes` 車型主檔（上層）
+
+前端最上層的選單單位。使用者必須先在這裡選擇/建立車型（如 `DA`），
+才能在下層 `Vehicles`（車系）新增資料 —— 車系不能脫離車型獨立存在。
+
+| 欄位 | 型別 | 說明 |
+|---|---|---|
+| VehicleTypeID (PK) | text | 車型代號，如 `DA`、`DE`、`DH`、`DX` |
+| VehicleTypeName | text | 車型名稱（選填） |
+| Notes | text | 備註 |
+
+### 2.1 `Vehicles` 車系設定（下層，隸屬某個車型）
 
 | 欄位 | 型別 | 說明 |
 |---|---|---|
 | VehicleID (PK) | text | 如 `DA-3T`、`DA-9C`、`DA-9P` |
-| VehicleSeries | text | 車系，如 DA / DE / DH / DX |
-| VehicleCode | text | 車型名稱：3人貨車 / 9人客貨車(商用) / 9人客貨車(接駁) / 幼童車 / 福祉車 |
-| Status | text | 現況 / 開發中 / 量產 |
+| VehicleTypeID (FK) | text | 對應 `VehicleTypes.VehicleTypeID`，如 `DA` |
+| VehicleCode | text | 車系名稱：3人貨車 / 9人客貨車(商用) / 9人客貨車(接駁) / 幼童車 / 福祉車 |
 | Notes | text | 備註 |
+
+> 不再有 `Status`（現況/開發中/量產）欄位；車型只有「存在/不存在」兩種狀態，
+> 不需要的車系直接在「車系設定」頁面刪除即可。
 
 ### 2.2 `Scenarios` 情境主檔
 
 損益試算常需要多情境比較（現況 vs 目標 vs 已知低減方向 vs DE基準 vs DH目標），
 所有交易表都用 `ScenarioID` 做區隔，同一車型可以有多筆情境版本。
+前端導覽以「車型」為第一層選單，「情境」是車型底下的第二層選單，
+切換車型後情境選單會重新載入該車型專屬的情境清單。
 
 | 欄位 | 型別 | 說明 |
 |---|---|---|
 | ScenarioID (PK) | text | 如 `SC-2026-CURRENT`、`SC-2026-TARGET` |
 | ScenarioName | text | 現況 / 目標 / 已知低減方向 / DE次車型定價 / DH目標成本 |
-| VehicleSeries | text | 對應車系 |
+| VehicleTypeID (FK) | text | 對應 `VehicleTypes.VehicleTypeID` |
 | BaseScenarioID | text | 若為情境衍生（如「目標」衍生自「現況」），記來源 |
 | CreatedBy / CreatedDate | text/date | 建立者、日期 |
 | Locked | boolean | 是否鎖定（避免定案後誤改） |
@@ -57,20 +72,31 @@
 | ListPriceTaxIncl | currency | 建議零售價(含稅) |
 | MandatoryAccessoryPrice | currency | 強配件售價 |
 | ScrapFee | currency | 廢車處理費 |
+| ScrapFeeTaxStatus | text | 含稅 / 未稅 —— 標明 `ScrapFee` 是否已含稅，CalcEngine 一律換算成含稅金額後再從零售價扣除，確保全份損益試算稅別口徑一致 |
 | EffectiveDate | date | 生效日 |
 | Notes | text | |
 
 > 廠價(未稅)、實際零售價、營業稅、銷售佣金等屬於**計算欄位**，不落地存，由 CalcEngine 用 `Parameters` 的稅率/佣金率即時算出並寫入 `PLResult`。
+>
+> **LIFE CYCLE 總台數**（供 `DevInvestment` 單台攤提使用）= `MonthlyVolume × 12 × LifeCycleYears`，屬計算欄位不落地存。
+>
+> **銷售構成雙向輸入**：`SalesMixPct`（百分比）與 `MonthlyVolume`（台數）兩欄位皆可直接輸入；
+> 前端「銷售構成」頁面提供「依台數重算百分比」「依百分比反推台數」兩個工具按鈕，
+> 呼叫 `recalcSalesMixPctByVolume(scenarioId)` / `recalcSalesMixVolumeByPct(scenarioId, totalMonthlyVolume)`
+> 對同一情境（= 同一車型）下的所有車系列做批次換算並回寫。
 
-### 2.4 `MaterialCost` 材料成本明細
+### 2.4 `MaterialCost` 材料成本明細（銷貨成本，不分採購模式）
+
+材料成本試算即銷貨成本（B 科目 b1~b13），LP（在地採購）與 KD（進口）皆為成本項目，
+不再另立「採購模式」欄位；LP/KD 的區分已內含在 `CostCategory`（如「材料成本-LP」「材料成本-KD」）
+與其對應的 `LineCode`（b1/b2）之中。
 
 | 欄位 | 型別 | 說明 |
 |---|---|---|
 | RowID (PK) | text | |
 | ScenarioID (FK) | text | |
 | VehicleID (FK) | text | |
-| CostType | text | LP（在地採購）/ KD（進口） |
-| CostCategory | text | 式樣調整 / VAVE / 座椅 / 車身 / 電池 / K件 / 一般材料 / 水平配件 / 新增專屬設備 / 內陸運雜 / 模具費用 / 直接人工 / 製造費用 / 技酬金 / 防鏽 / 廢棄物處理及包材 / 貨物稅 |
+| CostCategory | text | 材料成本-LP / 材料成本-KD / 內陸運雜 / 強配成本 / 一般材料 / 模具費用 / 直接人工 / 製造費用 / 新增專屬設備 / 技酬金 / 水平配件 / 防鏽 / 廢棄物處理及包材 / 貨物稅 |
 | Amount | currency | |
 | Currency | text | TWD / CNY |
 | ExchangeRate | number | 若原幣別非 TWD |
@@ -85,11 +111,11 @@
 |---|---|---|
 | RowID (PK) | text | |
 | ScenarioID (FK) | text | |
-| Department | text | 產專室 / 產工部 / 試驗部 / 開發部 / 電電部 / 前瞻技術室 / 造型部 / 生技部 / 品管部 / 楊梅廠 / 新竹廠 / 業務部 / 服務部 / 生管部 |
+| Department | text | 部門自由新增/刪除（如產專室 / 產工部 / 試驗部 / 開發部...），每一列投入金額皆可獨立刪除，不受限於固定清單 |
 | AssetType | text | 模具 / 設備 / 費用 |
 | TNCAPFlag | text | 對應TNCAP / 不對應TNCAP |
 | Amount | currency | 原始投入金額 |
-| ChallengeReductionPct | % | 挑戰低減目標% |
+| ChallengeReductionPct | number | 挑戰低減目標%，以 0~100 的百分比數值輸入/儲存（如 15 代表 15%），與其他比例欄位存小數(0~1)的慣例不同 |
 | Notes | text | |
 | EffectiveDate | date | |
 
@@ -97,11 +123,15 @@
 
 ### 2.6 `Parameters` 參數設定
 
+前端拆成兩個獨立分頁籤管理（底層仍是同一張 `Parameters` 表，只是依 `ParamName` 篩選）：
+- **稅務/費用比率**：營業稅率 / 銷售佣金率 / 季Margin率 / 貨物稅率
+- **匯率設定**：集團預算匯率 / 現況匯率
+
 | 欄位 | 型別 | 說明 |
 |---|---|---|
 | ParamID (PK) | text | |
 | ScenarioID | text | 空白代表全域預設值 |
-| VehicleID | text | 空白代表不分車型（如佣金率因車型而異時才填） |
+| VehicleID | text | 空白代表不分車系（如佣金率因車系而異時才填） |
 | ParamName | text | 營業稅率 / 銷售佣金率 / 貨物稅率 / 季Margin率 / 集團預算匯率 / 現況匯率 |
 | Value | number | |
 | EffectiveDate | date | |
@@ -171,17 +201,18 @@
 ## 3. 資料表關聯
 
 ```
-Vehicles ──┬──< SalesMix >──┐
-           ├──< MaterialCost >──┤
-           └──< DevInvestment(部門別，不綁單一車型) >──┤
+VehicleTypes ──< Vehicles(車系) ──┬──< SalesMix >──┐
+                                   ├──< MaterialCost >──┤
+                                   └──< DevInvestment(部門別，不綁單一車系) >──┤
+VehicleTypes ──< Scenarios ────────────────────────────┤
                                                           ├─ Scenarios
 Parameters ───(依 ScenarioID/VehicleID 查詢)──────────────┤
                                                           │
 PLLineItems ──(靜態科目表)──> CalcEngine ──> PLResult >──┘
 ```
 
-- `DevInvestment` 是「部門別」層級，不直接綁車型；分攤到車型時透過 `SalesMix` 的 `LifeCycleYears × MonthlyVolume` 算出的「總台數」比例分攤（對應 Excel 的 CMC單台 / BASE廠單台邏輯）。
-- 同一 `VehicleSeries` 下可以有多個 `ScenarioID`（現況/目標/已知低減方向），前端可並排比較。
+- 前端導覽順序：先選「車型」(`VehicleTypes`，如 DA)，車型底下管理「車系」(`Vehicles`，如 3人貨車/9人客貨車) 與「情境」(`Scenarios`)；情境是車型的次要選單，同一車型下可以有多個 `ScenarioID`（現況/目標/已知低減方向），前端可並排比較。
+- `DevInvestment` 是「部門別」層級，不直接綁車系；分攤到車系時透過 `SalesMix` 的 `LifeCycleYears × MonthlyVolume` 算出的「總台數」比例分攤（對應 Excel 的 CMC單台 / BASE廠單台邏輯）。
 
 ---
 

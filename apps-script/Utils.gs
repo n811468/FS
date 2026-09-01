@@ -93,7 +93,8 @@ function deleteRow_(sheetName, pkField, pkValue) {
 function rowIdPrefix_(sheetName) {
   var map = {
     SalesMix: 'SM', MaterialCost: 'MC', DevInvestment: 'DI',
-    OperatingExpense: 'OE', Parameters: 'PM', PLResult: 'PR'
+    OperatingExpense: 'OE', Parameters: 'PM', PLResult: 'PR',
+    VehicleTypes: 'VT', Vehicles: 'VH', Scenarios: 'SC'
   };
   return map[sheetName] || 'RW';
 }
