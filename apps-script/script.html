@@ -335,7 +335,8 @@ function renderSalesMixPanel() {
   if (!requireScope('salesmix', true)) return;
   const panel = document.getElementById('panel-salesmix');
   panel.innerHTML = gridShell('salesmix', '銷售構成與售價',
-    '車系由「車系設定」自動帶出。輸入車型月總台數後填構成比，台數會自動算出；直接改台數則構成比自動回算，兩者永遠一致。');
+    '車系由「車系設定」自動帶出。輸入車型月總台數後填構成比，台數會自動算出；直接改台數則構成比自動回算，兩者永遠一致。'
+    + '「水平配件外移調降廠價」會在計算貨物稅完稅價格時扣除，沒有就留空。');
   google.script.run
     .withSuccessHandler(safeHandler(data => {
       salesMixRows = data.rows || [];
@@ -367,7 +368,8 @@ function drawSalesMixGrid() {
     <table class="grid-table">
       <thead><tr>
         <th>車系</th><th>構成比%</th><th>月台數</th><th>LC年限</th><th>LC總台數</th>
-        <th>建議零售價(含稅)</th><th>強配件售價</th><th>廢車處理費</th><th>稅別</th><th>備註</th>
+        <th>建議零售價(含稅)</th><th>強配件售價</th><th>廢車處理費</th><th>稅別</th>
+        <th>水平配件外移調降廠價</th><th>備註</th>
       </tr></thead>
       <tbody>
         ${salesMixRows.map((r, i) => `
@@ -383,6 +385,7 @@ function drawSalesMixGrid() {
             <td><select onchange="onSalesMixField(${i}, 'ScrapFeeTaxStatus', this.value)">
               ${['含稅', '未稅'].map(o => `<option value="${o}"${r.ScrapFeeTaxStatus === o ? ' selected' : ''}>${o}</option>`).join('')}
             </select></td>
+            <td><input type="number" step="any" value="${esc(r.HorizontalPartsPriceAdj)}" oninput="onSalesMixField(${i}, 'HorizontalPartsPriceAdj', this.value)"></td>
             <td><input type="text" value="${esc(r.Notes)}" oninput="onSalesMixField(${i}, 'Notes', this.value)"></td>
           </tr>`).join('')}
       </tbody>
@@ -391,7 +394,7 @@ function drawSalesMixGrid() {
         <td id="sm-sum-pct" class="calc"></td>
         <td id="sm-sum-units" class="calc"></td>
         <td></td><td id="sm-sum-lc" class="calc"></td>
-        <td colspan="5"></td>
+        <td colspan="6"></td>
       </tr></tfoot>
     </table>`;
   updateSalesMixTotals();
@@ -413,7 +416,8 @@ function onSalesMixPctInput(i, value) {
   salesMixRows[i].SalesMixPct = value === '' ? '' : num(value);
   const total = num(val('sm-total'));
   if (total > 0) {
-    salesMixRows[i].MonthlyVolume = Math.round(num(value) / 100 * total);
+    // 台數保留小數：構成比 5% × 365 台 = 18.25 台，四捨五入會讓構成比對不回去
+    salesMixRows[i].MonthlyVolume = round2(num(value) / 100 * total);
   }
   syncSalesMixInputs({ skipPctIndex: i });
 }
@@ -422,7 +426,7 @@ function onSalesMixPctInput(i, value) {
 function onSalesMixTotalInput() {
   const total = num(val('sm-total'));
   if (total > 0) {
-    salesMixRows.forEach(r => { r.MonthlyVolume = Math.round(num(r.SalesMixPct) / 100 * total); });
+    salesMixRows.forEach(r => { r.MonthlyVolume = round2(num(r.SalesMixPct) / 100 * total); });
   }
   syncSalesMixInputs({});
 }
@@ -661,6 +665,7 @@ function renderDevInvestmentPanel() {
     isTarget
       ? '目標情境：可從其他情境整批帶入資料後，再逐列填挑戰低減目標%。'
       : '現況情境：不需要填挑戰低減目標（一律以原始金額計算）。若要做低減試算，請在情境設定新增一個「目標」情境。');
+  // 攤提基準台數可與銷售構成的預估台數不同（如銷售估 365 台/月，開發投資以 300 台/月 × 12 年攤提）
 
   google.script.run
     .withSuccessHandler(safeHandler(summary => {
@@ -679,6 +684,12 @@ function drawDevGrid() {
   document.getElementById('toolbar-devinvestment').innerHTML = `
     <button type="button" class="btn" onclick="saveDevGrid()">儲存</button>
     <button type="button" class="btn secondary" onclick="addDevRow()">新增一列</button>
+    <span class="toolbar-sep"></span>
+    <label style="display:flex;align-items:center;gap:6px;">攤提基準：
+      <input id="dev-amort-vol" type="number" step="any" style="width:80px;" value="${esc(devSummary.amortMonthlyVolume)}" placeholder="台/月"> 台/月 × 12 ×
+      <input id="dev-amort-years" type="number" step="any" style="width:60px;" value="${esc(devSummary.amortLifeCycleYears)}" placeholder="年"> 年
+    </label>
+    <button type="button" class="btn secondary" onclick="saveAmortBasis()">套用攤提基準</button>
     ${isTarget ? `
       <span class="toolbar-sep"></span>
       <label style="display:flex;align-items:center;gap:6px;">從其他情境帶入：
@@ -693,7 +704,7 @@ function drawDevGrid() {
   document.getElementById('grid-devinvestment').innerHTML = `
     <table class="grid-table">
       <thead><tr>
-        <th>部門</th><th>資產類型</th><th>金額</th>
+        <th>部門</th><th>資產類型</th><th>金額</th><th>幣別</th>
         ${isTarget ? '<th>挑戰低減目標%</th><th>低減後金額</th>' : ''}
         <th>備註</th><th></th>
       </tr></thead>
@@ -705,6 +716,9 @@ function drawDevGrid() {
               ${['', '模具', '設備', '費用'].map(o => `<option value="${o}"${r.AssetType === o ? ' selected' : ''}>${o || '(請選擇)'}</option>`).join('')}
             </select></td>
             <td><input type="number" step="any" value="${esc(r.Amount)}" oninput="onDevField(${i}, 'Amount', this.value)"></td>
+            <td><select onchange="onDevField(${i}, 'Currency', this.value)">
+              ${(devSummary.currencies || ['TWD']).map(c => `<option value="${c}"${(r.Currency || 'TWD') === c ? ' selected' : ''}>${c}</option>`).join('')}
+            </select></td>
             ${isTarget ? `
               <td><input type="number" step="any" value="${esc(r.ChallengeReductionPct)}" oninput="onDevField(${i}, 'ChallengeReductionPct', this.value)"></td>
               <td class="calc" id="dev-reduced-${i}">${fmt(num(r.Amount) * (1 - num(r.ChallengeReductionPct) / 100))}</td>` : ''}
@@ -715,7 +729,8 @@ function drawDevGrid() {
     </table>
     <datalist id="dev-departments"></datalist>
     <div class="summary-box">
-      <div><span class="muted">LIFE CYCLE 總台數</span><strong>${fmt(devSummary.lifeCycleUnits)}</strong></div>
+      <div><span class="muted">攤提用 LIFE CYCLE 總台數</span><strong>${fmt(devSummary.lifeCycleUnits)}</strong></div>
+      <div><span class="muted">銷售構成推算台數</span><strong>${fmt(devSummary.salesMixLifeCycleUnits)}</strong></div>
       <div><span class="muted">模具/台 (b5)</span><strong>${fmt(devSummary.perUnit.moldPerUnit)}</strong></div>
       <div><span class="muted">設備/台 (b8)</span><strong>${fmt(devSummary.perUnit.equipPerUnit)}</strong></div>
       <div><span class="muted">開發費-CMC/台 (f3)</span><strong>${fmt(devSummary.perUnit.cmcExpensePerUnit)}</strong></div>
@@ -734,12 +749,26 @@ function onDevField(i, field, value) {
   if (cell) cell.textContent = fmt(num(devRows[i].Amount) * (1 - num(devRows[i].ChallengeReductionPct) / 100));
 }
 function addDevRow() {
-  devRows.push({ RowID: '', Department: '', AssetType: '', Amount: '', ChallengeReductionPct: '', Notes: '' });
+  devRows.push({ RowID: '', Department: '', AssetType: '', Amount: '', Currency: 'TWD', ChallengeReductionPct: '', Notes: '' });
   drawDevGrid();
+}
+
+/** 攤提基準台數：開發投資的攤提台數常與銷售構成的預估台數不同，可獨立設定；留空則沿用銷售構成 */
+function saveAmortBasis() {
+  setStatus('devinvestment', '套用中...');
+  google.script.run
+    .withSuccessHandler(safeHandler(summary => {
+      devSummary = summary;
+      devRows = summary.rows.map(r => Object.assign({}, r));
+      drawDevGrid();
+      setStatus('devinvestment', '已套用攤提基準', 'ok');
+    }))
+    .withFailureHandler(err => setStatus('devinvestment', '錯誤：' + err.message, 'err'))
+    .saveAmortBasis(currentScenarioId, val('dev-amort-vol'), val('dev-amort-years'));
 }
 function removeDevRow(i) {
   // 清空欄位即可：儲存時後端會把空白列(含既有 RowID)刪掉
-  devRows[i] = { RowID: devRows[i].RowID, Department: '', AssetType: '', Amount: '', ChallengeReductionPct: '', Notes: '' };
+  devRows[i] = { RowID: devRows[i].RowID, Department: '', AssetType: '', Amount: '', Currency: 'TWD', ChallengeReductionPct: '', Notes: '' };
   drawDevGrid();
 }
 

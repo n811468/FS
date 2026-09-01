@@ -29,16 +29,17 @@ var SCHEMA = {
   VehicleTypes: ['VehicleTypeID', 'Notes'],
   Vehicles: ['VehicleID', 'VehicleTypeID', 'VehicleCode', 'Notes'],
   Scenarios: ['ScenarioID', 'Gate', 'ScenarioName', 'ScenarioType', 'VehicleTypeID',
-    'CreatedBy', 'CreatedDate', 'Notes'],
+    'AmortMonthlyVolume', 'AmortLifeCycleYears', 'CreatedBy', 'CreatedDate', 'Notes'],
   SalesMix: ['RowID', 'ScenarioID', 'VehicleID', 'SalesMixPct', 'MonthlyVolume', 'LifeCycleYears',
-    'ListPriceTaxIncl', 'MandatoryAccessoryPrice', 'ScrapFee', 'ScrapFeeTaxStatus', 'EffectiveDate', 'Notes'],
+    'ListPriceTaxIncl', 'MandatoryAccessoryPrice', 'ScrapFee', 'ScrapFeeTaxStatus',
+    'HorizontalPartsPriceAdj', 'EffectiveDate', 'Notes'],
   CostOfSales: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'Currency',
     'Notes', 'EffectiveDate'],
   DevInvestment: ['RowID', 'ScenarioID', 'Department', 'AssetType',
-    'Amount', 'ChallengeReductionPct', 'Notes', 'EffectiveDate'],
+    'Amount', 'Currency', 'ChallengeReductionPct', 'Notes', 'EffectiveDate'],
   OperatingExpense: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'Notes', 'EffectiveDate'],
   Parameters: ['ParamID', 'ScenarioID', 'VehicleID', 'ParamName', 'Currency', 'Value', 'EffectiveDate'],
-  PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'SortOrder', 'AutoSource'],
+  PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'SortOrder', 'AutoSource', 'CommodityTaxDeduct'],
   PLResult: ['ResultID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'PctOfRevenue', 'CalcTimestamp']
 };
 
@@ -58,7 +59,9 @@ var SCRAP_FEE_TAX_STATUS = ['含稅', '未稅'];
 var DEV_ASSET_TYPES = ['模具', '設備', '費用'];
 
 // Parameters 依用途分兩組管理：稅務/費用比率(0~100 百分比) vs 匯率設定(原始匯率數值)。
-var TAX_RATE_PARAM_NAMES = ['營業稅率', '銷售佣金率', '季Margin率', '貨物稅率'];
+// 貨物稅完稅價格計算率：貨物稅完稅價格 = (廠價 - 水平配件外移調降 - 廣促margin) × 本率 ÷ (1+貨物稅率)，
+// 對應實務上完稅價格的法定扣除（Gate F Excel 用 0.91）。
+var TAX_RATE_PARAM_NAMES = ['營業稅率', '銷售佣金率', '季Margin率', '貨物稅率', '貨物稅完稅價格計算率'];
 var FX_PARAM_NAMES = ['集團預算匯率', '現況匯率'];
 
 // 匯率設定以「幣別 × 匯率種類」管理，1 外幣 = Value 台幣。
@@ -77,8 +80,8 @@ var AUTO_SOURCE = {
   DEV_EQUIP: 'DEV_EQUIP',                  // 開發總投(設備) / LIFE CYCLE 總台數
   DEV_EXPENSE_CMC: 'DEV_EXPENSE_CMC',      // 開發總投(費用, CMC) / LIFE CYCLE 總台數
   DEV_EXPENSE_BASE: 'DEV_EXPENSE_BASE',    // 開發總投(費用, BASE廠) / LIFE CYCLE 總台數
-  RATE_COMMODITY_TAX: 'RATE_COMMODITY_TAX',// 廠價(未稅) × 貨物稅率
-  RATE_QUARTER_MARGIN: 'RATE_QUARTER_MARGIN' // 實際零售價(未稅) × 季Margin率
+  RATE_COMMODITY_TAX: 'RATE_COMMODITY_TAX',// 完稅價格 × 貨物稅率
+  RATE_QUARTER_MARGIN: 'RATE_QUARTER_MARGIN' // 廠價(未稅) × 季Margin率
 };
 
 // 結構科目(小計/毛利/淨利)與自動計算科目不允許在「科目設定」頁面刪除，
@@ -94,9 +97,9 @@ var PL_LINE_ITEMS = [
   { LineCode: 'P4', LineName: '廢車處理費(換算含稅)', ParentLine: '', Category: '售價結構', SortOrder: 4, AutoSource: AUTO_SOURCE.PRICE },
   { LineCode: 'P5', LineName: '實際零售價(含稅)(=P3-P4)', ParentLine: '', Category: '售價結構', SortOrder: 5, AutoSource: AUTO_SOURCE.PRICE },
   { LineCode: 'P6', LineName: '營業稅(=P5×稅率/(1+稅率))', ParentLine: '', Category: '售價結構', SortOrder: 6, AutoSource: AUTO_SOURCE.PRICE },
-  { LineCode: 'P7', LineName: '銷售佣金', ParentLine: '', Category: '售價結構', SortOrder: 7, AutoSource: AUTO_SOURCE.PRICE },
+  { LineCode: 'P7', LineName: '銷售佣金(=(P5-P6)×佣金率)', ParentLine: '', Category: '售價結構', SortOrder: 7, AutoSource: AUTO_SOURCE.PRICE },
   { LineCode: 'P8', LineName: '廠價(未稅)(=P5-P6-P7)', ParentLine: '', Category: '售價結構', SortOrder: 8, AutoSource: AUTO_SOURCE.PRICE },
-  { LineCode: 'P9', LineName: '強配收入', ParentLine: '', Category: '售價結構', SortOrder: 9, AutoSource: AUTO_SOURCE.PRICE },
+  { LineCode: 'P9', LineName: '強配收入(未稅)(=P2÷(1+稅率))', ParentLine: '', Category: '售價結構', SortOrder: 9, AutoSource: AUTO_SOURCE.PRICE },
 
   { LineCode: 'A', LineName: '收入(未稅,含強配)(=P8+P9)', ParentLine: '', Category: '收入', SortOrder: 10, AutoSource: '' },
   { LineCode: 'B', LineName: '銷貨成本合計', ParentLine: '', Category: '成本', SortOrder: 20, AutoSource: '' },
@@ -112,12 +115,12 @@ var PL_LINE_ITEMS = [
   { LineCode: 'b10', LineName: '水平配件', ParentLine: 'B', Category: '成本明細', SortOrder: 30, AutoSource: '' },
   { LineCode: 'b11', LineName: '防鏽', ParentLine: 'B', Category: '成本明細', SortOrder: 31, AutoSource: '' },
   { LineCode: 'b12', LineName: '廢棄物處理及包材', ParentLine: 'B', Category: '成本明細', SortOrder: 32, AutoSource: '' },
-  { LineCode: 'b13', LineName: '貨物稅(廠價×貨物稅率)', ParentLine: 'B', Category: '成本明細', SortOrder: 33, AutoSource: AUTO_SOURCE.RATE_COMMODITY_TAX },
+  { LineCode: 'b13', LineName: '貨物稅(完稅價格×貨物稅率)', ParentLine: 'B', Category: '成本明細', SortOrder: 33, AutoSource: AUTO_SOURCE.RATE_COMMODITY_TAX },
   { LineCode: 'C', LineName: '生產毛利(=A-B)', ParentLine: '', Category: '毛利', SortOrder: 40, AutoSource: '' },
-  { LineCode: 'd1', LineName: '廣宣費用', ParentLine: 'E', Category: '費用明細', SortOrder: 41, AutoSource: '' },
-  { LineCode: 'd2', LineName: '促銷', ParentLine: 'E', Category: '費用明細', SortOrder: 42, AutoSource: '' },
-  { LineCode: 'd3', LineName: '批標售', ParentLine: 'E', Category: '費用明細', SortOrder: 43, AutoSource: '' },
-  { LineCode: 'd4', LineName: '季Margin(實際零售價未稅×季Margin率)', ParentLine: 'E', Category: '費用明細', SortOrder: 44, AutoSource: AUTO_SOURCE.RATE_QUARTER_MARGIN },
+  { CommodityTaxDeduct: 'Y', LineCode: 'd1', LineName: '廣宣費用', ParentLine: 'E', Category: '費用明細', SortOrder: 41, AutoSource: '' },
+  { CommodityTaxDeduct: 'Y', LineCode: 'd2', LineName: '促銷', ParentLine: 'E', Category: '費用明細', SortOrder: 42, AutoSource: '' },
+  { CommodityTaxDeduct: 'Y', LineCode: 'd3', LineName: '批標售', ParentLine: 'E', Category: '費用明細', SortOrder: 43, AutoSource: '' },
+  { LineCode: 'd4', LineName: '季Margin(廠價未稅×季Margin率)', ParentLine: 'E', Category: '費用明細', SortOrder: 44, AutoSource: AUTO_SOURCE.RATE_QUARTER_MARGIN, CommodityTaxDeduct: 'Y' },
   { LineCode: 'd5', LineName: '索賠(含索賠取回)', ParentLine: 'E', Category: '費用明細', SortOrder: 45, AutoSource: '' },
   { LineCode: 'E', LineName: '銷貨毛利(=C-Σd)', ParentLine: '', Category: '毛利', SortOrder: 50, AutoSource: '' },
   { LineCode: 'f1', LineName: '直接歸屬費用-CMC&SDM', ParentLine: 'G', Category: '費用明細', SortOrder: 51, AutoSource: '' },
@@ -139,6 +142,7 @@ var DEFAULT_PARAMS = {
   '銷售佣金率': 6,
   '季Margin率': 0.5,
   '貨物稅率': 15,
+  '貨物稅完稅價格計算率': 91,
   '集團預算匯率': 1,
   '現況匯率': 1
 };

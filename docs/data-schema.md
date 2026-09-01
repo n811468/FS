@@ -55,6 +55,7 @@
 | Gate | text | GATE 別：`GATE F` / `GATE E` / `GATE D` / `GATE C` / `GATE B` / `GATE A` / `GATE Z` |
 | ScenarioName | text | 使用者自訂，如 現況 / 目標 / 已知低減方向 |
 | ScenarioType | text | 情境性質：`現況` / `目標`。現況情境沒有挑戰低減目標（計算時一律以原始金額），目標情境才套用低減率，並可從其他情境整批帶入資料 |
+| AmortMonthlyVolume / AmortLifeCycleYears | number | 開發總投攤提基準台數（總台數 = 台/月 × 12 × 年）。實務上開發投資的攤提基準常與銷售構成的預估台數不同（Gate F 案例：銷售估 365 台/月，開發投資以 300 台/月 × 12 年 = 43,200 台攤提）。留空則沿用銷售構成推算值 |
 | VehicleTypeID (FK) | text | 對應 `VehicleTypes.VehicleTypeID` |
 | CreatedBy / CreatedDate | text/date | 建立者、日期 |
 | Notes | text | 備註 |
@@ -78,6 +79,7 @@
 | MandatoryAccessoryPrice | currency | 強配件售價 |
 | ScrapFee | currency | 廢車處理費 |
 | ScrapFeeTaxStatus | text | 含稅 / 未稅 —— 標明 `ScrapFee` 是否已含稅，CalcEngine 一律換算成含稅金額後再從零售價扣除，確保全份損益試算稅別口徑一致 |
+| HorizontalPartsPriceAdj | currency | 水平配件外移調降廠價，計算貨物稅完稅價格時扣除；沒有就留空 |
 | EffectiveDate | date | 生效日 |
 | Notes | text | |
 
@@ -133,6 +135,7 @@
 | Department | text | 部門自由新增/刪除（如產專室 / 產工部 / 試驗部 / 開發部...），每一列投入金額皆可獨立刪除，不受限於固定清單 |
 | AssetType | text | 模具 / 設備 / 費用 |
 | Amount | currency | 原始投入金額 |
+| Currency | text | 投入金額的幣別（BASE廠開發費常以 CNY 計價），非本位幣時依匯率設定換算 |
 | ChallengeReductionPct | number | 挑戰低減目標%（0~100）。屬於**情境層級的假設**：同一個 GATE 下的「現況」與「目標」情境各自填自己的低減目標，以此呈現低減前後的損益差異 |
 | Notes | text | |
 | EffectiveDate | date | |
@@ -158,7 +161,7 @@
 | ParamID (PK) | text | |
 | ScenarioID | text | 空白代表全域預設值 |
 | VehicleID | text | 空白代表全車系適用；只有某個車系費率不同時才填該車系覆寫值 |
-| ParamName | text | 營業稅率 / 銷售佣金率 / 貨物稅率 / 季Margin率 / 集團預算匯率 / 現況匯率 |
+| ParamName | text | 營業稅率 / 銷售佣金率 / 貨物稅率 / 季Margin率 / 貨物稅完稅價格計算率 / 集團預算匯率 / 現況匯率 |
 | Currency | text | 只有匯率列會填（1 外幣 = Value 台幣）；比率列留空 |
 | Value | number | 比率為 0~100 百分比數值；匯率為原始匯率數值 |
 | EffectiveDate | date | |
@@ -182,8 +185,11 @@
 |---|---|---|
 | `PRICE` | P1~P9 售價結構 | 由 `SalesMix` 售價欄位 + 營業稅率/銷售佣金率推算 |
 | `DEV_MOLD` / `DEV_EQUIP` | b5 / b8 | 開發總投(模具/設備)低減後金額 ÷ LIFE CYCLE 總台數 |
-| `RATE_COMMODITY_TAX` | b13 貨物稅 | 廠價(未稅) × 貨物稅率 |
-| `RATE_QUARTER_MARGIN` | d4 季Margin | 實際零售價(未稅) × 季Margin率 |
+| `RATE_COMMODITY_TAX` | b13 貨物稅 | (廠價 − 水平配件外移調降 − Σ廣促margin) × 貨物稅完稅價格計算率 ÷ (1+貨物稅率) × 貨物稅率 |
+| `RATE_QUARTER_MARGIN` | d4 季Margin | 廠價(未稅) × 季Margin率 |
+
+> `PLLineItems.CommodityTaxDeduct` = `Y` 的科目（預設 d1 廣宣 / d2 促銷 / d3 批標售 / d4 季Margin）
+> 會在貨物稅完稅價格中被扣除，對應 Gate F Excel 的「廣、促、0.5%margin」。
 | `DEV_EXPENSE_CMC` / `DEV_EXPENSE_BASE` | f3 / f4 | 開發總投(費用類)低減後金額 ÷ LIFE CYCLE 總台數 |
 
 預設科目結構：

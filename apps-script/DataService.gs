@@ -91,6 +91,7 @@ function getSalesMixGrid(scenarioId, vehicleTypeId) {
       MandatoryAccessoryPrice: row.MandatoryAccessoryPrice === undefined || row.MandatoryAccessoryPrice === '' ? '' : toNumber_(row.MandatoryAccessoryPrice),
       ScrapFee: row.ScrapFee === undefined || row.ScrapFee === '' ? '' : toNumber_(row.ScrapFee),
       ScrapFeeTaxStatus: row.ScrapFeeTaxStatus || '含稅',
+      HorizontalPartsPriceAdj: row.HorizontalPartsPriceAdj === undefined || row.HorizontalPartsPriceAdj === '' ? '' : toNumber_(row.HorizontalPartsPriceAdj),
       Notes: row.Notes || ''
     };
   });
@@ -330,6 +331,23 @@ function copyScenarioData(sourceScenarioId, targetScenarioId, parts) {
     });
 
     return copied;
+  });
+}
+
+/**
+ * 開發總投的攤提基準台數（存在情境上）。
+ * 實務上開發投資的攤提基準台數常與銷售構成的預估台數不同
+ * （例如銷售估 365 台/月，但開發投資以 300 台/月 × 12 年攤提），所以獨立設定；
+ * 留空就自動改用銷售構成推算的 LIFE CYCLE 總台數。
+ */
+function saveAmortBasis(scenarioId, monthlyVolume, lifeCycleYears) {
+  return withLock_(function () {
+    var scenario = getScenarios().filter(function (s) { return s.ScenarioID === scenarioId; })[0];
+    if (!scenario) throw new Error('找不到情境：' + scenarioId);
+    scenario.AmortMonthlyVolume = monthlyVolume === '' || monthlyVolume === null ? '' : toNumber_(monthlyVolume);
+    scenario.AmortLifeCycleYears = lifeCycleYears === '' || lifeCycleYears === null ? '' : toNumber_(lifeCycleYears);
+    upsertRow_(SHEETS.SCENARIOS, 'ScenarioID', scenario);
+    return getDevInvestmentSummary(scenarioId);
   });
 }
 
