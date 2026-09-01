@@ -9,14 +9,41 @@
 2. 選單「擴充功能 → Apps Script」，開啟綁定的 Apps Script 專案。
 3. 把本資料夾內所有檔案內容複製貼上到 Apps Script 編輯器（檔名需一致）：
    - `appsscript.json`（在編輯器左側「專案設定」勾選「顯示 appsscript.json」後才看得到）
-   - `Code.gs` / `Constants.gs` / `Utils.gs` / `SetupSheets.gs` / `DataService.gs` / `CalcEngine.gs`
+   - `Code.gs` / `Constants.gs` / `Utils.gs` / `SetupSheets.gs` / `DataService.gs` / `CalcEngine.gs` / `SampleData.gs`
    - `index.html` / `style.html` / `script.html`
 4. 在編輯器上方函式下拉選單選擇 `setupSpreadsheet`，按執行（首次執行會跳出授權視窗，同意即可）。
    執行後會在該 Google Sheet 自動建立所有分頁與標題列，並灌入固定的損益科目表。
-5. 選單「部署 → 新增部署作業 → 網頁應用程式」：
+5. （選用）想先看實際數字長什麼樣，執行 `importGateFSample` 匯入 Gate F 範例資料，
+   或在 Google Sheet 選單「車型損益試算 → 匯入 Gate F 範例資料」。詳見下方「Gate F 範例資料」。
+6. 選單「部署 → 新增部署作業 → 網頁應用程式」：
    - 執行身份：我
    - 誰可以存取：僅限我自己
    - 部署後會得到一個網址，就是輸入/儀表板頁面。
+
+## Gate F 範例資料（一鍵匯入）
+
+`SampleData.gs` 內含實務 Gate F 損益試算 Excel 的完整數字，三種執行方式擇一：
+
+- Google Sheet 選單「**車型損益試算 → 匯入 Gate F 範例資料**」
+- 網頁應用程式右上角「**匯入 Gate F 範例**」按鈕
+- Apps Script 編輯器選 `importGateFSample` 按執行
+
+會一次建立：
+
+| 項目 | 內容 |
+|---|---|
+| 車型 | DA |
+| 車系 | 3人貨車 / 9人客貨車(商用) / 9人客貨車(接駁)（構成比 5% / 25% / 70%，365 台/月） |
+| 情境 | GATE F 含TNCAP 現況、GATE F 含TNCAP 目標（套各部門挑戰低減目標）、GATE F 不含TNCAP 現況 |
+| 銷貨成本 | 材料LP/內陸運雜/材料KD/一般材料/直接人工/製造費用/防鏽/廢棄物，逐車系 |
+| 開發總投 | 14 個部門的模具/設備/費用，加上 BASE廠開發費（7,500萬 CNY，由匯率換算） |
+| 參數 | 營業稅率5% / 銷售佣金率7% / 季Margin率0.5% / 貨物稅率15% / 完稅計算率91% / CNY 匯率 4.3、4.65 |
+
+匯入後直接切到「損益儀表板」，把三個情境加進比較欄位就能並排對照。
+重複執行是安全的：會先清掉這三個範例情境的舊資料再重寫，不會變成兩倍。
+
+> 匯入的數字已與 Excel 逐項對帳（三個情境共 46 個檢查點，含加權平均），完全一致。
+> 幼童車/福祉車因 Excel 中銷售構成為 0 且未定價，未納入範例。
 
 ## 使用順序
 

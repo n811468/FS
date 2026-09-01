@@ -1118,6 +1118,22 @@ function drawCharts(result) {
   });
 }
 
+/** 一鍵匯入 Gate F 範例資料（DA 車 3 車系 × 3 個 GATE F 情境） */
+function importGateFSample() {
+  if (!confirm('將匯入 Gate F 範例資料（車型 DA、3 個車系、3 個 GATE F 情境）。\n' +
+      '重複執行會覆蓋這三個範例情境的既有資料，確定嗎？')) return;
+  const out = document.getElementById('diagnostics-output');
+  out.style.display = 'block';
+  out.textContent = '匯入中...';
+  google.script.run
+    .withSuccessHandler(safeHandler(summary => {
+      out.textContent = '匯入完成：' + JSON.stringify(summary, null, 2);
+      loadVehicleTypeSelector('DA');
+    }))
+    .withFailureHandler(err => { out.textContent = '匯入失敗：' + err.message; })
+    .importGateFSample();
+}
+
 function runDiagnostics() {
   const out = document.getElementById('diagnostics-output');
   out.style.display = 'block';
