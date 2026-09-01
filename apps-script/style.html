@@ -1,0 +1,33 @@
+<style>
+  body { font-family: 'Segoe UI', 'Microsoft JhengHei', sans-serif; margin: 0; background: #f5f6f8; color: #222; }
+  header { background: #1f2d3d; color: #fff; padding: 12px 20px; display: flex; align-items: center; gap: 20px; }
+  header h1 { font-size: 18px; margin: 0; }
+  nav { display: flex; gap: 4px; padding: 8px 20px; background: #fff; border-bottom: 1px solid #ddd; flex-wrap: wrap; }
+  nav button { border: none; background: transparent; padding: 8px 14px; cursor: pointer; font-size: 14px; border-radius: 4px; }
+  nav button.active { background: #1f2d3d; color: #fff; }
+  main { padding: 20px; max-width: 1200px; margin: 0 auto; }
+  .panel { display: none; background: #fff; border-radius: 6px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .panel.active { display: block; }
+  .toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  select, input[type=text], input[type=number], input[type=date] {
+    padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px;
+  }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; margin-top: 12px; }
+  th, td { border: 1px solid #e0e0e0; padding: 6px 8px; text-align: right; }
+  th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+  thead { background: #f0f2f5; }
+  tbody tr:hover { background: #fafbfc; }
+  form.entry-form { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-bottom: 10px; padding: 12px; background: #f9fafb; border-radius: 6px; }
+  form.entry-form label { display: flex; flex-direction: column; font-size: 12px; color: #555; gap: 3px; }
+  .btn { background: #2b6cb0; color: #fff; border: none; padding: 7px 16px; border-radius: 4px; cursor: pointer; font-size: 13px; }
+  .btn.secondary { background: #718096; }
+  .btn.danger { background: #c53030; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .muted { color: #888; font-size: 12px; }
+  .pl-table td.negative { color: #c53030; }
+  .status-msg { font-size: 12px; padding: 4px 0; }
+  .status-msg.ok { color: #2f855a; }
+  .status-msg.err { color: #c53030; }
+  .charts-row { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 20px; }
+  .chart-box { flex: 1 1 420px; min-height: 320px; background: #fff; border: 1px solid #eee; border-radius: 6px; padding: 8px; }
+</style>
