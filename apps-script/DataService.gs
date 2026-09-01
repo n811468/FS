@@ -42,7 +42,13 @@ function getScenarios(vehicleTypeId) {
   return vehicleTypeId ? rows.filter(function (r) { return r.VehicleTypeID === vehicleTypeId; }) : rows;
 }
 function saveScenario(rowObj) {
-  return withLock_(function () { return upsertRow_(SHEETS.SCENARIOS, 'ScenarioID', rowObj); });
+  return withLock_(function () {
+    // 情境代號改用 GATE 別，情境名稱自訂；同一個 GATE 下可以有多個情境(GATE F 現況 / GATE F 目標)，
+    // 所以 ScenarioID 只是系統內部鍵值，由 upsertRow_ 自動產生，不需使用者自行編碼。
+    if (!rowObj.Gate) throw new Error('請選擇 GATE 別');
+    if (GATE_OPTIONS.indexOf(rowObj.Gate) === -1) throw new Error('GATE 別不正確：' + rowObj.Gate);
+    return upsertRow_(SHEETS.SCENARIOS, 'ScenarioID', rowObj);
+  });
 }
 function deleteScenario(scenarioId) {
   return withLock_(function () { return deleteRow_(SHEETS.SCENARIOS, 'ScenarioID', scenarioId); });
@@ -73,7 +79,8 @@ function recalcSalesMixPctByVolume(scenarioId) {
     var rows = getSalesMix(scenarioId);
     var total = rows.reduce(function (s, r) { return s + toNumber_(r.MonthlyVolume); }, 0);
     rows.forEach(function (r) {
-      r.SalesMixPct = total > 0 ? toNumber_(r.MonthlyVolume) / total : 0;
+      // SalesMixPct 以百分比數值儲存(0~100)
+      r.SalesMixPct = total > 0 ? toNumber_(r.MonthlyVolume) / total * 100 : 0;
       upsertRow_(SHEETS.SALES_MIX, 'RowID', r);
     });
     return getSalesMix(scenarioId);
@@ -84,31 +91,25 @@ function recalcSalesMixVolumeByPct(scenarioId, totalMonthlyVolume) {
     var rows = getSalesMix(scenarioId);
     var total = toNumber_(totalMonthlyVolume);
     rows.forEach(function (r) {
-      r.MonthlyVolume = Math.round(toNumber_(r.SalesMixPct) * total);
+      r.MonthlyVolume = Math.round(toNumber_(r.SalesMixPct) / 100 * total);
       upsertRow_(SHEETS.SALES_MIX, 'RowID', r);
     });
     return getSalesMix(scenarioId);
   });
 }
 
-// ---- MaterialCost ----
-function getMaterialCost(scenarioId, vehicleId) {
-  var rows = sheetToObjects_(SHEETS.MATERIAL_COST) || [];
+// ---- CostOfSales 銷貨成本（原材料成本頁；LP/KD 皆為成本項目，成本科目可自由增刪） ----
+function getCostOfSales(scenarioId, vehicleId) {
+  var rows = sheetToObjects_(SHEETS.COST_OF_SALES) || [];
   return rows.filter(function (r) {
     return (!scenarioId || r.ScenarioID === scenarioId) && (!vehicleId || r.VehicleID === vehicleId);
   });
 }
-function saveMaterialCostRow(rowObj) {
-  if (rowObj.CostCategory && MATERIAL_COST_LINE_MAP[rowObj.CostCategory]) {
-    rowObj.LineCode = MATERIAL_COST_LINE_MAP[rowObj.CostCategory];
-  }
-  return withLock_(function () { return upsertRow_(SHEETS.MATERIAL_COST, 'RowID', rowObj); });
+function saveCostOfSalesRow(rowObj) {
+  return withLock_(function () { return upsertRow_(SHEETS.COST_OF_SALES, 'RowID', rowObj); });
 }
-function deleteMaterialCostRow(rowId) {
-  return withLock_(function () { return deleteRow_(SHEETS.MATERIAL_COST, 'RowID', rowId); });
-}
-function getMaterialCostCategories() {
-  return Object.keys(MATERIAL_COST_LINE_MAP);
+function deleteCostOfSalesRow(rowId) {
+  return withLock_(function () { return deleteRow_(SHEETS.COST_OF_SALES, 'RowID', rowId); });
 }
 
 // ---- DevInvestment ----
@@ -177,9 +178,52 @@ function lookupParam_(paramsForScenario, paramName, vehicleId) {
   return DEFAULT_PARAMS[paramName] !== undefined ? DEFAULT_PARAMS[paramName] : 0;
 }
 
-// ---- PLLineItems (唯讀參照表) ----
+// ---- PLLineItems 科目設定（明細科目可自由新增/刪除） ----
 function getPLLineItems() {
   return (sheetToObjects_(SHEETS.PL_LINE_ITEMS) || []).sort(function (a, b) { return a.SortOrder - b.SortOrder; });
+}
+function savePLLineItem(rowObj) {
+  return withLock_(function () {
+    if (!rowObj.LineCode) throw new Error('科目代碼(LineCode)為必填');
+    // 自動計算科目由 CalcEngine 產生，使用者新增的科目一律是手動輸入科目
+    var existing = getPLLineItems().filter(function (d) { return d.LineCode === rowObj.LineCode; })[0];
+    rowObj.AutoSource = existing ? (existing.AutoSource || '') : '';
+    return upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', rowObj);
+  });
+}
+function deletePLLineItem(lineCode) {
+  return withLock_(function () {
+    if (PROTECTED_LINE_CODES.indexOf(lineCode) !== -1) {
+      throw new Error('「' + lineCode + '」是損益結構科目(小計/毛利/淨利)，刪除會讓損益鏈斷掉，不可刪除。');
+    }
+    var def = getPLLineItems().filter(function (d) { return d.LineCode === lineCode; })[0];
+    if (def && def.AutoSource) {
+      throw new Error('「' + lineCode + ' ' + def.LineName + '」是自動計算科目，由比率設定或開發總投攤提產生，不可刪除。');
+    }
+    return deleteRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', lineCode);
+  });
+}
+
+/**
+ * 科目下拉選單選項：只回傳「可手動輸入」的明細科目(排除自動計算科目)，
+ * 回傳 [{value, label}]，前端 renderForm 直接吃這個格式。
+ */
+function lineOptionsFor_(parentCodes, extraCodes) {
+  var opts = getPLLineItems()
+    .filter(function (d) {
+      return !d.AutoSource &&
+        (parentCodes.indexOf(d.ParentLine) !== -1 || (extraCodes || []).indexOf(d.LineCode) !== -1);
+    })
+    .map(function (d) { return { value: d.LineCode, label: d.LineCode + ' ' + d.LineName }; });
+  return opts;
+}
+/** 銷貨成本頁的成本項目選單（B 底下、可手動輸入的科目） */
+function getCostOfSalesLineOptions() {
+  return lineOptionsFor_(['B']);
+}
+/** 營業費用頁的科目選單（E/G/I 底下可手動輸入的科目，外加 J 前瞻費用） */
+function getOperatingExpenseLineOptions() {
+  return lineOptionsFor_(['E', 'G', 'I'], ['J']);
 }
 
 /**

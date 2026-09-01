@@ -26,9 +26,10 @@
     <button data-tab="vehicles" onclick="switchTab('vehicles')">車系設定</button>
     <button data-tab="scenarios" onclick="switchTab('scenarios')">情境設定</button>
     <button data-tab="salesmix" onclick="switchTab('salesmix')">銷售構成</button>
-    <button data-tab="materialcost" onclick="switchTab('materialcost')">材料成本</button>
+    <button data-tab="costofsales" onclick="switchTab('costofsales')">銷貨成本</button>
     <button data-tab="devinvestment" onclick="switchTab('devinvestment')">開發總投</button>
     <button data-tab="operatingexpense" onclick="switchTab('operatingexpense')">營業費用</button>
+    <button data-tab="lineitems" onclick="switchTab('lineitems')">科目設定</button>
     <button data-tab="paramrates" onclick="switchTab('paramrates')">稅務費用比率</button>
     <button data-tab="paramfx" onclick="switchTab('paramfx')">匯率設定</button>
     <button data-tab="dashboard" onclick="switchTab('dashboard')">損益儀表板</button>
@@ -39,13 +40,20 @@
     <div id="panel-vehicles" class="panel"></div>
     <div id="panel-scenarios" class="panel"></div>
     <div id="panel-salesmix" class="panel"></div>
-    <div id="panel-materialcost" class="panel"></div>
+    <div id="panel-costofsales" class="panel"></div>
     <div id="panel-devinvestment" class="panel"></div>
     <div id="panel-operatingexpense" class="panel"></div>
+    <div id="panel-lineitems" class="panel"></div>
     <div id="panel-paramrates" class="panel"></div>
     <div id="panel-paramfx" class="panel"></div>
     <div id="panel-dashboard" class="panel">
-      <h3>損益儀表板 &mdash; <span class="scenario-label">(尚未選擇情境)</span></h3>
+      <h3>損益儀表板 &mdash; 多車型/多情境比較</h3>
+      <p class="muted">
+        每個比較欄位 = 車型 × 情境(GATE) × 車系（或該情境的加權平均）。
+        可同時加入不同車型的欄位並排比較；不同車型科目不同時，表格只列出實際有數字的科目。
+      </p>
+      <div id="comparison-picker" class="toolbar"></div>
+      <div id="comparison-columns"></div>
       <button class="btn" onclick="refreshDashboard()">重新計算</button>
       <div id="dashboard-content"></div>
     </div>

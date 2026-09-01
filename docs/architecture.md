@@ -17,7 +17,7 @@ Google Sheet（資料庫）
    │
    ▼
 CalcEngine.gs 觸發重算
-   │  讀 SalesMix / MaterialCost / DevInvestment / Parameters
+   │  讀 SalesMix / CostOfSales / DevInvestment / OperatingExpense / Parameters
    │  依 PLLineItems 科目鏈逐項 rollup (A→B→C→...→K)
    ▼
 寫回 PLResult 分頁
@@ -48,7 +48,7 @@ project/
 ├─ Constants.gs           # 分頁名稱、欄位索引、科目代碼常數
 ├─ index.html             # SPA 外殼（含 nav 切換 輸入/儀表板）
 ├─ input_salesmix.html    # 銷售構成輸入表單
-├─ input_materialcost.html# 材料成本輸入表單
+├─ input_costofsales.html # 銷貨成本輸入表單
 ├─ input_devinvestment.html# 開發總投輸入表單
 ├─ input_parameters.html  # 參數設定（稅率/佣金率/匯率）
 ├─ dashboard.html         # 車型損益呈現（表格＋圖表，可切換情境比較）
@@ -66,7 +66,7 @@ function getSalesMix(scenarioId)            // 回傳該情境所有列 (array o
 function saveSalesMixRow(rowObj)            // rowObj.RowID 有值→更新，無值→新增+產生RowID
 function deleteSalesMixRow(rowId)
 
-// 其餘比照：getMaterialCost / saveMaterialCostRow / deleteMaterialCostRow
+// 其餘比照：getCostOfSales / saveCostOfSalesRow / deleteCostOfSalesRow
 //           getDevInvestment / saveDevInvestmentRow / deleteDevInvestmentRow
 //           getVehicles / getScenarios / getParameters(scenarioId)
 
@@ -90,16 +90,20 @@ function saveSalesMixRow(rowObj) {
 
 ```js
 function calculatePL(scenarioId, vehicleId) {
-  // 1. 讀取該 scenario+vehicle 的 SalesMix、MaterialCost、DevInvestment、Parameters
-  // 2. 依序算出：
-  //    實際零售價③ = 建議零售價① - 廢車處理費②
-  //    營業稅 = ③ × 稅率
-  //    銷售佣金 = ③ × 佣金率(依車型)
-  //    廠價(未稅) = ③ - 營業稅 - 銷售佣金 - 季margin
-  //    A 收入 = 廠價 + 強配收入
-  //    B 銷貨成本 = Σ(材料成本LP+KD+運雜+人工+製造費用+模具攤提+技酬金+防鏽+廢棄物+貨物稅)
+  // 1. 讀取該 scenario+vehicle 的 SalesMix、CostOfSales、DevInvestment、OperatingExpense、Parameters
+  //    (比率參數一律以百分比數值儲存，取用時經 pct_() 除以 100)
+  // 2. 依序算出（P1~P8 售價結構會逐列輸出到儀表板，不再只是中間變數）：
+  //    P3 實際零售價(含稅) = P1 建議零售價(含稅) - P2 廢車處理費(換算含稅)
+  //    P4 營業稅 = P3 - P3/(1+稅率)          → 內含稅反推
+  //    P5 銷售佣金 = P3 × 佣金率
+  //    P6 實際零售價(未稅) = P3 - P4
+  //    P7 廠價(未稅) = P6 - P5
+  //    A 收入 = P7 + P8 強配件售價
+  //    B 銷貨成本 = Σ(手動輸入的成本科目，外幣以現況匯率換算)
+  //               + b5 模具攤提 + b8 設備攤提 (開發總投 ÷ LC總台數)
+  //               + b13 貨物稅 (廠價 × 貨物稅率)
   //    C 生產毛利 = A - B
-  //    E 銷貨毛利 = C - Σd(廣宣/促銷/批標售/margin/索賠)
+  //    E 銷貨毛利 = C - Σd(廣宣/促銷/批標售/索賠 + d4 季Margin = P6 × 季Margin率)
   //    G 產品貢獻 = E - Σf(直接歸屬費用 + 車型專案開發費用，由 DevInvestment 分攤單台成本得出)
   //    I 營業淨利(未扣前瞻) = G - Σh(固定營業費用/品牌廣宣/特別加發)
   //    K 營業淨利 = I - J(前瞻費用)
@@ -115,8 +119,11 @@ function calculatePLAllVehicles(scenarioId) {
 
 DevInvestment → 單台成本分攤邏輯（對應 Excel 的 CMC單台/BASE廠單台）：
 ```
-該情境總銷售台數 = Σ(SalesMix.MonthlyVolume × 12 × LifeCycleYears)  // 依車型加總
-單台開發攤提 = DevInvestment該部門低減後金額 / 該情境總銷售台數
+LIFE CYCLE 總台數 = Σ(SalesMix.MonthlyVolume × 12 × LifeCycleYears)   // 該情境所有車系加總
+低減後金額 = Amount × (1 - ChallengeReductionPct/100)
+單台攤提 = 低減後金額 / LIFE CYCLE 總台數，依 AssetType 落到不同科目：
+  模具 → b5 模具費用(銷貨成本)          設備 → b8 新增專屬設備(銷貨成本)
+  費用 → f3 開發費用-CMC；Department = 「BASE廠開發費」時落 f4 開發費用-BASE廠
 ```
 
 ---
@@ -127,10 +134,15 @@ DevInvestment → 單台成本分攤邏輯（對應 Excel 的 CMC單台/BASE廠�
   - 送出後呼叫 `google.script.run.withSuccessHandler(onSaved).saveXxxRow(formData)`
   - 存檔成功後自動呼叫 `calculatePL()` 更新儀表板快取
 
-- **dashboard.html**：
-  - 上方：車型選擇器（第一層，選擇 DA/DE/DH/DX 等）＋ 情境選擇器（第二層，隸屬所選車型，如「現況」vs「目標」）
-  - 中間：損益表（依 PLLineItems 科目順序，逐車系 + 加權平均欄）
-  - 下方：圖表（收入結構堆疊圖、成本結構圓餅圖、多情境營業淨利對比長條圖）— 用 Chart.js（Apps Script HTML Service 可直接掛 CDN script）
+- **dashboard.html（多車型維度比較）**：
+  - 上方：比較欄位建立器 —— 每個欄位 = 車型 × 情境(GATE) × 車系（或該情境的「加權平均」）。
+    可同時加入**不同車型**的欄位並排比較（如 DA GATE F 目標 vs DE GATE F 現況）。
+  - 中間：損益表（依 PLLineItems 的 SortOrder 排序）。因為不同車型的科目不見得相同，
+    只列出至少一個欄位真的算出數字的科目；某欄位沒有該科目時顯示「—」而非 0。
+    自動計算科目（售價結構 P1~P8、貨物稅、季Margin、開發攤提）標示「自動」標籤。
+  - 下方：各比較欄位的「收入(A) vs 營業淨利(K)」長條圖（Google Charts，Apps Script 原生支援）。
+  - 後端 API：`getComparisonOptions()` 取得車型→情境/車系選項樹；
+    `calculateComparison([{ScenarioID, VehicleID}])` 回傳各欄位金額與科目聯集。
 
 ---
 
@@ -138,7 +150,7 @@ DevInvestment → 單台成本分攤邏輯（對應 Excel 的 CMC單台/BASE廠�
 
 - 部署為 **Web App**：「執行身份：我」＋「存取權：僅限機構內的使用者」（依貴公司網域限制），避免資料外洩。
 - 若需要多人同時編輯，Sheet 端另外用「保護範圍」鎖定計算欄位，避免有人手動改到 `PLResult`。
-- 建議把 Sheet 拆成兩顆檔案：**輸入資料庫.gsheet**（Vehicles/Scenarios/SalesMix/MaterialCost/DevInvestment/Parameters）與 **計算結果.gsheet**（PLLineItems/PLResult/AuditLog），避免使用者誤改到公式相關分頁；Apps Script 用 `SpreadsheetApp.openById()` 分別存取。（也可以先合併在同一檔案，等資料量/人數變多再拆分）
+- 建議把 Sheet 拆成兩顆檔案：**輸入資料庫.gsheet**（VehicleTypes/Vehicles/Scenarios/SalesMix/CostOfSales/DevInvestment/OperatingExpense/Parameters）與 **計算結果.gsheet**（PLLineItems/PLResult/AuditLog），避免使用者誤改到公式相關分頁；Apps Script 用 `SpreadsheetApp.openById()` 分別存取。（也可以先合併在同一檔案，等資料量/人數變多再拆分）
 
 ---
 
