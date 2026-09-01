@@ -11,6 +11,18 @@ function generateId_(prefix) {
   return prefix + '-' + Utilities.getUuid().slice(0, 8);
 }
 
+/**
+ * google.script.run 序列化巢狀 Date 物件時不穩定（陣列包物件、物件裡又包 Date，
+ * 有機會整包回傳值直接變成 null，且不會丟出任何錯誤）。
+ * Sheet 的日期欄位讀出來就是 JS Date，所以一律在這裡轉成 yyyy-MM-dd 字串再往外傳。
+ */
+function normalizeCellValue_(v) {
+  if (Object.prototype.toString.call(v) === '[object Date]') {
+    return Utilities.formatDate(v, Session.getScriptTimeZone() || 'Asia/Taipei', 'yyyy-MM-dd');
+  }
+  return v;
+}
+
 /** 把整張表讀成 [{欄位:值,...}, ...]，第一列為標題 */
 function sheetToObjects_(sheetName) {
   var sheet = getSheet_(sheetName);
@@ -23,7 +35,7 @@ function sheetToObjects_(sheetName) {
     .filter(function (row) { return row.some(function (v) { return v !== '' && v !== null; }); })
     .map(function (row) {
       var obj = {};
-      headers.forEach(function (h, i) { obj[h] = row[i]; });
+      headers.forEach(function (h, i) { obj[h] = normalizeCellValue_(row[i]); });
       return obj;
     });
 }

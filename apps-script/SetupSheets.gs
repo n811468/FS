@@ -26,13 +26,25 @@ function setupSpreadsheet() {
 
   seedPLLineItems_();
 
-  // 移除預設的 Sheet1（如果還存在且是空的）
-  var defaultSheet = ss.getSheetByName('Sheet1');
-  if (defaultSheet && defaultSheet.getLastRow() === 0) {
-    ss.deleteSheet(defaultSheet);
-  }
+  // 移除當初建立 Sheet 時自動附帶的空白預設分頁。
+  // 不同語系的 Google Sheet 預設分頁名稱不同(英文 Sheet1、中文 工作表1...)，
+  // 所以不比對名稱，只要是「完全空白(0列0欄)」且不在我們預期的分頁清單裡，就視為可清除的預設分頁。
+  var expectedNames = Object.keys(SCHEMA).concat(['AuditLog']);
+  ss.getSheets().forEach(function (sheet) {
+    var name = sheet.getName();
+    if (expectedNames.indexOf(name) === -1 && sheet.getLastRow() === 0 && sheet.getLastColumn() === 0) {
+      ss.deleteSheet(sheet);
+    }
+  });
 
-  SpreadsheetApp.getUi().alert('資料庫初始化完成，共建立 ' + ss.getSheets().length + ' 個分頁。');
+  var summary = '資料庫初始化完成，共建立 ' + ss.getSheets().length + ' 個分頁。';
+  try {
+    SpreadsheetApp.getUi().alert(summary);
+  } catch (e) {
+    // 從 Apps Script 編輯器直接執行(而非透過 Sheets 選單)時 getUi() 可能無法使用，
+    // 這不影響初始化本身是否成功，改用記錄檔輸出即可。
+    Logger.log(summary);
+  }
 }
 
 function seedPLLineItems_() {

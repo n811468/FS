@@ -77,7 +77,7 @@ function calculatePL(scenarioId, vehicleId) {
   return {
     scenarioId: scenarioId,
     vehicleId: vehicleId,
-    calculatedAt: timestamp,
+    calculatedAt: timestamp.toISOString(), // 巢狀 Date 物件會讓 google.script.run 整包回傳變 null，一律轉字串
     lines: buildResultLines_(lineValues, revenueA)
   };
 }

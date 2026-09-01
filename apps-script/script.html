@@ -199,6 +199,11 @@ function renderForm(key, cfg) {
   const container = document.getElementById('form-container-' + key);
   const fieldsHtml = cfg.fields.map(f => {
     const id = `f-${key}-${f.name}`;
+    if (f.hiddenOnCreate) {
+      // RowID/ParamID 等系統自動產生的主鍵欄位：不用讓使用者看到空文字框，
+      // 但編輯既有資料時(editRow)仍要能寫回這個 id，所以保留一個 hidden input。
+      return `<input type="hidden" id="${id}"/>`;
+    }
     let control;
     if (f.type === 'select') {
       control = `<select id="${id}"><option value=""></option></select>`;
@@ -227,15 +232,19 @@ function renderForm(key, cfg) {
         sel.insertAdjacentHTML('beforeend', `<option value="${val}">${text}</option>`);
       });
     } else if (f.optionsFn) {
-      google.script.run.withSuccessHandler(list => {
-        if (f.type === 'text-suggest') {
-          const dl = document.getElementById(`dl-f-${key}-${f.name}`);
-          dl.innerHTML = list.map(v => `<option value="${v}">`).join('');
-        } else {
-          const sel = document.getElementById(`f-${key}-${f.name}`);
-          list.forEach(v => sel.insertAdjacentHTML('beforeend', `<option value="${v}">${v}</option>`));
-        }
-      })[f.optionsFn]();
+      google.script.run
+        .withSuccessHandler(safeHandler(list => {
+          list = list || [];
+          if (f.type === 'text-suggest') {
+            const dl = document.getElementById(`dl-f-${key}-${f.name}`);
+            dl.innerHTML = list.map(v => `<option value="${v}">`).join('');
+          } else {
+            const sel = document.getElementById(`f-${key}-${f.name}`);
+            list.forEach(v => sel.insertAdjacentHTML('beforeend', `<option value="${v}">${v}</option>`));
+          }
+        }))
+        .withFailureHandler(showGlobalError)
+        [f.optionsFn]();
     }
   });
 }
