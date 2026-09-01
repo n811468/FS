@@ -120,7 +120,7 @@
 
 > **不在本頁輸入的成本科目**（會重複計列）：
 > - `b5` 模具費用、`b8` 新增專屬設備 → 由 `DevInvestment`（模具/設備類）低減後金額 ÷ LIFE CYCLE 總台數自動攤提
-> - `b13` 貨物稅 → 廠價(未稅) × 貨物稅率自動計算
+> - `b13` 貨物稅 → 依完稅價格自動計算（見 2.7 的 `RATE_COMMODITY_TAX`）
 
 ### 2.5 `DevInvestment` 開發總投
 
@@ -140,8 +140,9 @@
 | Notes | text | |
 | EffectiveDate | date | |
 
-> 「低減後金額」「單台攤提」皆為計算欄位，由 CalcEngine 依 LIFE CYCLE 總台數
-> （`Σ MonthlyVolume × 12 × LifeCycleYears`）分攤，並依 `AssetType` 落到不同科目：
+> 「低減後金額」「單台攤提」皆為計算欄位，由 CalcEngine 依 LIFE CYCLE 總台數分攤
+> （優先用情境的攤提基準 `AmortMonthlyVolume × 12 × AmortLifeCycleYears`，
+> 沒填才用銷售構成推算的 `Σ MonthlyVolume × 12 × LifeCycleYears`），並依 `AssetType` 落到不同科目：
 >
 > | AssetType | 落點科目 |
 > |---|---|
@@ -175,7 +176,7 @@
 損益結構表，程式依此逐科目 rollup。明細科目（b*/d*/f1/h*/J）可直接在「銷貨成本」「營業費用」頁面
 新增與刪除（新增時 `LineCode` 依父科目自動編號），「科目設定」頁面則用來調整科目名稱與排序。
 
-欄位：`LineCode` / `LineName` / `ParentLine` / `Category` / `SortOrder` / `AutoSource`。
+欄位：`LineCode` / `LineName` / `ParentLine` / `Category` / `SortOrder` / `AutoSource` / `CommodityTaxDeduct`。
 
 - **`AutoSource` 有值 = 自動計算科目**：不出現在手動輸入頁面的下拉選單，也不可刪除，
   由 CalcEngine 依比率設定或開發總投攤提算出，避免同一筆金額被重複計列。
@@ -187,10 +188,10 @@
 | `DEV_MOLD` / `DEV_EQUIP` | b5 / b8 | 開發總投(模具/設備)低減後金額 ÷ LIFE CYCLE 總台數 |
 | `RATE_COMMODITY_TAX` | b13 貨物稅 | (廠價 − 水平配件外移調降 − Σ廣促margin) × 貨物稅完稅價格計算率 ÷ (1+貨物稅率) × 貨物稅率 |
 | `RATE_QUARTER_MARGIN` | d4 季Margin | 廠價(未稅) × 季Margin率 |
+| `DEV_EXPENSE_CMC` / `DEV_EXPENSE_BASE` | f3 / f4 | 開發總投(費用類)低減後金額 ÷ LIFE CYCLE 總台數 |
 
 > `PLLineItems.CommodityTaxDeduct` = `Y` 的科目（預設 d1 廣宣 / d2 促銷 / d3 批標售 / d4 季Margin）
 > 會在貨物稅完稅價格中被扣除，對應 Gate F Excel 的「廣、促、0.5%margin」。
-| `DEV_EXPENSE_CMC` / `DEV_EXPENSE_BASE` | f3 / f4 | 開發總投(費用類)低減後金額 ÷ LIFE CYCLE 總台數 |
 
 預設科目結構：
 
