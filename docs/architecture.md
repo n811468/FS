@@ -40,21 +40,26 @@ Dashboard 頁面渲染損益表 + 結構圖表
 ## 2. Apps Script 專案檔案配置
 
 ```
-project/
-├─ Code.gs              # doGet 入口、路由、include() 工具
-├─ DataService.gs        # 各表 CRUD：getXxx() / saveXxx() / deleteXxx()
-├─ CalcEngine.gs          # 損益計算引擎，對應 Gate F 公式鏈
-├─ Utils.gs               # ID 產生器、日期格式、分頁讀取快取(單次執行內)
-├─ Constants.gs           # 分頁名稱、欄位索引、科目代碼常數
-├─ index.html             # SPA 外殼（含 nav 切換 輸入/儀表板）
-├─ input_salesmix.html    # 銷售構成輸入表單
-├─ input_costofsales.html # 銷貨成本輸入表單
-├─ input_devinvestment.html# 開發總投輸入表單
-├─ input_parameters.html  # 參數設定（稅率/佣金率/匯率）
-├─ dashboard.html         # 車型損益呈現（表格＋圖表，可切換情境比較）
-├─ style.html             # 共用 CSS（用 <?!= include('style') ?> 帶入）
-└─ script.html            # 共用前端 JS（fetch 封裝、格式化函式）
+apps-script/                # 貼進 Apps Script 編輯器的檔案（檔名需一致）
+├─ appsscript.json         # 專案設定（webapp.access = MYSELF）
+├─ Code.gs                 # doGet 入口、Sheets 自訂選單
+├─ Constants.gs            # 分頁名稱、SCHEMA、科目表、預設參數
+├─ Utils.gs                # ID 產生器、日期正規化、upsert/delete、分頁讀取快取(單次執行內)
+├─ SetupSheets.gs          # 初始化分頁與科目表；重設科目排序、清除未使用參數等維護作業
+├─ DataService.gs          # 各表 CRUD 與表格式整批存檔：getXxxGrid() / saveXxxGrid()
+├─ CalcEngine.gs           # 損益計算引擎，對應 Gate F 公式鏈；比較 API 與小計驗算
+├─ index.html              # SPA 外殼（nav 分頁 + 各 panel 容器）
+├─ style.html              # 共用 CSS（用 <?!= include('style') ?> 帶入）
+└─ script.html             # 全部前端 JS：主檔表格、各輸入表格、儀表板
+
+tools/                      # 只在本機用 Node 執行，不會部署到 Apps Script
+├─ fake-apps-script.js     # 記憶體版的 SpreadsheetApp/LockService/Utilities，讓 .gs 能在 Node 跑
+├─ verify-gatef.js         # 用實際 Gate F 表的數字逐格驗算計算引擎
+└─ verify-features.js      # 驗這一版的行為（情境帶入、科目自動編號、匯率精簡…）
 ```
+
+> 前端全部集中在 `script.html`（單一 SPA），沒有 `input_*.html` / `dashboard.html` 這類分檔 ——
+> 每個分頁都是同一套表格元件的組態差異，拆檔只會讓共用邏輯散掉。
 
 ---
 
@@ -131,30 +136,54 @@ LIFE CYCLE 總台數 = 情境的攤提基準(AmortMonthlyVolume × 12 × AmortLi
 
 ## 5. 前端頁面設計
 
-前端分兩種頁面型態：
+所有頁面都是表格式編輯：一次看到全部資料、直接在格子裡改、最後按一次「儲存」整批送出。
+沒有「先按編輯才能改某一列」的模式 —— 那會讓一次要調十幾個數字的作業變成點十幾次編輯。
 
-- **主檔維護頁**（車型 / 車系 / 情境 / 科目設定）：沿用「表單 + 列表」通用元件，逐筆新增與刪除。
+- **主檔維護頁**（車型 / 車系 / 情境 / 科目設定）：共用一套可直接編輯的表格元件
+  （`renderEntityPanel` / `drawEntityGrid` / `saveEntityGrid`），「新增一列」在表格最後補一列空白列，
+  跟其他修改一起送出（`saveVehicleTypeGrid` / `saveVehicleGrid` / `saveScenarioGrid` / `savePLLineItemGrid`）。
+  - 主鍵欄位（車型代號、車系代號）建立後就鎖住：主鍵是所有資料的鍵值，改掉等於另開一筆、舊資料會變孤兒。
+  - 科目設定的 `LineCode` 由後端自動編號（`nextLineCode_()`：父科目字首 + 最小未使用號碼），
+    使用者只選父科目、填名稱；新增列在儲存當下才配號。結構科目與自動計算科目的父科目固定、不可刪除。
+  - 情境設定另有「以既有情境為基礎建立」（`createScenarioFrom()`）與「帶入目前情境」
+    （`copyScenarioData()`），限同一車型 —— 跨車型的車系對不上，會產生看不見卻仍被計入損益的資料。
 
 - **表格編輯頁**（銷售構成 / 銷貨成本 / 開發總投 / 營業費用 / 稅務費用比率 / 匯率設定）：
   一次看到全部資料、直接在格子裡改、最後按一次「儲存」整批送出，避免逐筆開表單輸入。
   - 銷售構成：依車系自動列出，台數與構成比即時互相連動（`getSalesMixGrid` / `saveSalesMixGrid`）。
   - 銷貨成本 / 營業費用：矩陣式（列 = 科目、欄 = 車系），科目可直接在該頁新增/刪除
     （`getCostOfSalesMatrix` / `saveCostOfSalesMatrix`、`addLineItemInline` / `deleteLineItemInline`）。
+    最右欄是**加權平均**而非跨車系合計：一列是同一個成本項目在各車系的單台金額，相加沒有意義；
+    矩陣 API 會一併回傳各車系的 `SalesMixPct`，前端據此算 Σ(金額×構成比)÷Σ構成比。
   - 開發總投：目標情境才顯示挑戰低減目標欄位，並可用 `copyScenarioData()` 從其他情境整批帶入資料；
     表格下方即時顯示 LIFE CYCLE 總台數與各科目單台攤提金額。
   - 稅務費用比率：「全車系適用」一欄 + 各車系覆寫欄，留白自動沿用（`getRateGrid` / `saveRateGrid`）。
-  - 匯率設定：以幣別 × 匯率種類管理（`getFxGrid` / `saveFxGrid`），設定過現況匯率的幣別才會出現在銷貨成本的幣別選單。
+  - 匯率設定：以幣別管理（`getFxGrid` / `saveFxGrid`），設定過匯率的幣別才會出現在銷貨成本的幣別選單。
+    只有一種「現況匯率」；舊版的「集團預算匯率」沒有任何計算讀它，已移除。
 
 - **dashboard.html（多車型維度比較）**：
   - 上方：比較欄位建立器 —— 每個欄位 = 車型 × 情境(GATE) × 車系（或該情境的「加權平均」）。
     可同時加入**不同車型**的欄位並排比較（如 DA GATE F 目標 vs DE GATE F 現況）。
-  - 中間：損益表（依 PLLineItems 的 SortOrder 排序）。因為不同車型的科目不見得相同，
-    只列出至少一個欄位真的算出數字的科目；某欄位沒有該科目時顯示「—」而非 0。
+  - 中間：損益表（依 PLLineItems 的 SortOrder 排序），版面比照實際 Gate F 損益試算表 ——
+    每個比較欄位分「金額」與「%」兩個小欄，明細科目縮排在它的小計底下，小計/毛利/淨利整列反白，
+    售價結構 P1~P9 另成一段（可收合），這樣「哪幾列加起來等於哪一列」在畫面上是看得見的。
+  - **% 基準可切換**：對廠價(未稅) P8（預設）或對收入(未稅,含強配) A。
+    兩者在沒有強配件時相同；有強配收入時廠價比較能反映本業單價。
+    後端 `buildResultLines_()` 兩個百分比都算好回傳（`PctOfExFactory` / `PctOfRevenue`）。
+  - **小計自動驗算**：`subtotalChecks_()` 把 A=P8+P9、B=Σ成本明細、C=A-B、E=C-Σd、G=E-Σf、
+    I=G-Σh、K=I-J 逐條重算（容差 0.5 元，吸收營業稅/佣金的四捨五入），對不起來的才回傳，
+    前端在表格上方示警。加總錯誤不必靠肉眼發現。
+  - 因為不同車型的科目不見得相同，只列出至少一個欄位真的算出數字的科目；
+    某欄位沒有該科目時顯示「—」而非 0。另一方面，**沒填金額的成本科目仍會以 0 列出**
+    （`calculatePL()` 先用 `manualLineCodesFor_(['B'])` 把 b 科目補齊），
+    否則畫面上少了幾列，看到的明細加起來會對不上 B 銷貨成本合計，看起來就像加總算錯。
     自動計算科目（售價結構 P1~P9、貨物稅、季Margin、開發攤提）標示「自動」標籤。
-  - 「匯出 CSV」可把整張比較表複製貼進 Excel。
-  - 下方：各比較欄位的「收入(A) vs 營業淨利(K)」長條圖（Google Charts，Apps Script 原生支援）。
+  - 「匯出 CSV」把整張比較表（含 % 欄）複製貼進 Excel。
+  - 下方：長條圖，**要畫哪幾個科目由使用者複選**（預設 A 收入與 K 營業淨利），
+    不再寫死（Google Charts，Apps Script 原生支援）。
   - 後端 API：`getComparisonOptions()` 取得車型→情境/車系選項樹；
-    `calculateComparison([{ScenarioID, VehicleID}])` 回傳各欄位金額與科目聯集。
+    `calculateComparison([{ScenarioID, VehicleID}])` 回傳各欄位金額、兩種百分比基準、
+    科目聯集（含 ParentLine 供縮排）與小計驗算結果。
 
 ---
 

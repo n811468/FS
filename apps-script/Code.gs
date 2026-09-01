@@ -14,5 +14,8 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('車型損益試算')
     .addItem('初始化資料庫(建立分頁)', 'setupSpreadsheet')
+    .addSeparator()
+    .addItem('重設內建科目名稱與排序', 'resetPLLineItemDefaults')
+    .addItem('清除未使用的參數', 'removeUnusedParameters')
     .addToUi();
 }

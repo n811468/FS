@@ -83,3 +83,51 @@ function seedPLLineItems_() {
   });
   invalidateSheetCache_(SHEETS.PL_LINE_ITEMS);
 }
+
+/**
+ * 把內建科目的名稱、父科目、分類與排序值重設回程式碼中的預設值。
+ * seedPLLineItems_() 只補新科目、不動既有科目(使用者可能自己改過名稱)，
+ * 所以科目排序改版後要靠這支才會套用到既有的 Sheet。
+ * 使用者自行新增的科目(不在 PL_LINE_ITEMS 內)完全不受影響。
+ */
+function resetPLLineItemDefaults() {
+  var updated = withLock_(function () {
+    var count = 0;
+    PL_LINE_ITEMS.forEach(function (line) {
+      var row = {};
+      SCHEMA.PLLineItems.forEach(function (h) { row[h] = line[h] !== undefined ? line[h] : ''; });
+      upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', row);
+      count++;
+    });
+    return count;
+  });
+  reportMaintenance_('已重設 ' + updated + ' 個內建科目的名稱與排序（自訂科目未變動）。');
+}
+
+/**
+ * 清掉 Parameters 分頁中已經沒有任何程式讀取的參數列。
+ * 目前唯一的對象是舊版的「集團預算匯率」：換算銷貨成本與開發總投一律用現況匯率，
+ * 沒有任何計算會讀它，留著只會讓匯率設定頁多一欄要填、卻怎麼填都不影響結果。
+ */
+function removeUnusedParameters() {
+  var known = TAX_RATE_PARAM_NAMES.concat(FX_PARAM_NAMES);
+  var removed = withLock_(function () {
+    var stale = (sheetToObjects_(SHEETS.PARAMETERS) || []).filter(function (r) {
+      return r.ParamName && known.indexOf(r.ParamName) === -1;
+    });
+    stale.forEach(function (r) { deleteRow_(SHEETS.PARAMETERS, 'ParamID', r.ParamID); });
+    return stale.length;
+  });
+  reportMaintenance_(removed
+    ? '已刪除 ' + removed + ' 筆未使用的參數（如舊版的「集團預算匯率」）。'
+    : '沒有未使用的參數需要清除。');
+}
+
+/** 維護作業的結果回報：從 Sheets 選單執行時跳提示，從編輯器直接執行時寫記錄檔 */
+function reportMaintenance_(message) {
+  try {
+    SpreadsheetApp.getUi().alert(message);
+  } catch (e) {
+    Logger.log(message);
+  }
+}
