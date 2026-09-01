@@ -24,6 +24,7 @@ function setupSpreadsheet() {
     auditSheet.setFrozenRows(1);
   }
 
+  invalidateSheetCache_();   // 分頁/標題列剛建立，清掉可能已快取的空結果
   seedPLLineItems_();
 
   // 移除當初建立 Sheet 時自動附帶的空白預設分頁。
@@ -47,12 +48,38 @@ function setupSpreadsheet() {
   }
 }
 
+/**
+ * 灌入預設損益科目。已存在的科目不覆蓋（使用者可能已在「科目設定」頁面改過名稱或排序），
+ * 但自動計算科目的 AutoSource 一律以程式碼為準補寫回去，避免使用者誤刪標記後
+ * 該科目變成可手動輸入、跟自動計算的金額重複計列。
+ */
 function seedPLLineItems_() {
   var sheet = getSheet_(SHEETS.PL_LINE_ITEMS);
-  var existing = sheetToObjects_(SHEETS.PL_LINE_ITEMS).map(function (r) { return r.LineCode; });
+  // 本函式直接用 appendRow/setValue 寫入(沒走 upsertRow_)，所以要自己負責讓讀取快取失效
+
+  var existing = sheetToObjects_(SHEETS.PL_LINE_ITEMS);
+  var existingCodes = existing.map(function (r) { return r.LineCode; });
+
+  var codeCol = SCHEMA.PLLineItems.indexOf('LineCode') + 1;
+  var autoCol = SCHEMA.PLLineItems.indexOf('AutoSource') + 1;
+  // 直接掃 LineCode 欄取得實際列號（sheetToObjects_ 會濾掉空白列，索引不能拿來當列號用）
+  var lastRow = sheet.getLastRow();
+  var codeRows = lastRow >= 2 ? sheet.getRange(2, codeCol, lastRow - 1, 1).getValues() : [];
+
   PL_LINE_ITEMS.forEach(function (line) {
-    if (existing.indexOf(line.LineCode) === -1) {
-      sheet.appendRow(SCHEMA.PLLineItems.map(function (h) { return line[h]; }));
+    if (existingCodes.indexOf(line.LineCode) === -1) {
+      sheet.appendRow(SCHEMA.PLLineItems.map(function (h) { return line[h] !== undefined ? line[h] : ''; }));
+      return;
+    }
+    if (!line.AutoSource) return;
+    for (var i = 0; i < codeRows.length; i++) {
+      if (codeRows[i][0] === line.LineCode) {
+        if (sheet.getRange(i + 2, autoCol).getValue() !== line.AutoSource) {
+          sheet.getRange(i + 2, autoCol).setValue(line.AutoSource);
+        }
+        break;
+      }
     }
   });
+  invalidateSheetCache_(SHEETS.PL_LINE_ITEMS);
 }

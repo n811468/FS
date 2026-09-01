@@ -8,3 +8,11 @@ function doGet() {
     .setTitle('車型損益試算系統')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
+
+/** 開啟 Google Sheet 時掛上自訂選單，初始化資料庫可以從這裡一鍵執行 */
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('車型損益試算')
+    .addItem('初始化資料庫(建立分頁)', 'setupSpreadsheet')
+    .addToUi();
+}

@@ -7,8 +7,12 @@ function getSheet_(name) {
   return sheet;
 }
 
+// 同一次執行內的流水號：整批寫入(如一次存下整張表格)會連續產生很多 ID，
+// 只取 UUID 前 8 碼有機會撞號，撞號的後果是後一列直接覆蓋前一列、而且不會報錯。
+var ID_SEQ_ = 0;
+
 function generateId_(prefix) {
-  return prefix + '-' + Utilities.getUuid().slice(0, 8);
+  return prefix + '-' + Utilities.getUuid().slice(0, 8) + '-' + (++ID_SEQ_);
 }
 
 /**
@@ -23,8 +27,30 @@ function normalizeCellValue_(v) {
   return v;
 }
 
+/**
+ * 單次執行內的分頁讀取快取。
+ * 一次損益計算會重複讀同一張表很多次（光是科目表 PLLineItems，每算一個車系就會被讀 5 次以上），
+ * 每次都是一趟 Sheet API 呼叫，是頁面變慢的主因。這裡在同一次執行中把結果記起來，
+ * 任何寫入都會整個清掉，所以不會讀到過期資料。
+ * 注意：繞過 upsertRow_/deleteRow_ 直接寫 Sheet 的地方(SetupSheets、writePLResult_)
+ * 必須自己呼叫 invalidateSheetCache_()。
+ */
+var SHEET_CACHE_ = {};
+
+function invalidateSheetCache_(sheetName) {
+  if (sheetName) delete SHEET_CACHE_[sheetName];
+  else SHEET_CACHE_ = {};
+}
+
 /** 把整張表讀成 [{欄位:值,...}, ...]，第一列為標題 */
 function sheetToObjects_(sheetName) {
+  if (SHEET_CACHE_[sheetName]) return SHEET_CACHE_[sheetName];
+  var rows = readSheetObjects_(sheetName);
+  SHEET_CACHE_[sheetName] = rows;
+  return rows;
+}
+
+function readSheetObjects_(sheetName) {
   var sheet = getSheet_(sheetName);
   var lastRow = sheet.getLastRow();
   var lastCol = sheet.getLastColumn();
@@ -38,6 +64,32 @@ function sheetToObjects_(sheetName) {
       headers.forEach(function (h, i) { obj[h] = normalizeCellValue_(row[i]); });
       return obj;
     });
+}
+
+/**
+ * 主鍵比對：Sheet 讀回來的值可能是 Number(例如純數字的代號)，
+ * 而前端傳來的一律是 String，直接用 === 會永遠不相等 → 變成重複新增、刪不掉。
+ */
+function samePk_(a, b) {
+  if (a === null || a === undefined || a === '') return false;
+  return String(a) === String(b);
+}
+
+/**
+ * 只更新有帶到的欄位，其餘沿用既有值。
+ * 表單只送出畫面上有的欄位，若直接 upsert，沒出現在表單上的欄位(如情境的攤提基準台數、
+ * 科目的自動計算標記)會被寫成空字串，等於靜靜地把設定清掉。
+ */
+function upsertRowMerge_(sheetName, pkField, rowObj) {
+  var existing = sheetToObjects_(sheetName).filter(function (r) {
+    return samePk_(r[pkField], rowObj[pkField]);
+  })[0];
+  if (existing) {
+    SCHEMA[sheetName].forEach(function (h) {
+      if (rowObj[h] === undefined) rowObj[h] = existing[h];
+    });
+  }
+  return upsertRow_(sheetName, pkField, rowObj);
 }
 
 /** 依 PK 欄位(通常是第一欄) upsert 一列；找不到就新增 */
@@ -55,7 +107,7 @@ function upsertRow_(sheetName, pkField, rowObj) {
   if (lastRow >= 2) {
     var pkValues = sheet.getRange(2, pkCol, lastRow - 1, 1).getValues();
     for (var i = 0; i < pkValues.length; i++) {
-      if (pkValues[i][0] === rowObj[pkField]) {
+      if (samePk_(pkValues[i][0], rowObj[pkField])) {
         targetRow = i + 2;
         break;
       }
@@ -69,6 +121,7 @@ function upsertRow_(sheetName, pkField, rowObj) {
   } else {
     sheet.getRange(targetRow, 1, 1, rowArray.length).setValues([rowArray]);
   }
+  invalidateSheetCache_(sheetName);
   logAudit_(sheetName, rowObj[pkField], targetRow === -1 ? 'INSERT' : 'UPDATE', rowObj);
   return rowObj;
 }
@@ -81,8 +134,9 @@ function deleteRow_(sheetName, pkField, pkValue) {
   if (lastRow < 2) return false;
   var pkValues = sheet.getRange(2, pkCol, lastRow - 1, 1).getValues();
   for (var i = 0; i < pkValues.length; i++) {
-    if (pkValues[i][0] === pkValue) {
+    if (samePk_(pkValues[i][0], pkValue)) {
       sheet.deleteRow(i + 2);
+      invalidateSheetCache_(sheetName);
       logAudit_(sheetName, pkValue, 'DELETE', {});
       return true;
     }
@@ -92,8 +146,9 @@ function deleteRow_(sheetName, pkField, pkValue) {
 
 function rowIdPrefix_(sheetName) {
   var map = {
-    SalesMix: 'SM', MaterialCost: 'MC', DevInvestment: 'DI',
-    OperatingExpense: 'OE', Parameters: 'PM', PLResult: 'PR'
+    SalesMix: 'SM', CostOfSales: 'CS', DevInvestment: 'DI',
+    OperatingExpense: 'OE', Parameters: 'PM', PLResult: 'PR',
+    VehicleTypes: 'VT', Vehicles: 'VH', Scenarios: 'SC'
   };
   return map[sheetName] || 'RW';
 }

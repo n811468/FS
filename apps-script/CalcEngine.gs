@@ -1,60 +1,127 @@
 /**
  * 損益計算引擎：重現 Gate F 損益試算的公式鏈。
- * 為求可維護，公式做了以下簡化(相對於原始 Excel)：
- *   - 營業稅一律用「內含稅價 - 內含稅價/(1+稅率)」反推
- *   - 銷售佣金、貨物稅一律用 Parameters 設定的比率 × 對應基礎金額計算
- *   - f3/f4(車型專案開發費用) 由 DevInvestment 總投金額除以情境總銷售台數自動攤提
- * 需要更精細的個別車型調整時，可在 Parameters 加上 VehicleID 覆寫全域比率。
+ *
+ * 設計原則：
+ *   - 凡是「可以由比率或其他頁面的數字算出來的科目，就不讓使用者手動輸入」，
+ *     避免同一筆金額在兩個地方各填一次而對不起來。目前自動計算的科目為：
+ *       P1~P9 售價結構(營業稅、銷售佣金、廠價...)：由 SalesMix 售價欄位 + 比率設定推算
+ *       b5 模具費用 / b8 新增專屬設備：開發總投(模具/設備)低減後金額 ÷ LIFE CYCLE 總台數
+ *       b13 貨物稅：(廠價 - 水平配件外移調降 - 廣促margin) × 完稅價格計算率 ÷ (1+貨物稅率) × 貨物稅率
+ *       d4 季Margin：廠價(未稅) × 季Margin率
+ *       f3/f4 車型專案開發費用：開發總投(費用類) 低減後金額 ÷ LIFE CYCLE 總台數
+ *   - 所有比率參數以百分比數值儲存(5 = 5%)，取用時一律經過 pct_() 轉成小數。
+ *   - 外幣的銷貨成本用「匯率設定」頁的現況匯率換算，不在成本列上逐筆填匯率。
  */
+
+/** 百分比數值(0~100) -> 小數 */
+function pct_(v) {
+  return toNumber_(v) / 100;
+}
+
+/**
+ * 取某幣別換算台幣的匯率(1 外幣 = ? 台幣)。
+ * 本位幣或沒設定匯率時回傳 1，讓金額原封不動帶入，不會因為忘了設匯率就被歸零。
+ */
+function fxRateFor_(params, currency, vehicleId) {
+  if (!currency || currency === BASE_CURRENCY) return 1;
+  var match = params.filter(function (p) {
+    return p.ParamName === COST_FX_PARAM_NAME && p.Currency === currency &&
+      (!p.VehicleID || p.VehicleID === vehicleId);
+  });
+  var specific = match.filter(function (p) { return p.VehicleID === vehicleId; });
+  var picked = specific.length ? specific[0] : match[0];
+  return picked ? (toNumber_(picked.Value) || 1) : 1;
+}
+
+/**
+ * 貨物稅：完稅價格要先扣掉「水平配件外移調降廠價」與「廣促margin」，再乘上法定計算率、
+ * 除以 (1+貨物稅率) 換算成完稅價格，最後乘貨物稅率。
+ *   貨物稅 = (廠價 - 水平配件外移調降 - Σ(可扣除的d科目)) × 完稅價格計算率 ÷ (1+貨物稅率) × 貨物稅率
+ * 哪些 d 科目可以扣除，由 PLLineItems 的 CommodityTaxDeduct 欄位決定(預設為廣宣/促銷/批標售/季Margin)。
+ */
+function commodityTax_(exFactoryPrice, horizontalPartsAdj, dLines, taxRate, calcRate) {
+  var deductCodes = commodityTaxDeductCodes_();
+  var deduct = Object.keys(dLines).reduce(function (sum, code) {
+    return sum + (deductCodes.indexOf(code) !== -1 ? dLines[code] : 0);
+  }, 0);
+  var base = (exFactoryPrice - toNumber_(horizontalPartsAdj) - deduct) * (calcRate || 1);
+  return base / (1 + taxRate) * taxRate;
+}
+
+function commodityTaxDeductCodes_() {
+  return getPLLineItems()
+    .filter(function (d) { return String(d.CommodityTaxDeduct || '').toUpperCase() === 'Y'; })
+    .map(function (d) { return d.LineCode; });
+}
 
 function calculatePL(scenarioId, vehicleId) {
   var salesMixRow = getSalesMix(scenarioId).filter(function (r) { return r.VehicleID === vehicleId; })[0];
   if (!salesMixRow) throw new Error('找不到 SalesMix 資料：' + scenarioId + ' / ' + vehicleId);
 
   var params = getParameters(scenarioId);
-  var taxRate = lookupParam_(params, '營業稅率', vehicleId);
-  var commissionRate = lookupParam_(params, '銷售佣金率', vehicleId);
-  var marginRate = lookupParam_(params, '季Margin率', vehicleId);
+  var taxRate = pct_(lookupParam_(params, '營業稅率', vehicleId));
+  var commissionRate = pct_(lookupParam_(params, '銷售佣金率', vehicleId));
+  var marginRate = pct_(lookupParam_(params, '季Margin率', vehicleId));
+  var commodityTaxRate = pct_(lookupParam_(params, '貨物稅率', vehicleId));
 
-  var listPrice = toNumber_(salesMixRow.ListPriceTaxIncl);
-  var accessoryPrice = toNumber_(salesMixRow.MandatoryAccessoryPrice);
-  var scrapFee = toNumber_(salesMixRow.ScrapFee);
+  // ---- 售價結構(P1~P9)：這一段以前只在程式裡算、儀表板看不到，現在逐列輸出 ----
+  var listPrice = toNumber_(salesMixRow.ListPriceTaxIncl);                 // P1 建議零售價(含稅)
+  var accessoryPrice = toNumber_(salesMixRow.MandatoryAccessoryPrice);     // P2 強配件售價
+  var listPriceExAccessory = listPrice - accessoryPrice;                   // P3 建議零售價(不含強配,含稅)
+  var scrapFeeRaw = toNumber_(salesMixRow.ScrapFee);
+  // 廢車處理費可能用含稅或未稅金額登打，一律換算成含稅金額後再扣，
+  // 確保跟 ListPriceTaxIncl(含稅零售價)口徑一致，全份損益試算稅別才不會混用。
+  // 廢車處理費、營業稅、銷售佣金取到元(與 Gate F Excel 的 ROUND 一致)，避免對帳時出現角分差異
+  var scrapFee = salesMixRow.ScrapFeeTaxStatus === '未稅'
+    ? Math.round(scrapFeeRaw * (1 + taxRate)) : scrapFeeRaw;               // P4
 
-  var actualRetailPrice = listPrice - scrapFee; // ③
-  var salesTax = actualRetailPrice - actualRetailPrice / (1 + taxRate); // 內含稅反推
-  var commission = actualRetailPrice * commissionRate;
-  var marginDeduction = actualRetailPrice * marginRate;
-  var exFactoryPrice = actualRetailPrice - salesTax - commission - marginDeduction; // 廠價(未稅)
+  var actualRetailPrice = listPriceExAccessory - scrapFee;                 // P5 實際零售價(含稅)
+  var salesTax = Math.round(actualRetailPrice * taxRate / (1 + taxRate));  // P6 營業稅(內含反推)
+  var actualRetailPriceExTax = actualRetailPrice - salesTax;               // 實際零售價(未稅)
+  var commission = Math.round(actualRetailPriceExTax * commissionRate);    // P7 銷售佣金(以未稅零售價為基礎)
+  var exFactoryPrice = actualRetailPrice - salesTax - commission;          // P8 廠價(未稅)
+  var accessoryRevenue = accessoryPrice / (1 + taxRate);                   // P9 強配收入(未稅)
 
-  var revenueA = exFactoryPrice + accessoryPrice; // A
+  var revenueA = exFactoryPrice + accessoryRevenue;                        // A 收入(未稅,含強配)
 
-  // ---- B 銷貨成本：彙總 MaterialCost 的 b1~b13 ----
-  var materialRows = getMaterialCost(scenarioId, vehicleId);
-  var bLines = {};
-  materialRows.forEach(function (r) {
-    var code = r.LineCode || MATERIAL_COST_LINE_MAP[r.CostCategory];
-    if (!code) return;
-    bLines[code] = (bLines[code] || 0) + toNumber_(r.Amount);
-  });
-  var totalB = sumValues_(bLines);
-  var grossProfitC = revenueA - totalB; // C 生產毛利
+  // ---- 開發總投攤提(模具/設備 -> 銷貨成本；費用 -> f3/f4) ----
+  var devPerUnit = amortizeDevInvestmentPerUnit_(scenarioId);
 
-  // ---- Σd 銷售費用(d1~d5) ----
+  // ---- Σd 銷售費用：貨物稅的完稅價格要扣廣促margin，所以 d 類要先算 ----
   var opexRows = getOperatingExpense(scenarioId, vehicleId);
-  var dLines = pickLines_(opexRows, ['d1', 'd2', 'd3', 'd4', 'd5']);
+  var dLines = pickLines_(opexRows, manualLineCodesFor_(['E']));
+  dLines.d4 = exFactoryPrice * marginRate;                                 // 季Margin = 廠價(未稅) × 季Margin率
   var totalD = sumValues_(dLines);
+
+  // ---- B 銷貨成本：手動輸入的成本列 + 自動計算的成本列 ----
+  var costRows = getCostOfSales(scenarioId, vehicleId);
+  var knownCodes = getPLLineItems().map(function (d) { return d.LineCode; });
+  var bLines = {};
+  costRows.forEach(function (r) {
+    var code = r.LineCode;
+    // 科目已被刪除的殘留金額不計入，否則 B 會跟畫面上列出的 b 科目合計對不起來
+    if (!code || knownCodes.indexOf(code) === -1) return;
+    // 外幣成本用「匯率設定」頁該幣別的現況匯率換算，不在成本列逐筆填匯率
+    bLines[code] = (bLines[code] || 0) + toNumber_(r.Amount) * fxRateFor_(params, r.Currency, vehicleId);
+  });
+  bLines.b5 = devPerUnit.moldPerUnit;                    // 模具費用
+  bLines.b8 = devPerUnit.equipPerUnit;                   // 新增專屬設備
+  bLines.b13 = commodityTax_(exFactoryPrice, toNumber_(salesMixRow.HorizontalPartsPriceAdj),
+    dLines, commodityTaxRate, pct_(lookupParam_(params, '貨物稅完稅價格計算率', vehicleId)));
+
+  var totalB = sumValues_(bLines);
+  var grossProfitC = revenueA - totalB;     // C 生產毛利
   var grossProfitE = grossProfitC - totalD; // E 銷貨毛利
 
-  // ---- Σf 費用(f1 直接輸入 + f3/f4 由開發總投攤提) ----
-  var f1 = pickLines_(opexRows, ['f1']).f1 || 0;
-  var perUnit = amortizeDevInvestmentPerUnit_(scenarioId);
-  var f3 = perUnit.cmcPerUnit;
-  var f4 = perUnit.basePerUnit;
-  var totalF = f1 + f3 + f4;
+  // ---- Σf 費用(f1 直接輸入 + f3/f4 由開發總投費用類攤提) ----
+  var fLines = pickLines_(opexRows, manualLineCodesFor_(['G']));
+  fLines.f3 = devPerUnit.cmcExpensePerUnit;
+  fLines.f4 = devPerUnit.baseExpensePerUnit;
+  var totalF = sumValues_(fLines);
   var contributionG = grossProfitE - totalF; // G 產品貢獻
 
-  // ---- Σh 固定營業費用(h1,h3,h4) ----
-  var hLines = pickLines_(opexRows, ['h1', 'h3', 'h4']);
+  // ---- Σh 固定營業費用 ----
+  var hLines = pickLines_(opexRows, manualLineCodesFor_(['I']));
   var totalH = sumValues_(hLines);
   var operatingProfitI = contributionG - totalH; // I 營業淨利(未扣前瞻)
 
@@ -62,11 +129,17 @@ function calculatePL(scenarioId, vehicleId) {
   var operatingProfitK = operatingProfitI - j; // K 營業淨利
 
   var lineValues = Object.assign(
-    { A: revenueA, B: totalB },
+    {
+      P1: listPrice, P2: accessoryPrice, P3: listPriceExAccessory, P4: scrapFee,
+      P5: actualRetailPrice, P6: salesTax, P7: commission, P8: exFactoryPrice, P9: accessoryRevenue,
+      A: revenueA, B: totalB
+    },
     bLines,
     { C: grossProfitC },
     dLines,
-    { E: grossProfitE, f1: f1, f3: f3, f4: f4, G: contributionG },
+    { E: grossProfitE },
+    fLines,
+    { G: contributionG },
     hLines,
     { I: operatingProfitI, J: j, K: operatingProfitK }
   );
@@ -82,6 +155,7 @@ function calculatePL(scenarioId, vehicleId) {
   };
 }
 
+/** 某情境(= 某車型)底下所有車系的損益，外加以銷售構成比加權的平均列 */
 function calculatePLAllVehicles(scenarioId) {
   var salesMix = getSalesMix(scenarioId);
   var results = salesMix.map(function (row) { return calculatePL(scenarioId, row.VehicleID); });
@@ -105,30 +179,180 @@ function calculatePLAllVehicles(scenarioId) {
   };
 }
 
-/** 依 DevInvestment 攤提出「CMC單台」「BASE廠單台」開發成本 */
+/** 單獨取某情境的加權平均損益（儀表板比較欄位用） */
+function calculateScenarioWeighted(scenarioId) {
+  return calculatePLAllVehicles(scenarioId).weightedAverage;
+}
+
+/**
+ * 多車型/多情境比較：儀表板的核心 API。
+ * selections = [{ ScenarioID, VehicleID }]，VehicleID 留空代表該情境的「加權平均」。
+ * 因為不同車型的科目不見得相同，回傳的 lines 是所有欄位實際出現過科目的聯集(依 SortOrder 排序)，
+ * 某欄位沒有該科目時值為 null，前端顯示空白而不是 0。
+ */
+function calculateComparison(selections) {
+  selections = selections || [];
+  var vehicleTypes = getVehicleTypes();
+  var scenarios = getScenarios();
+  var vehicles = getVehicles();
+  var lineDefs = getPLLineItems();
+
+  var columns = selections.map(function (sel) {
+    var scenario = scenarios.filter(function (s) { return s.ScenarioID === sel.ScenarioID; })[0] || {};
+    var vehicle = vehicles.filter(function (v) { return v.VehicleID === sel.VehicleID; })[0];
+    var vehicleType = vehicleTypes.filter(function (t) { return t.VehicleTypeID === scenario.VehicleTypeID; })[0] || {};
+
+    var lines = sel.VehicleID ? calculatePL(sel.ScenarioID, sel.VehicleID).lines
+      : calculateScenarioWeighted(sel.ScenarioID);
+
+    var amounts = {};
+    lines.forEach(function (l) { amounts[l.LineCode] = l.Amount; });
+
+    return {
+      scenarioId: sel.ScenarioID,
+      vehicleId: sel.VehicleID || '',
+      vehicleTypeId: scenario.VehicleTypeID || '',
+      label: [
+        scenario.VehicleTypeID || vehicleType.VehicleTypeID || '',
+        scenario.Gate || '',
+        scenario.ScenarioName || '',
+        sel.VehicleID ? ((vehicle && vehicle.VehicleCode) || sel.VehicleID) : '加權平均'
+      ].filter(function (p) { return p; }).join(' / '),
+      amounts: amounts,
+      revenue: amounts.A || 0
+    };
+  });
+
+  // 只列出至少有一個比較欄位真的算出數字的科目(不同車型科目不同時，表格才不會塞滿空列)
+  var usedLines = lineDefs.filter(function (def) {
+    return columns.some(function (col) { return col.amounts[def.LineCode] !== undefined; });
+  }).map(function (def) {
+    return { LineCode: def.LineCode, LineName: def.LineName, Category: def.Category, AutoSource: def.AutoSource || '' };
+  });
+
+  return { columns: columns, lines: usedLines };
+}
+
+/** 儀表板比較欄位選擇器用：一次回傳車型 -> 情境/車系的完整選項樹 */
+function getComparisonOptions() {
+  var scenarios = getScenarios();
+  var vehicles = getVehicles();
+  return getVehicleTypes().map(function (t) {
+    return {
+      VehicleTypeID: t.VehicleTypeID,
+      scenarios: scenarios.filter(function (s) { return s.VehicleTypeID === t.VehicleTypeID; })
+        .map(function (s) {
+          return { ScenarioID: s.ScenarioID, Gate: s.Gate || '', ScenarioName: s.ScenarioName || '' };
+        }),
+      vehicles: vehicles.filter(function (v) { return v.VehicleTypeID === t.VehicleTypeID; })
+        .map(function (v) { return { VehicleID: v.VehicleID, VehicleCode: v.VehicleCode || '' }; })
+    };
+  });
+}
+
+/**
+ * 依 DevInvestment 攤提出單台開發成本。
+ * 模具/設備 -> 銷貨成本(b5/b8)；費用類 -> 車型專案開發費用(f3 CMC / f4 BASE廠)。
+ * 分母為該情境的 LIFE CYCLE 總台數 = Σ(月銷量 × 12 × LC年限)。
+ */
 function amortizeDevInvestmentPerUnit_(scenarioId) {
   var devRows = getDevInvestment(scenarioId);
-  var salesMix = getSalesMix(scenarioId);
+  var totalUnits = getLifeCycleUnits(scenarioId);
+  var empty = { moldPerUnit: 0, equipPerUnit: 0, cmcExpensePerUnit: 0, baseExpensePerUnit: 0, totalUnits: totalUnits };
+  if (totalUnits <= 0) return empty;
 
-  var totalUnits = salesMix.reduce(function (sum, r) {
-    return sum + toNumber_(r.MonthlyVolume) * 12 * toNumber_(r.LifeCycleYears);
-  }, 0);
-  if (totalUnits <= 0) return { cmcPerUnit: 0, basePerUnit: 0 };
+  // 現況情境沒有挑戰低減目標，一律用原始金額；目標情境才套用低減率。
+  var isBaseline = isBaselineScenario_(scenarioId);
+  var params = getParameters(scenarioId);
 
-  var cmcTotal = 0, baseTotal = 0;
+  var moldTotal = 0, equipTotal = 0, cmcExpenseTotal = 0, baseExpenseTotal = 0;
   devRows.forEach(function (r) {
-    var reduced = toNumber_(r.Amount) * (1 - toNumber_(r.ChallengeReductionPct));
-    if (r.Department === DEV_INVESTMENT_BASE_FACTORY_DEPT) {
-      baseTotal += reduced;
+    // 投入金額可用外幣登打(如 BASE廠開發費以 CNY 計)，換算方式與銷貨成本一致
+    var amount = toNumber_(r.Amount) * fxRateFor_(params, r.Currency, '');
+    // ChallengeReductionPct 以 0~100 的百分比數值儲存(如 15 代表 15%)
+    var reduced = amount * (isBaseline ? 1 : 1 - pct_(r.ChallengeReductionPct));
+    if (r.AssetType === '模具') {
+      moldTotal += reduced;
+    } else if (r.AssetType === '設備') {
+      equipTotal += reduced;
+    } else if (r.Department === DEV_INVESTMENT_BASE_FACTORY_DEPT) {
+      baseExpenseTotal += reduced;
     } else {
-      cmcTotal += reduced;
+      cmcExpenseTotal += reduced;
     }
   });
 
   return {
-    cmcPerUnit: cmcTotal / totalUnits,
-    basePerUnit: baseTotal / totalUnits
+    moldPerUnit: moldTotal / totalUnits,
+    equipPerUnit: equipTotal / totalUnits,
+    cmcExpensePerUnit: cmcExpenseTotal / totalUnits,
+    baseExpensePerUnit: baseExpenseTotal / totalUnits,
+    totalUnits: totalUnits
   };
+}
+
+/** 是否為現況情境（現況沒有挑戰低減目標） */
+function isBaselineScenario_(scenarioId) {
+  var s = getScenarios().filter(function (r) { return r.ScenarioID === scenarioId; })[0];
+  return !s || !s.ScenarioType || s.ScenarioType === SCENARIO_TYPE_BASELINE;
+}
+
+/**
+ * 開發總投攤提用的 LIFE CYCLE 總台數。
+ * 情境若有填「攤提基準台數」(AmortMonthlyVolume × 12 × AmortLifeCycleYears)就以它為準，
+ * 因為實務上開發投資的攤提基準台數常與銷售構成的預估台數不同(例如銷售估 365 台/月，
+ * 但開發投資以 300 台/月 × 12 年攤提)。沒填就用銷售構成推算。
+ */
+function getLifeCycleUnits(scenarioId) {
+  var scenario = getScenarios().filter(function (s) { return s.ScenarioID === scenarioId; })[0];
+  if (scenario) {
+    var vol = toNumber_(scenario.AmortMonthlyVolume);
+    var years = toNumber_(scenario.AmortLifeCycleYears);
+    if (vol > 0 && years > 0) return vol * 12 * years;
+  }
+  return getSalesMixLifeCycleUnits(scenarioId);
+}
+
+/** 銷售構成推算的 LIFE CYCLE 總台數 = Σ(預估銷售台數(月) × 12 × LC年限) */
+function getSalesMixLifeCycleUnits(scenarioId) {
+  return getSalesMix(scenarioId).reduce(function (sum, r) {
+    return sum + toNumber_(r.MonthlyVolume) * 12 * toNumber_(r.LifeCycleYears);
+  }, 0);
+}
+
+/** 開發總投頁面用：回傳低減後金額與單台攤提，讓使用者直接看到攤提結果 */
+function getDevInvestmentSummary(scenarioId) {
+  var perUnit = amortizeDevInvestmentPerUnit_(scenarioId);
+  var isBaseline = isBaselineScenario_(scenarioId);
+  var rows = getDevInvestment(scenarioId).map(function (r) {
+    var pctValue = isBaseline ? 0 : toNumber_(r.ChallengeReductionPct);
+    return {
+      RowID: r.RowID,
+      Department: r.Department,
+      AssetType: r.AssetType,
+      Currency: r.Currency || BASE_CURRENCY,
+      Notes: r.Notes || '',
+      Amount: toNumber_(r.Amount),
+      ChallengeReductionPct: pctValue,
+      ReducedAmount: toNumber_(r.Amount) * (1 - pctValue / 100)
+    };
+  });
+  var scenario = getScenarios().filter(function (s) { return s.ScenarioID === scenarioId; })[0] || {};
+  return {
+    lifeCycleUnits: perUnit.totalUnits,
+    salesMixLifeCycleUnits: getSalesMixLifeCycleUnits(scenarioId),
+    amortMonthlyVolume: scenario.AmortMonthlyVolume === undefined ? '' : scenario.AmortMonthlyVolume,
+    amortLifeCycleYears: scenario.AmortLifeCycleYears === undefined ? '' : scenario.AmortLifeCycleYears,
+    currencies: getConfiguredCurrencies(scenarioId),
+    perUnit: perUnit, isBaseline: isBaseline, rows: rows
+  };
+}
+
+/** 某個父科目底下、可以手動輸入的明細科目代碼(排除自動計算科目) */
+function manualLineCodesFor_(parentCodes) {
+  return getPLLineItems()
+    .filter(function (d) { return parentCodes.indexOf(d.ParentLine) !== -1 && !d.AutoSource; })
+    .map(function (d) { return d.LineCode; });
 }
 
 function pickLines_(rows, codes) {
@@ -146,25 +370,33 @@ function sumValues_(obj) {
   return Object.keys(obj).reduce(function (s, k) { return s + obj[k]; }, 0);
 }
 
+/**
+ * 寫入損益快照：先清掉該 scenario+vehicle 的舊快照再寫新的。
+ * 舊資料用「整張重寫」而非逐列 deleteRow —— 儀表板一次比較多個欄位時，
+ * 逐列刪除會累積成上百次 Sheet 異動，容易撞到執行時間上限。
+ */
 function writePLResult_(scenarioId, vehicleId, lineValues, revenue, timestamp) {
   var sheet = getSheet_(SHEETS.PL_RESULT);
-  // 先刪除該 scenario+vehicle 的舊快照
+  var width = SCHEMA.PLResult.length;
   var lastRow = sheet.getLastRow();
+
+  var kept = [];
   if (lastRow >= 2) {
-    var data = sheet.getRange(2, 1, lastRow - 1, SCHEMA.PLResult.length).getValues();
-    for (var i = data.length - 1; i >= 0; i--) {
-      if (data[i][1] === scenarioId && data[i][2] === vehicleId) {
-        sheet.deleteRow(i + 2);
-      }
-    }
+    kept = sheet.getRange(2, 1, lastRow - 1, width).getValues().filter(function (row) {
+      var isBlank = row.every(function (v) { return v === '' || v === null; });
+      return !isBlank && !(samePk_(row[1], scenarioId) && String(row[2] || '') === String(vehicleId || ''));
+    });
+    sheet.getRange(2, 1, lastRow - 1, width).clearContent();
   }
+
   var rows = Object.keys(lineValues).map(function (code) {
     var amount = lineValues[code];
     return [generateId_('PR'), scenarioId, vehicleId, code, amount, revenue ? amount / revenue : 0, timestamp];
   });
-  if (rows.length) {
-    sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, SCHEMA.PLResult.length).setValues(rows);
-  }
+
+  var all = kept.concat(rows);
+  if (all.length) sheet.getRange(2, 1, all.length, width).setValues(all);
+  invalidateSheetCache_(SHEETS.PL_RESULT);
 }
 
 function buildResultLines_(lineValues, revenue) {
