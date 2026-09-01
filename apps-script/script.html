@@ -128,23 +128,38 @@ function onScenarioChange(value) {
   else if (ENTITIES[currentTab]) renderEntityPanel(currentTab);
 }
 
+function showGlobalError(err) {
+  const box = document.getElementById('global-error');
+  if (!box) { console.error(err); return; }
+  box.textContent = '發生錯誤：' + (err && err.message ? err.message : err);
+  box.style.display = 'block';
+}
+function clearGlobalError() {
+  const box = document.getElementById('global-error');
+  if (box) box.style.display = 'none';
+}
+
 function loadScenarioSelector(preferredId) {
-  google.script.run.withSuccessHandler(scenarios => {
-    const sel = document.getElementById('scenario-selector');
-    sel.innerHTML = '<option value="">-- 選擇情境 --</option>' +
-      scenarios.map(s => `<option value="${s.ScenarioID}">${s.ScenarioName || s.ScenarioID}</option>`).join('');
-    const ids = scenarios.map(s => s.ScenarioID);
-    // 優先順序：剛新增/編輯的情境 > 目前已選的情境(若還存在) > 第一筆
-    const pick = (preferredId && ids.indexOf(preferredId) !== -1) ? preferredId
-      : (currentScenarioId && ids.indexOf(currentScenarioId) !== -1) ? currentScenarioId
-      : ids[0] || '';
-    if (pick) {
-      sel.value = pick;
-      onScenarioChange(pick);
-    } else {
-      currentScenarioId = '';
-    }
-  }).getScenarios();
+  google.script.run
+    .withSuccessHandler(scenarios => {
+      clearGlobalError();
+      const sel = document.getElementById('scenario-selector');
+      sel.innerHTML = '<option value="">-- 選擇情境 --</option>' +
+        scenarios.map(s => `<option value="${s.ScenarioID}">${s.ScenarioName || s.ScenarioID}</option>`).join('');
+      const ids = scenarios.map(s => s.ScenarioID);
+      // 優先順序：剛新增/編輯的情境 > 目前已選的情境(若還存在) > 第一筆
+      const pick = (preferredId && ids.indexOf(preferredId) !== -1) ? preferredId
+        : (currentScenarioId && ids.indexOf(currentScenarioId) !== -1) ? currentScenarioId
+        : ids[0] || '';
+      if (pick) {
+        sel.value = pick;
+        onScenarioChange(pick);
+      } else {
+        currentScenarioId = '';
+      }
+    })
+    .withFailureHandler(showGlobalError)
+    .getScenarios();
 }
 
 /* ---------------- 通用表單/表格渲染 ---------------- */
@@ -175,7 +190,7 @@ function renderForm(key, cfg) {
     } else if (f.type === 'text-suggest') {
       control = `<input id="${id}" type="text" list="dl-${id}"/><datalist id="dl-${id}"></datalist>`;
     } else {
-      control = `<input id="${id}" type="${f.type || 'text'}" step="any"/>`;
+      control = `<input id="${id}" type="${f.type || 'text'}" step="any"${f.required ? ' required' : ''}/>`;
     }
     return `<label>${f.label}${f.required ? ' *' : ''} ${control}</label>`;
   }).join('');
@@ -244,7 +259,10 @@ function submitEntityForm(evt, key) {
 
 function loadEntityData(key, cfg) {
   const args = cfg.scoped ? [currentScenarioId] : [];
-  google.script.run.withSuccessHandler(rows => renderTable(key, cfg, rows))[cfg.getFn](...args);
+  google.script.run
+    .withSuccessHandler(rows => { clearGlobalError(); renderTable(key, cfg, rows); })
+    .withFailureHandler(showGlobalError)
+    [cfg.getFn](...args);
 }
 
 function renderTable(key, cfg, rows) {
