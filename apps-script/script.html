@@ -1791,16 +1791,33 @@ function subtotalCheckHtml(cols) {
  * 損益表本體。版面照實際 Gate F 損益試算表：一欄比較欄位 = 金額 + % 兩個小欄，
  * 明細科目縮排在它的小計底下，小計/毛利/淨利整列反白，一眼看得出哪幾列加起來是哪一列。
  */
-/** 科目名稱後面的公式(如「營業淨利(=I-J)」)平常不必看，改成滑鼠移到科目名稱上才顯示 */
-function nameWithFormulaHint(name) {
+/**
+ * 科目名稱後面的公式(如「營業淨利(=I-J)」)平常不必看，改成滑鼠移到科目名稱上才顯示。
+ * 公式本身是用科目代碼寫的(A/B/P8/P9...)，一般人看不懂「I-J」是什麼，
+ * 所以顯示前先用 codeNameMap 把代碼換成看得懂的科目名稱(如「營業淨利(未扣前瞻) − 前瞻費用」)。
+ */
+function nameWithFormulaHint(name, codeNameMap) {
   const parts = splitFormula(name);
-  return esc(parts.base) + (parts.formula
-    ? ` <span class="formula-hint" tabindex="0" data-tip="${esc(parts.formula)}">ƒ</span>` : '');
+  const formula = humanizeFormula_(parts.formula, codeNameMap);
+  return esc(parts.base) + (formula
+    ? ` <span class="formula-hint" tabindex="0" data-tip="${esc(formula)}">ƒ</span>` : '');
 }
 function splitFormula(name) {
   const s = String(name || '');
   const m = s.match(/^(.*?)\s*(\(=.*\))\s*$/);
   return m ? { base: m[1], formula: m[2] } : { base: s, formula: '' };
+}
+
+/** 從目前這張比較表用到的科目清單建立「代碼 -> 名稱」對照，供公式提示與其他 hover 文字換成看得懂的名稱 */
+function buildCodeNameMap_(lines) {
+  const map = {};
+  (lines || []).forEach(l => { map[l.LineCode] = shortLineName(l.LineName); });
+  return map;
+}
+/** 把公式字串裡的科目代碼(P1~P9、單一大寫字母如 A/B/I/J)換成對照表裡的名稱；查不到就照原樣顯示 */
+function humanizeFormula_(formula, codeNameMap) {
+  if (!formula || !codeNameMap) return formula;
+  return formula.replace(/\bP[1-9]\b|\b[A-Z]\b/g, code => codeNameMap[code] || code);
 }
 
 /** 自動計算科目(AutoSource)的圓點提示：滑鼠移過去看它是怎麼算出來的 */
@@ -1840,6 +1857,7 @@ function plTableHtml(cols, lines) {
   const plLines = lines.filter(l => !l.isPriceStructure);
   // B/E/G/I 底下有明細的大項才給收合箭頭
   const groupParents = ['B', 'E', 'G', 'I'].filter(p => lines.some(l => l.ParentLine === p));
+  const codeNameMap = buildCodeNameMap_(lines);
 
   const sectionRow = text => `<tr class="section"><td colspan="${span}">${esc(text)}</td></tr>`;
 
@@ -1862,7 +1880,7 @@ function plTableHtml(cols, lines) {
          </button>` : '';
     const hidden = (line.ParentLine && collapsedGroups.has(line.ParentLine)) ? ' hidden' : '';
     const cls = [line.isSubtotal ? 'subtotal' : '', line.ParentLine ? 'detail' : ''].filter(c => c).join(' ');
-    return `<tr class="${cls}"${hidden}><td class="row-head">${toggleBtn}${nameWithFormulaHint(line.LineName)}${autoTag}</td>${cells}</tr>`;
+    return `<tr class="${cls}"${hidden}><td class="row-head">${toggleBtn}${nameWithFormulaHint(line.LineName, codeNameMap)}${autoTag}</td>${cells}</tr>`;
   };
 
   return `
