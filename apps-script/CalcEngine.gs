@@ -82,8 +82,22 @@ function calculatePL(scenarioId, vehicleId) {
   };
 }
 
-/** 純計算損益：不寫入 PLResult，只回傳算出來的結果。calculatePL() 在這之上加寫入快照。 */
+/**
+ * 純計算損益：不寫入 PLResult，只回傳算出來的結果。calculatePL() 在這之上加寫入快照。
+ *
+ * 同一次執行內以「情境|車系」為鍵記住結果：儀表板一次比較常常同時放「某情境的各車系」跟
+ * 「同一情境的加權平均」，加權平均要把該情境每個車系都算一遍，等於每個車系被算了兩次；
+ * 開發總投攤提、貨物稅等每一步也都要重新讀表過濾。記住之後每個(情境,車系)只算一次。
+ * 任何寫入都會透過 invalidateSheetCache_ → resetExecutionCaches_ 清掉，不會讀到舊結果。
+ */
+var PL_CORE_MEMO_ = {};
 function calculatePLCore_(scenarioId, vehicleId) {
+  var key = String(scenarioId) + '|' + String(vehicleId);
+  if (!PL_CORE_MEMO_[key]) PL_CORE_MEMO_[key] = calculatePLCoreUncached_(scenarioId, vehicleId);
+  return PL_CORE_MEMO_[key];
+}
+
+function calculatePLCoreUncached_(scenarioId, vehicleId) {
   var salesMixRow = getSalesMix(scenarioId).filter(function (r) { return r.VehicleID === vehicleId; })[0];
   if (!salesMixRow) throw new Error('找不到 SalesMix 資料：' + scenarioId + ' / ' + vehicleId);
 
@@ -262,8 +276,12 @@ function calculateComparison(selections) {
       vehicleTypeId: scenario.VehicleTypeID || '',
       vehicleTypeLabel: scenario.VehicleTypeID || vehicleType.VehicleTypeID || '',
       scenarioLabel: [scenario.Gate || '', scenario.ScenarioName || ''].filter(function (p) { return p; }).join(' '),
+      scenarioType: scenario.ScenarioType || '',
+      scenarioNotes: scenario.Notes || '',
       vehicleLabel: sel.VehicleID ? ((vehicle && vehicle.VehicleCode) || sel.VehicleID) : '加權平均',
       isWeighted: !sel.VehicleID,
+      // 銷量資訊：儀表板用來 (1) hover 欄位標題時顯示這一欄的台數基礎 (2) 把單台金額換算成年度/LC 總額
+      volume: columnVolumeInfo_(sel.ScenarioID, sel.VehicleID, vehicles),
       commodityTaxDetail: vehicleCalc ? vehicleCalc.commodityTaxDetail : null,
       label: [
         scenario.VehicleTypeID || vehicleType.VehicleTypeID || '',
@@ -295,6 +313,45 @@ function calculateComparison(selections) {
   });
 
   return { columns: columns, lines: usedLines, subtotalCodes: PROTECTED_LINE_CODES };
+}
+
+/**
+ * 比較欄位的銷量基礎。
+ * 單一車系：該車系在銷售構成表上的月銷量、LC 年限、構成比，總台數 = 月銷量 × 12 × LC年限。
+ * 加權平均：月銷量/總台數是該情境所有車系加總，並附上各車系的構成比(mix)，
+ * 讓儀表板 hover 標題時看得出「加權平均」是由哪幾個車系、各佔多少混出來的。
+ * 儀表板的「年度總額 / LC 總額」就是用這裡的 monthlyVolume / units 去乘單台金額。
+ */
+function columnVolumeInfo_(scenarioId, vehicleId, vehicles) {
+  var rows = getSalesMix(scenarioId);
+  var nameOf = function (id) {
+    var v = vehicles.filter(function (x) { return x.VehicleID === id; })[0];
+    return (v && v.VehicleCode) || id;
+  };
+  var unitsOf = function (r) { return toNumber_(r.MonthlyVolume) * 12 * toNumber_(r.LifeCycleYears); };
+  if (vehicleId) {
+    var row = rows.filter(function (r) { return r.VehicleID === vehicleId; })[0] || {};
+    return {
+      monthlyVolume: toNumber_(row.MonthlyVolume),
+      lifeCycleYears: toNumber_(row.LifeCycleYears),
+      units: unitsOf(row),
+      salesMixPct: toNumber_(row.SalesMixPct),
+      mix: []
+    };
+  }
+  var totalPct = rows.reduce(function (s, r) { return s + toNumber_(r.SalesMixPct); }, 0);
+  var years = rows.map(function (r) { return toNumber_(r.LifeCycleYears); }).filter(function (y) { return y > 0; });
+  return {
+    monthlyVolume: rows.reduce(function (s, r) { return s + toNumber_(r.MonthlyVolume); }, 0),
+    // 各車系 LC 年限通常一樣；不一樣時標題只顯示範圍，總台數仍是逐車系加總
+    lifeCycleYears: years.length ? Math.min.apply(null, years) : 0,
+    lifeCycleYearsMax: years.length ? Math.max.apply(null, years) : 0,
+    units: rows.reduce(function (s, r) { return s + unitsOf(r); }, 0),
+    salesMixPct: totalPct,
+    mix: rows.map(function (r) {
+      return { vehicleLabel: nameOf(r.VehicleID), pct: toNumber_(r.SalesMixPct), monthlyVolume: toNumber_(r.MonthlyVolume) };
+    })
+  };
 }
 
 /**

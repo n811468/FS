@@ -53,6 +53,17 @@ function invalidateSheetCache_(sheetName) {
     cache.remove(sheetCacheKey_(name));
   });
   if (!sheetName) SHEET_CACHE_ = {};
+  resetCalcMemo_();
+}
+
+/**
+ * 清掉「單次執行內」的計算結果記憶(見 CalcEngine.gs 的 PL_CORE_MEMO_)。
+ * 任何一張表有寫入就整個清掉：損益計算跨好幾張表，逐表判斷影響範圍不值得，重算就對了。
+ * 本機預覽伺服器(tools/dev-server.js)在每次模擬的 google.script.run 呼叫前也會呼叫，
+ * 模擬 Apps Script 每次呼叫都是全新執行的行為。
+ */
+function resetCalcMemo_() {
+  if (typeof PL_CORE_MEMO_ !== 'undefined') PL_CORE_MEMO_ = {};
 }
 
 /** 把整張表讀成 [{欄位:值,...}, ...]，第一列為標題 */

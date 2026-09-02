@@ -129,6 +129,12 @@ assert(expandedTable.indexOf('aria-expanded="true"') !== -1, '預設應該是展
 assert(expandedTable.indexOf(' title="') === -1, '公式/自動計算提示不該用原生 title(會被表格的橫向捲動裁切)');
 assert((expandedTable.match(/data-tip="/g) || []).length > 0, '公式/自動計算提示應該用 data-tip');
 assert(expandedTable.indexOf('class="auto-dot"') !== -1, '自動計算科目應該有提示用的圓點');
+// 每一格金額/%、每個欄位標題、每個科目名稱都要能 hover 出說明(內容移過去才算，用 data-tipfn 指定產生器)
+assert(expandedTable.indexOf('data-tipfn="cell"') !== -1, '金額格子應該帶 data-tipfn="cell"');
+assert(expandedTable.indexOf('data-tipfn="col"') !== -1, '欄位標題應該帶 data-tipfn="col"');
+assert(expandedTable.indexOf('data-tipfn="line"') !== -1, '科目名稱應該帶 data-tipfn="line"');
+assert((expandedTable.match(/data-c="\d+"/g) || []).length > cols.length * 10, '每一格都要標記所屬欄位(十字游標與提示用)');
+assert(expandedTable.indexOf('class="star') !== -1, '欄位標題應該有設為比較基準的星號');
 
 api("toggleGroupCollapse('B')");
 assert(api('collapsedGroups').has('B'), '收合後 collapsedGroups 應該記得 B 已收合');
@@ -158,11 +164,18 @@ const broken = [{ label: '測試欄', checks: [{ label: 'C = A - B', actual: 1, 
 assert(api('subtotalCheckHtml')(broken).indexOf('check-box') !== -1, '有差異時應顯示警告框');
 
 api("chartLineCodes = ['A', 'K']");
-const toolbar = api('dashboardToolbarHtml')();
+api("chartType = 'byLine'");
+const toolbar = api('dashboardToolbarHtml')(cols);
 assert(toolbar.indexOf('id="chart-lines"') === -1, '% 基準工具列不該再混著圖表科目選擇區(已移到圖表旁邊)');
+['pctBase', 'amountUnit', 'volumeBasis', 'highlightBest', 'showKpi', 'showDiffCards'].forEach(name => {
+  assert(toolbar.indexOf(`setDashOption('${name}'`) !== -1, `工具列應該有 ${name} 的開關`);
+});
+assert(toolbar.indexOf('value="diff"') !== -1 && toolbar.indexOf('value="diffpct"') !== -1, '第二小欄應該可以選「與基準差異」');
 const chartSection = api('chartSectionHtml')(cols, lines);
 assert(chartSection.indexOf('id="chart-lines"') !== -1, '圖表區塊應該有科目選擇區');
-assert(chartSection.indexOf('id="chart-compare"') !== -1, '圖表區塊應該跟科目選擇區放在一起');
+assert(chartSection.indexOf('id="chart-area"') !== -1, '圖表區塊應該跟科目選擇區放在一起');
+assert(chartSection.indexOf('<svg') !== -1, '圖表應該直接以 SVG 產生，不依賴外部圖表程式庫');
+assert(chartSection.indexOf('google.visualization') === -1 && html.indexOf('gstatic.com/charts') === -1, '不該再用 Google Charts');
 // 原生 multiple select 要按住 Ctrl 才能複選，等於選不動；必須是核取方塊
 assert(chartSection.indexOf('multiple') === -1, '圖表科目不該用原生 multiple select');
 const chartPicker = chartSection.split('id="chart-lines"')[1].split('</div>')[0];
@@ -170,15 +183,15 @@ assert((chartPicker.match(/type="checkbox"/g) || []).length > 10, '每個科目�
 assert((chartPicker.match(/ checked/g) || []).length === 2, '預設應勾選 A 與 K 兩個科目');
 assert(chartPicker.indexOf('onchange="onChartLineToggle') !== -1, '勾選應該即時重畫圖表');
 assert(chartPicker.indexOf('value="P8"') === -1, '售價結構科目不應出現在圖表科目選單');
+['科目比較', '依欄位', '損益結構', '損益瀑布'].forEach(t => assert(chartSection.indexOf(t) !== -1, `圖表類型切換應該有「${t}」`));
 
 // 勾選/取消要真的改變圖表要畫的科目
 api("chartLineCodes = ['A', 'K']");
-ctx.__in.noop = () => { };
-api('drawCharts = __in.noop');            // 圖表本身在 Node 畫不了，只驗狀態變化
 api('onChartLineToggle')('C', true);
 assert(api('chartLineCodes').join(',') === 'A,K,C', `勾選後應加入科目，實際 ${api('chartLineCodes')}`);
 api('onChartLineToggle')('A', false);
 assert(api('chartLineCodes').join(',') === 'K,C', `取消勾選後應移除科目，實際 ${api('chartLineCodes')}`);
+api("chartLineCodes = ['A', 'K']");
 
 /* ---- 6. 主檔表格：主鍵鎖定與自動編號提示 ---- */
 const ENTITIES = api('ENTITIES');
@@ -256,12 +269,156 @@ csvRows.forEach((r, i) => {
   assert(n === headerCells, `CSV 第 ${i + 1} 列有 ${n} 欄，應為 ${headerCells}`);
 });
 
+/* ---- 8. 圖表 SVG：科目比較 / 依欄位 / 損益結構 / 損益瀑布 / 差異圖 ---- */
+api("pctBase = 'exfactory'"); api('amountUnit = 1'); api("volumeBasis = 'unit'"); api("chartValue = 'amount'"); api('chartLabels = true');
+const countRects = svg => (svg.match(/<rect class="bar"/g) || []).length;
+api("chartType = 'byLine'"); api("chartLineCodes = ['A', 'K']");
+const byLine = api('chartAreaHtml_')(cols, lines);
+assert(countRects(byLine) === 2 * cols.length, `科目比較圖應有 科目數×欄位數 = ${2 * cols.length} 根長條，實際 ${countRects(byLine)}`);
+assert(byLine.indexOf('data-tip="') !== -1, '每根長條都要有 hover 提示');
+assert(byLine.indexOf('NaN') === -1 && byLine.indexOf('undefined') === -1, '圖表不該出現 NaN/undefined');
+assert(byLine.indexOf('class="chart-legend"') !== -1, '圖表要有圖例');
+assert(byLine.indexOf('<line') !== -1 && byLine.indexOf('stroke="#718096"') !== -1, '圖表要有 0 基準線');
+assert((byLine.match(/class="bar-label"/g) || []).length > 0, '數值標籤開啟時要畫出數字');
+api('chartLabels = false');
+assert((api('chartAreaHtml_')(cols, lines).match(/class="bar-label"/g) || []).length === 0, '關掉數值標籤就不該有數字');
+api('chartLabels = true');
+api("chartType = 'byColumn'");
+const byCol = api('chartAreaHtml_')(cols, lines);
+assert(countRects(byCol) === 2 * cols.length, '依欄位圖的長條數應相同');
+assert(byCol.indexOf('3人貨車') !== -1, '依欄位圖的橫軸應該是比較欄位(顯示車系名稱)');
+api("chartType = 'structure'");
+const structure = api('chartAreaHtml_')(cols, lines);
+assert(countRects(structure) === 6 * cols.length, `損益結構圖每欄應有 6 段(銷貨成本/銷售費用/產品貢獻前費用/固定營業費用/前瞻費用/營業淨利)，實際 ${countRects(structure)}`);
+assert((structure.match(/class="marker"/g) || []).length === cols.length, '損益結構圖每欄要有一條收入虛線');
+// 堆疊各段加起來要等於收入(K 為負時往下堆)：第一欄的段 = B、C-E、E-G、G-I、J、K
+const c0 = cols[0].amounts;
+const segSum = c0.B + (c0.C - c0.E) + (c0.E - c0.G) + (c0.G - c0.I) + c0.J + c0.K;
+assert(Math.abs(segSum - c0.A) < 1, `結構圖各段加總 ${segSum} 應等於收入 ${c0.A}`);
+api("chartType = 'waterfall'");
+const waterfall = api('chartAreaHtml_')(cols, lines);
+assert((waterfall.match(/class="waterfall-card"/g) || []).length === cols.length, '瀑布圖每個欄位一張');
+assert(countRects(waterfall) === 11 * cols.length, `瀑布圖每欄 11 步，實際 ${countRects(waterfall)}`);
+api("chartValue = 'pct'");
+const wfPct = api('chartAreaHtml_')(cols, lines);
+assert(wfPct.indexOf('100.0%') !== -1, '百分比模式下瀑布圖的收入應該是 100%');
+api("chartValue = 'amount'"); api("chartType = 'byLine'");
+// 差異圖：綠 = 往好的方向、紅 = 往壞的方向
+const keyLines = api('keyLines_')(lines);
+const diffSvg = api('diffChartSvg_')(cols[0], cols[1], keyLines);
+assert(countRects(diffSvg) === keyLines.length, '差異圖每個關鍵科目一根長條');
+assert(diffSvg.indexOf('#2f855a') !== -1 || diffSvg.indexOf('#e53e3e') !== -1, '差異圖應依好壞方向上色');
+// 純 SVG 產生器本身：負值往下、零值也要留一根細條可 hover
+const svg = api('svgBarChart_')({ groups: [{ label: 'a' }, { label: 'b' }], series: [{ name: 's' }],
+  bars: [{ g: 0, s: 0, y0: 0, y1: -5, tip: 'neg' }, { g: 1, s: 0, y0: 0, y1: 0, tip: 'zero' }], valueFormat: v => String(v) });
+assert(countRects(svg) === 2 && svg.indexOf('data-tip="zero"') !== -1, '零值長條也要可以 hover');
+assert(svg.indexOf('opacity=".45"') !== -1, '零值長條要用淡色細條標示');
+assert(api('wrapLabel_')('DA GATE F 901 / 加權平均', 120, 11, 3).length === 2, '橫軸標籤應依「 / 」拆行');
+assert(api('wrapLabel_')('產品貢獻前費用', 45, 11, 2).length === 2, '太長的單段標籤要照寬度切行而不是直接截斷');
+const ticks = api('niceTicks_')(-214924, 1147009, 5);
+assert(ticks.lo <= -214924 && ticks.hi >= 1147009 && ticks.ticks.indexOf(0) !== -1, '座標軸刻度要包住範圍且含 0');
+
+/* ---- 9. hover 提示內容、與基準差異、最佳/最差、單位與基礎 ---- */
+ctx.__in.comparison = comparison;
+api('lastComparison = __in.comparison');
+api("baselineKey = ''");
+const fakeEl = attrs => ({ getAttribute: k => attrs[k] === undefined ? null : String(attrs[k]) });
+const cellTip = api('cellTipText_')(fakeEl({ 'data-c': 1, 'data-l': 'B' }));
+assert(cellTip.indexOf(cols[1].label) === 0, '格子提示第一行應是欄位名稱');
+assert(cellTip.indexOf('銷貨成本合計') !== -1 && cellTip.indexOf('對廠價') !== -1 && cellTip.indexOf('對收入') !== -1, '格子提示應含科目、兩種百分比');
+assert(cellTip.indexOf('vs 基準') !== -1, '非基準欄位的格子提示應含與基準的差異');
+const baseTip = api('cellTipText_')(fakeEl({ 'data-c': 0, 'data-l': 'B' }));
+assert(baseTip.indexOf('vs 基準') === -1, '基準欄位自己不該顯示 vs 基準');
+const b13Tip = api('cellTipText_')(fakeEl({ 'data-c': 0, 'data-l': 'b13' }));
+assert(b13Tip.indexOf('計算過程') !== -1 && b13Tip.indexOf('完稅價格') !== -1, '貨物稅格子提示應附完整計算過程');
+const wTip = api('cellTipText_')(fakeEl({ 'data-c': 2, 'data-l': 'b13' }));
+assert(wTip.indexOf('加權平均') !== -1 && wTip.indexOf('沒有單一計算過程') !== -1, '加權平均欄的貨物稅要說明為何沒有計算過程');
+const colTip = api('colTipText_')(fakeEl({ 'data-c': 0 }));
+assert(colTip.indexOf('月銷量 40 台') !== -1 && colTip.indexOf('4,800 台') !== -1, `欄位標題提示應含月銷量與 LC 總台數，實際：${colTip}`);
+const wColTip = api('colTipText_')(fakeEl({ 'data-c': 2 }));
+assert(wColTip.indexOf('3人貨車 40%') !== -1 && wColTip.indexOf('9人客貨車 60%') !== -1, `加權平均欄的提示應列出各車系構成比，實際：${wColTip}`);
+const lineTip = api('lineTipText_')(fakeEl({ 'data-l': 'E' }));
+assert(lineTip.indexOf('Σ銷售費用') !== -1 && lineTip.indexOf('越高越好') !== -1, `科目提示應把 Σd 換成看得懂的名稱並標示方向，實際：${lineTip}`);
+assert(api('lineTipText_')(fakeEl({ 'data-l': 'b1' })).indexOf('越低越好') !== -1, '成本明細應標示越低越好');
+
+// 與基準差異模式
+api("pctBase = 'diff'");
+const diffTable = api('plTableHtml')(cols, lines);
+assert(diffTable.indexOf('vs 基準') !== -1 && diffTable.indexOf('>基準<') !== -1, '差異模式：基準欄第二小欄顯示「基準」');
+const bDelta = Math.round(cols[1].amounts.B - cols[0].amounts.B);
+assert(diffTable.indexOf((bDelta > 0 ? '+' : '') + bDelta.toLocaleString('en-US')) !== -1, `差異模式應顯示 B 的差異 ${bDelta}`);
+assert(diffTable.indexOf('class="pct delta bad"') !== -1 || diffTable.indexOf('class="pct delta good"') !== -1, '差異應依方向標好壞顏色');
+api("pctBase = 'diffpct'");
+assert(api('plTableHtml')(cols, lines).indexOf('vs 基準%') !== -1, '差異% 模式的欄名');
+api("baselineKey = __in.comparison.columns[1].scenarioId + '|' + __in.comparison.columns[1].vehicleId");
+api("pctBase = 'diff'");
+const diffTable2 = api('plTableHtml')(cols, lines);
+assert(diffTable2.split('>基準<').length === lines.length + 1, '換基準欄後，「基準」字樣應出現在第二欄的每一列');
+api("baselineKey = ''"); api("pctBase = 'exfactory'");
+
+// 最佳/最差：材料成本 b1 越低越好 → V1(400,000) 最佳、V2(500,000) 最差；收入 A 越高越好
+api('highlightBest = true');
+const bestTable = api('plTableHtml')(cols, lines);
+const b1Row = bestTable.split('<tr').filter(r => r.indexOf('data-l="b1"') !== -1)[0];
+assert(b1Row.indexOf('class="amt best" data-c="0"') !== -1, '材料成本最低的車系應標最佳');
+assert(b1Row.indexOf('class="amt worst" data-c="1"') !== -1, '材料成本最高的車系應標最差');
+const aRow = bestTable.split('<tr').filter(r => r.indexOf('data-l="A"') !== -1)[0];
+assert(aRow.indexOf('best" data-c="1"') !== -1, '收入最高的車系應標最佳');
+api('highlightBest = false');
+
+// 單位與基礎：千元 = 元 ÷ 1000；年度總額 = 單台 × 月銷量 × 12
+api('amountUnit = 1000');
+assert(api('amountCellHtml')(882180, cols[0], '', '').indexOf('>882<') !== -1, '千元模式應顯示 882');
+api('amountUnit = 1'); api("volumeBasis = 'year'");
+assert(api('displayAmount_')(1000, cols[0]) === 1000 * 40 * 12, '年度總額 = 單台 × 月銷量 × 12');
+api("volumeBasis = 'lc'");
+assert(api('displayAmount_')(1000, cols[0]) === 1000 * 4800, 'LC 總額 = 單台 × LC 總台數');
+assert(api('displayAmount_')(1000, cols[2]) === 1000 * (4800 + 7200), '加權平均欄的 LC 總台數 = 各車系加總');
+api("volumeBasis = 'unit'");
+// 百分比不受單位/基礎影響
+api('amountUnit = 1000'); api("volumeBasis = 'lc'");
+assert(api('pctCellHtml')(cols[0].amounts.B, cols[0]) === pctEx, '切換單位/基礎後百分比不變');
+api('amountUnit = 1'); api("volumeBasis = 'unit'");
+
+// 重點指標卡片
+const kpi = api('kpiStripHtml')(cols, lines);
+assert((kpi.match(/class="kpi-card/g) || []).length === cols.length, '每個欄位一張重點指標卡片');
+assert(kpi.indexOf('比較基準') !== -1 && kpi.indexOf('vs 基準') !== -1, '卡片應標示基準與 vs 基準差異');
+
+/* ---- 10. 只算新增欄位：合併與排序不打後端 ---- */
+const partial = gs.calculateComparison([{ ScenarioID: sc.ScenarioID, VehicleID: 'V2' }]);
+const merged = api('mergeComparison_')({ columns: [comparison.columns[0]], lines: comparison.lines.slice(0, 5) }, partial);
+assert(merged.columns.length === 2 && merged.columns[1].vehicleId === 'V2', '合併後應多出新欄位');
+assert(merged.lines.length === comparison.lines.length, '合併後科目應為聯集');
+assert(merged.lines.every((l, i) => i === 0 || l.SortOrder >= merged.lines[i - 1].SortOrder), '合併後科目應照 SortOrder 排序');
+const reordered = api('reorderComparison_')(comparison, [
+  { ScenarioID: sc.ScenarioID, VehicleID: '' }, { ScenarioID: sc.ScenarioID, VehicleID: 'V1' }
+]);
+assert(reordered.columns.length === 2 && reordered.columns[0].isWeighted && reordered.columns[1].vehicleId === 'V1', '依選擇順序重排並移除未選的欄位');
+assert(api('mergeComparison_')(null, partial) === partial, '沒有既有結果時直接用新結果');
+
+/* ---- 11. 瀏覽器端記住設定：存/讀要對稱，壞掉的資料要被忽略 ---- */
+let stored = null;
+ctx.localStorage = { setItem: (k, v) => { stored = v; }, getItem: () => stored };
+api("pctBase = 'revenue'"); api("chartType = 'waterfall'"); api('amountUnit = 1000');
+api('saveDashPrefs_')();
+api("pctBase = 'exfactory'"); api("chartType = 'byLine'"); api('amountUnit = 1');
+api('loadDashPrefs_')();
+assert(api('pctBase') === 'revenue' && api('chartType') === 'waterfall' && api('amountUnit') === 1000, '重新載入後顯示設定應該還原');
+stored = '{"pctBase":"bogus","amountUnit":7,"chartType":"nope"}';
+api("pctBase = 'exfactory'"); api('amountUnit = 1'); api("chartType = 'byLine'");
+api('loadDashPrefs_')();
+assert(api('pctBase') === 'exfactory' && api('amountUnit') === 1 && api('chartType') === 'byLine', '不合法的設定值應被忽略');
+stored = 'not json';
+api('loadDashPrefs_')();   // 不該丟例外
+api("pctBase = 'exfactory'"); api("chartType = 'byLine'"); api('amountUnit = 1');
+
 if (failures.length) {
   console.log(`前端驗證失敗：${failures.length} 項`);
   failures.forEach(f => console.log('  ✗ ' + f));
   process.exit(1);
 }
-console.log('前端驗證通過：損益表結構、% 基準、小計警示、主檔表格鎖定與 CSV 欄數皆正確。');
+console.log('前端驗證通過：損益表結構、% 基準/差異模式、hover 提示內容、SVG 圖表、最佳/最差標示、單位換算、欄位合併、設定記憶、主檔表格鎖定與 CSV 欄數皆正確。');
 console.log('');
 console.log('損益表前 12 列的產出片段：');
 console.log(tableExFactory.split('<tr').slice(0, 13).join('<tr').replace(/\n\s+/g, ' '));

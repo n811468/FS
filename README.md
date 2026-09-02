@@ -18,6 +18,16 @@ node tools/verify-firestore-client.js  # Firestore REST 用戶端：JWT 簽章�
 
 `verify-gatef.js` 會順便把比較表印出來，方便跟原始試算表並排肉眼再對一次。
 
+## 本機預覽（不必部署）
+
+```bash
+node tools/dev-server.js               # 打開 http://localhost:8787
+```
+
+用同一層模擬層把後端跑在 Node 上，灌一組示範資料（Gate F 現況、由它衍生的目標情境、另一個車型），
+前端的 `google.script.run` 被換成打 `/rpc` 給這台伺服器。改完 `script.html` / `style.html` 存檔後按 F5 就看得到，
+資料只在記憶體、重啟就回到示範資料。適合調版面、看儀表板的圖表與 hover 提示。
+
 ## 資料庫遷移（Google Sheets → Firestore）
 
 正在進行把資料庫從 Google Sheets 換成 Firestore 的遷移，理由與階段規劃見

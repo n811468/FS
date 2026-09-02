@@ -68,7 +68,10 @@
     <div id="panel-dashboard" class="panel">
       <div class="dash-head">
         <h3>損益儀表板</h3>
-        <button class="btn" onclick="refreshDashboard()">重新計算</button>
+        <div class="dash-head-right">
+          <span id="dash-status" class="muted"></span>
+          <button class="btn" onclick="refreshDashboard(true)" data-tip="整份重新跟後端計算（平常加入欄位只算新加的那幾欄）">重新計算</button>
+        </div>
       </div>
       <div class="builder-card">
         <div id="comparison-picker" class="toolbar"></div>
@@ -78,7 +81,6 @@
     </div>
   </main>
 
-  <script src="https://www.gstatic.com/charts/loader.js"></script>
   <?!= include('script'); ?>
 </body>
 </html>
