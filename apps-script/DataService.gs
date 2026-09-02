@@ -577,8 +577,16 @@ function copyScenarioData(sourceScenarioId, targetScenarioId, parts) {
         SCHEMA[sheetName].forEach(function (h) { copy[h] = r[h]; });
         copy[pk] = '';                       // 產生新的鍵值，不要蓋到來源列
         copy.ScenarioID = targetScenarioId;
-        // 低減目標屬於目標情境自己的假設，帶入後歸零讓使用者重新填
-        if (sheetName === SHEETS.DEV_INVESTMENT) copy.ChallengeReductionPct = '';
+        if (sheetName === SHEETS.DEV_INVESTMENT) {
+          // 低減目標屬於目標情境自己的假設，帶入後歸零讓使用者重新填
+          copy.ChallengeReductionPct = '';
+          // 舊資料只有 AssetType、沒有 TargetLineCode 的列，平常是靠畫面顯示時(devAmortTargetOf_)
+          // 即時解析成攤提落點，使用者存檔那一刻才會真的寫回 Sheet —— 但帶入是直接複製原始列，
+          // 不會經過那次存檔，複製過去的仍是「TargetLineCode 空白」的舊格式列。
+          // 這裡直接把解析結果寫實，帶過去的列一律是已正規化的 TargetLineCode，
+          // 不必等使用者手動按一次儲存才補上，也不會因為漏了這一步而在畫面上顯示「(請選擇)」。
+          copy.TargetLineCode = devAmortTargetOf_(r);
+        }
         upsertRow_(sheetName, pk, copy);
       });
       copied[part] = sourceRows.length;

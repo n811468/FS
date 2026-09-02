@@ -1463,7 +1463,11 @@ function loadComparisonPicker() {
     .withSuccessHandler(safeHandler(options => {
       comparisonOptions = options || [];
       renderComparisonPicker();
-      if (!comparisonSelections.length && currentScenarioId) {
+      // 上方選了哪個情境，儀表板就該看得到那個情境 —— 不管是第一次進來(還沒加任何比較欄位)，
+      // 還是已經加過其他欄位、中途把上方情境切到別的(如切去改「目標」的開發總投再回來看儀表板)，
+      // 只要目前選的情境還沒被加進來，就補一欄「加權平均」；只新增不刪除，不會把使用者原本
+      // 排好的比較欄位洗掉，也不會重複加(已經有這個情境的欄位就不動)。
+      if (currentScenarioId && !comparisonSelections.some(s => s.ScenarioID === currentScenarioId)) {
         comparisonSelections.push({ ScenarioID: currentScenarioId, VehicleID: '' });
       }
       renderComparisonColumns();
