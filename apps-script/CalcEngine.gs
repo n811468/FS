@@ -190,12 +190,19 @@ function calculatePLCore_(scenarioId, vehicleId) {
   };
 }
 
-/** 某情境(= 某車型)底下所有車系的損益，外加以銷售構成比加權的平均列 */
+/**
+ * 某情境(= 某車型)底下所有車系的損益，外加以銷售構成比加權的平均列。
+ * 儀表板/比較欄位每次開頁、每切一次 % 基準、每加一欄比較都會呼叫到這裡 ——
+ * 純粹是「看」，不是「存」，所以一律用不寫入快照的 calculatePLCore_()，
+ * 不要每次都把整張 PLResult 表讀出來、清掉、再寫回去(見 writePLResult_ 的成本說明)。
+ * 全系統目前也沒有任何地方會讀回 PLResult 快照(getPLResult() 沒有被呼叫)，
+ * 寫這個快照對「看儀表板」這件事只有成本、沒有效益。
+ */
 function calculatePLAllVehicles(scenarioId) {
   var salesMix = getSalesMix(scenarioId);
-  var results = salesMix.map(function (row) { return calculatePL(scenarioId, row.VehicleID); });
+  var results = salesMix.map(function (row) { return calculatePLCore_(scenarioId, row.VehicleID); });
 
-  // 加權平均列（以 SalesMixPct 加權，寫入 VehicleID 空白的 PLResult 列）
+  // 加權平均列（以 SalesMixPct 加權）
   var totalPct = salesMix.reduce(function (s, r) { return s + toNumber_(r.SalesMixPct); }, 0) || 1;
   var weighted = {};
   results.forEach(function (res, idx) {
@@ -204,8 +211,6 @@ function calculatePLAllVehicles(scenarioId) {
       weighted[line.LineCode] = (weighted[line.LineCode] || 0) + line.Amount * pct;
     });
   });
-  var timestamp = new Date();
-  writePLResult_(scenarioId, '', weighted, weighted.A || 0, weighted.P8 || 0, timestamp);
 
   return {
     scenarioId: scenarioId,
@@ -243,8 +248,9 @@ function calculateComparison(selections) {
     var vehicleType = vehicleTypes.filter(function (t) { return t.VehicleTypeID === scenario.VehicleTypeID; })[0] || {};
 
     // 加權平均是好幾個車系混出來的，貨物稅的計算過程沒有單一版本可以攤開顯示，只有選特定
-    // 車系時才附上 commodityTaxDetail(見 CalcEngine.gs commodityTaxBreakdown_())
-    var vehicleCalc = sel.VehicleID ? calculatePL(sel.ScenarioID, sel.VehicleID) : null;
+    // 車系時才附上 commodityTaxDetail(見 CalcEngine.gs commodityTaxBreakdown_())。
+    // 用 calculatePLCore_ 而非 calculatePL：儀表板只是「看」，不需要每次都寫一次 PLResult 快照。
+    var vehicleCalc = sel.VehicleID ? calculatePLCore_(sel.ScenarioID, sel.VehicleID) : null;
     var lines = vehicleCalc ? vehicleCalc.lines : calculateScenarioWeighted(sel.ScenarioID);
 
     var amounts = {};
