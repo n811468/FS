@@ -16,6 +16,9 @@ const PL_LINE_PARENT_OPTIONS = [
   ['I', 'I 固定營業費用']
 ];
 const LINE_PARENT_OPTIONS = [['', '(結構科目，不可改)']].concat(PL_LINE_PARENT_OPTIONS);
+// 開發總投填寫流程：部門 -> 設備/模具/費用大類 -> 實際攤提落點。大類只是用來分組/篩選
+// 攤提落點選單，避免自己新增的攤提落點越加越多之後全部混在同一個下拉選單裡不好找。
+const DEV_AMORT_CATEGORIES = ['設備', '模具', '費用'];
 // 建立新情境時可以整批帶入的資料類別
 const SCENARIO_COPY_PARTS = [
   { key: 'salesmix', label: '銷售構成' },
@@ -1013,7 +1016,7 @@ function drawDevGrid() {
       </label>
       <button type="button" class="btn secondary" onclick="copyFromScenario()">帶入</button>` : ''}
     <span class="toolbar-sep"></span>
-    <select id="dev-new-target-parent">${PL_LINE_PARENT_OPTIONS.map(o => `<option value="${o[0]}">${o[1]}</option>`).join('')}</select>
+    <select id="dev-new-target-category">${DEV_AMORT_CATEGORIES.map(c => `<option value="${c}">${c}</option>`).join('')}</select>
     <input id="dev-new-target-name" type="text" placeholder="新增攤提科目名稱" style="width:160px;">
     <button type="button" class="btn secondary" onclick="addDevAmortTarget()">新增攤提科目</button>
   `;
@@ -1022,17 +1025,24 @@ function drawDevGrid() {
     <div class="grid-scroll">
     <table class="grid-table">
       <thead><tr>
-        <th>部門</th><th>攤提落點</th><th>金額</th><th>幣別</th>
+        <th>部門</th><th>大類</th><th>攤提落點</th><th>金額</th><th>幣別</th>
         ${isTarget ? '<th>挑戰低減目標%</th><th>低減後金額</th>' : ''}
         <th>備註</th><th></th>
       </tr></thead>
       <tbody>
-        ${devRows.map((r, i) => `
+        ${devRows.map((r, i) => {
+          const category = r.__category || devTargetCategoryOf(r.TargetLineCode);
+          const targetOptions = (devSummary.targetOptions || []).filter(o => !category || o.category === category);
+          return `
           <tr>
             <td><input type="text" list="dev-departments" value="${esc(r.Department)}" oninput="onDevField(${i}, 'Department', this.value)"></td>
+            <td><select onchange="onDevCategoryChange(${i}, this.value)">
+              <option value="">(請選擇)</option>
+              ${DEV_AMORT_CATEGORIES.map(c => `<option value="${c}"${category === c ? ' selected' : ''}>${c}</option>`).join('')}
+            </select></td>
             <td><select onchange="onDevField(${i}, 'TargetLineCode', this.value)">
               <option value="">(請選擇)</option>
-              ${(devSummary.targetOptions || []).map(o =>
+              ${targetOptions.map(o =>
                 `<option value="${esc(o.value)}"${r.TargetLineCode === o.value ? ' selected' : ''}>${esc(shortLineName(o.label))}</option>`).join('')}
             </select></td>
             <td><input type="number" step="any" value="${esc(r.Amount)}" oninput="onDevField(${i}, 'Amount', this.value)"></td>
@@ -1044,7 +1054,8 @@ function drawDevGrid() {
               <td class="calc" id="dev-reduced-${i}">${fmt(num(r.Amount) * (1 - num(r.ChallengeReductionPct) / 100))}</td>` : ''}
             <td><input type="text" value="${esc(r.Notes)}" oninput="onDevField(${i}, 'Notes', this.value)"></td>
             <td><button type="button" class="btn danger" onclick="removeDevRow(${i})">刪除</button></td>
-          </tr>`).join('')}
+          </tr>`;
+        }).join('')}
       </tbody>
     </table>
     </div>
@@ -1081,16 +1092,29 @@ function addDevRow() {
   drawDevGrid();
 }
 
+/** 這個攤提落點科目屬於哪個大類(設備/模具/費用)，查 getDevInvestmentSummary 回傳的選項表 */
+function devTargetCategoryOf(targetLineCode) {
+  const opt = (devSummary.targetOptions || []).find(o => o.value === targetLineCode);
+  return opt ? opt.category : '';
+}
+/** 大類改變時，攤提落點要重新篩選成該大類底下的選項；先選過的落點如果不屬於新大類就清空 */
+function onDevCategoryChange(i, category) {
+  devRows[i].__category = category;
+  const target = devTargetCategoryOf(devRows[i].TargetLineCode);
+  if (target !== category) devRows[i].TargetLineCode = '';
+  drawDevGrid();
+}
+
 /** 在開發總投頁面直接新增攤提落點科目，之後就會出現在「攤提落點」下拉選單裡 */
 function addDevAmortTarget() {
-  const parent = val('dev-new-target-parent');
+  const category = val('dev-new-target-category');
   const name = val('dev-new-target-name');
   if (!name) { setStatus('devinvestment', '請先輸入攤提科目名稱', 'err'); return; }
   setStatus('devinvestment', '新增中...');
   google.script.run
     .withSuccessHandler(safeHandler(() => { setStatus('devinvestment', '已新增攤提科目', 'ok'); renderDevInvestmentPanel(); }))
     .withFailureHandler(err => setStatus('devinvestment', '錯誤：' + err.message, 'err'))
-    .addDevAmortLineItem(parent, name);
+    .addDevAmortLineItem(category, name);
 }
 
 /** 攤提基準台數：開發投資的攤提台數常與銷售構成的預估台數不同，可獨立設定；留空則沿用銷售構成 */

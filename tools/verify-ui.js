@@ -223,6 +223,16 @@ assert(elFor_('grid-devinvestment').innerHTML.indexOf('value="f4" selected') !==
   '目前選取的攤提落點應該在下拉選單中被選中');
 assert(elFor_('toolbar-devinvestment').innerHTML.indexOf('新增攤提科目') !== -1,
   '應該有新增攤提科目的入口');
+// f4 屬於「費用」大類，大類下拉應該自動選中「費用」，且落點選單只列出費用大類底下的選項(f3/f4)
+const devGridHtml = elFor_('grid-devinvestment').innerHTML;
+assert(devGridHtml.indexOf('value="費用" selected') !== -1, '大類下拉應該依目前落點自動選中「費用」');
+assert(devGridHtml.indexOf('value="b5"') === -1, '費用大類篩選後不該出現模具(b5)這個選項');
+
+// 大類下拉本身：切換大類要能清空不屬於新大類的落點、並只顯示 DEV_AMORT_CATEGORIES 三個大類
+const categoryOptions = api('DEV_AMORT_CATEGORIES');
+assert(categoryOptions.join(',') === '設備,模具,費用', '大類應該固定是設備/模具/費用三個');
+api("onDevCategoryChange(0, '模具')");
+assert(api('devRows')[0].TargetLineCode === '', '切到不含原落點的大類後，原本選的落點應該被清空');
 
 /* ---- 7. CSV 匯出欄數 ---- */
 ctx.__in.comparison = comparison;

@@ -461,24 +461,32 @@ function devAmortTargetOf_(row) {
  * 開發總投「攤提落點」下拉選項：所有 AutoSource 屬於 DEV_AMORT_AUTO_SOURCES 的科目，
  * 含內建 4 個(b5/b8/f3/f4)與使用者自己新增的攤提落點科目。只給名稱、不帶科目代碼
  * （代碼對使用者選擇攤提落點沒有幫助，畫面只需要看得懂科目名稱）。
+ * 每個選項都帶 category(設備/模具/費用)，前端先選大類、再從選中的大類裡選實際落點，
+ * 避免自己新增的攤提落點越加越多之後，整個下拉選單混在一起不好找。
  */
 function getDevAmortTargetOptions() {
   return getPLLineItems()
     .filter(function (d) { return DEV_AMORT_AUTO_SOURCES.indexOf(d.AutoSource) !== -1; })
-    .map(function (d) { return { value: d.LineCode, label: d.LineName, parentLine: d.ParentLine }; });
+    .map(function (d) {
+      return { value: d.LineCode, label: d.LineName, parentLine: d.ParentLine, category: d.DevAmortCategory || '' };
+    });
 }
 
 /**
- * 在「開發總投」頁面直接新增一個攤提落點科目（不必跑去「科目設定」頁）。
- * 父科目決定這筆攤提落在損益的哪一段(B 銷貨成本 / E 銷售費用 / G 產品貢獻前費用 / I 固定營業費用)，
+ * 在「開發總投」頁面直接新增一個攤提落點科目（不必跑去「科目設定」頁），流程是先選部門、
+ * 再選這筆投資屬於「設備/模具/費用」哪一大類、再選（或新增）實際攤提落點。
+ * 大類直接決定父科目(設備/模具 -> B 銷貨成本，費用 -> G 產品貢獻前費用，跟內建的 b5/b8/f3/f4 一致)，
  * 新科目一律標記 AutoSource=DEV_AMORT，之後不會出現在「銷貨成本」「營業費用」的手動輸入選單裡，
  * 避免跟開發總投攤提的金額重複計列。
  */
-function addDevAmortLineItem(parentLine, lineName) {
+function addDevAmortLineItem(category, lineName) {
   return withLock_(function () {
     if (!lineName) throw new Error('請輸入科目名稱');
+    var parentLine = DEV_AMORT_CATEGORY_PARENT[category];
+    if (!parentLine) throw new Error('大類不正確：' + (category || '(未選擇)'));
     var row = newLineItemRow_(parentLine, lineName);
     row.AutoSource = AUTO_SOURCE.DEV_AMORT;
+    row.DevAmortCategory = category;
     return upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', row);
   });
 }
@@ -795,7 +803,7 @@ function syncCodeOwnedLineItems_() {
       var b = line[field] === undefined || line[field] === null ? '' : line[field];
       return String(a) === String(b);
     };
-    if (['LineName', 'ParentLine', 'Category', 'SortOrder'].every(same)) return;
+    if (['LineName', 'ParentLine', 'Category', 'SortOrder', 'DevAmortCategory'].every(same)) return;
 
     var row = {};
     SCHEMA.PLLineItems.forEach(function (h) {

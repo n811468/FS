@@ -39,7 +39,7 @@ var SCHEMA = {
     'Amount', 'Currency', 'ChallengeReductionPct', 'Notes', 'EffectiveDate', 'TargetLineCode'],
   OperatingExpense: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'Notes', 'EffectiveDate'],
   Parameters: ['ParamID', 'ScenarioID', 'VehicleID', 'ParamName', 'Currency', 'Value', 'EffectiveDate'],
-  PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'SortOrder', 'AutoSource', 'CommodityTaxDeduct'],
+  PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'SortOrder', 'AutoSource', 'CommodityTaxDeduct', 'DevAmortCategory'],
   PLResult: ['ResultID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'PctOfRevenue', 'PctOfExFactory', 'CalcTimestamp']
 };
 
@@ -71,6 +71,14 @@ var DEV_ASSET_TYPE_TARGET = {
   '費用-CMC': 'f3',
   '費用-BASE廠': 'f4'
 };
+
+// 開發總投填寫流程：先選部門(自由輸入) → 再選「設備/模具/費用」大類 → 再選這一大類底下
+// 實際要攤提到的損益科目(攤提落點)。大類本身不是損益科目，只是用來分組/篩選攤提落點選單，
+// 避免自己新增的攤提落點(如「XXXX模具」)越加越多之後，整個下拉選單混在一起不好找。
+// 每個科目屬於哪個大類記在 PLLineItems.DevAmortCategory；大類同時決定新增科目時要掛在
+// 哪個父科目底下(設備/模具 -> B 銷貨成本，費用 -> G 產品貢獻前費用，跟內建的 b5/b8/f3/f4 一致)。
+var DEV_AMORT_CATEGORIES = ['設備', '模具', '費用'];
+var DEV_AMORT_CATEGORY_PARENT = { '設備': 'B', '模具': 'B', '費用': 'G' };
 
 // Parameters 依用途分兩組管理：稅務/費用比率(0~100 百分比) vs 匯率設定(原始匯率數值)。
 // 貨物稅完稅價格計算率：貨物稅完稅價格 = (廠價 - 水平配件外移調降 - 廣促margin) × 本率 ÷ (1+貨物稅率)，
@@ -148,8 +156,8 @@ var PL_LINE_ITEMS = [
   { LineCode: 'b3', LineName: '強配成本', ParentLine: 'B', Category: '成本明細', SortOrder: 24, AutoSource: '' },
   { LineCode: 'b4', LineName: '一般材料', ParentLine: 'B', Category: '成本明細', SortOrder: 25, AutoSource: '' },
   { LineCode: 'b10', LineName: '水平配件', ParentLine: 'B', Category: '成本明細', SortOrder: 26, AutoSource: '' },
-  { LineCode: 'b8', LineName: '新增專屬設備(開發總投/LC總台數)', ParentLine: 'B', Category: '成本明細', SortOrder: 27, AutoSource: AUTO_SOURCE.DEV_EQUIP },
-  { LineCode: 'b5', LineName: '模具費用(開發總投/LC總台數)', ParentLine: 'B', Category: '成本明細', SortOrder: 28, AutoSource: AUTO_SOURCE.DEV_MOLD },
+  { LineCode: 'b8', LineName: '新增專屬設備(開發總投/LC總台數)', ParentLine: 'B', Category: '成本明細', SortOrder: 27, AutoSource: AUTO_SOURCE.DEV_EQUIP, DevAmortCategory: '設備' },
+  { LineCode: 'b5', LineName: '模具費用(開發總投/LC總台數)', ParentLine: 'B', Category: '成本明細', SortOrder: 28, AutoSource: AUTO_SOURCE.DEV_MOLD, DevAmortCategory: '模具' },
   { LineCode: 'b6', LineName: '直接人工', ParentLine: 'B', Category: '成本明細', SortOrder: 29, AutoSource: '' },
   { LineCode: 'b7', LineName: '製造費用', ParentLine: 'B', Category: '成本明細', SortOrder: 30, AutoSource: '' },
   { LineCode: 'b9', LineName: '技酬金', ParentLine: 'B', Category: '成本明細', SortOrder: 31, AutoSource: '' },
@@ -164,8 +172,8 @@ var PL_LINE_ITEMS = [
   { LineCode: 'd5', LineName: '索賠(含索賠取回)', ParentLine: 'E', Category: '費用明細', SortOrder: 45, AutoSource: '' },
   { LineCode: 'E', LineName: '銷貨毛利(=C-Σd)', ParentLine: '', Category: '毛利', SortOrder: 50, AutoSource: '' },
   { LineCode: 'f1', LineName: '直接歸屬費用-CMC&SDM', ParentLine: 'G', Category: '費用明細', SortOrder: 51, AutoSource: '' },
-  { LineCode: 'f3', LineName: '車型專案開發費用-CMC(開發總投/LC總台數)', ParentLine: 'G', Category: '費用明細', SortOrder: 52, AutoSource: AUTO_SOURCE.DEV_EXPENSE_CMC },
-  { LineCode: 'f4', LineName: '車型專案開發費用-BASE廠(開發總投/LC總台數)', ParentLine: 'G', Category: '費用明細', SortOrder: 53, AutoSource: AUTO_SOURCE.DEV_EXPENSE_BASE },
+  { LineCode: 'f3', LineName: '車型專案開發費用-CMC(開發總投/LC總台數)', ParentLine: 'G', Category: '費用明細', SortOrder: 52, AutoSource: AUTO_SOURCE.DEV_EXPENSE_CMC, DevAmortCategory: '費用' },
+  { LineCode: 'f4', LineName: '車型專案開發費用-BASE廠(開發總投/LC總台數)', ParentLine: 'G', Category: '費用明細', SortOrder: 53, AutoSource: AUTO_SOURCE.DEV_EXPENSE_BASE, DevAmortCategory: '費用' },
   { LineCode: 'G', LineName: '產品貢獻(=E-Σf)', ParentLine: '', Category: '貢獻', SortOrder: 60, AutoSource: '' },
   { LineCode: 'h1', LineName: '固定營業費用-CMC&SDM', ParentLine: 'I', Category: '費用明細', SortOrder: 61, AutoSource: '' },
   { LineCode: 'h3', LineName: '品牌廣宣費用', ParentLine: 'I', Category: '費用明細', SortOrder: 62, AutoSource: '' },

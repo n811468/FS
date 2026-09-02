@@ -282,6 +282,23 @@ check('車系可以自訂排列順序，影響銷貨成本矩陣等所有用車�
   assertEqual(order2.indexOf('V1') < order2.indexOf('V2'), true, '改小排序值後應該排到前面');
 });
 
+check('開發總投攤提落點分成設備/模具/費用三大類，可以在對應大類下新增新落點', () => {
+  const options = gs.getDevAmortTargetOptions();
+  const byCode = {};
+  options.forEach(o => { byCode[o.value] = o; });
+  assertEqual(byCode.b5.category, '模具', '內建 b5 模具費用應屬於「模具」大類');
+  assertEqual(byCode.b8.category, '設備', '內建 b8 新增專屬設備應屬於「設備」大類');
+  assertEqual(byCode.f3.category, '費用', '內建 f3 車型專案開發費用-CMC 應屬於「費用」大類');
+  assertEqual(byCode.f4.category, '費用', '內建 f4 車型專案開發費用-BASE廠 應屬於「費用」大類');
+
+  const created = gs.addDevAmortLineItem('模具', 'XXXX模具');
+  assertEqual(created.ParentLine, 'B', '「模具」大類新增的科目應該掛在 B 銷貨成本底下');
+  assertEqual(created.DevAmortCategory, '模具', '新科目應該記住自己屬於「模具」大類');
+  const options2 = gs.getDevAmortTargetOptions();
+  const newOpt = options2.filter(o => o.value === created.LineCode)[0];
+  assert(newOpt && newOpt.category === '模具', '新科目應該出現在「模具」大類的攤提落點選項裡');
+});
+
 check('銷貨成本頁顯示自動計算科目不應該寫入 PLResult 快照(避免拖慢鎖定)', () => {
   const before = gs.getPLResult(base.ScenarioID, 'V1').length;
   gs.getCostOfSalesMatrix(base.ScenarioID, 'DA');
