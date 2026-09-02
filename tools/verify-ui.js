@@ -105,8 +105,9 @@ function checkTable(pctBase, showPriceStructure) {
     assert(tds === span, `${label}：資料列的儲存格數為 ${tds}，應為 ${span}`);
   });
 
-  // 科目代碼欄已移除(不利閱讀)，改用 P8 的科目名稱判斷售價結構有沒有顯示
-  const priceRowShown = table.indexOf('廠價(未稅)') !== -1;
+  // 科目代碼欄已移除(不利閱讀)，改用售價結構的區段標題判斷有沒有顯示
+  // (不能用「廠價(未稅)」字樣本身 —— 貨物稅格子的 hover 提示文字裡也會出現這幾個字)
+  const priceRowShown = table.indexOf('class="section"><td colspan') !== -1 && table.indexOf('售價結構（由「銷售構成」') !== -1;
   assert(priceRowShown === showPriceStructure, `${label}：售價結構的顯示狀態不正確`);
   assert(table.indexOf('<td class="code">') === -1, `${label}：不應再出現科目代碼欄`);
 
@@ -119,6 +120,25 @@ function checkTable(pctBase, showPriceStructure) {
 const tableExFactory = checkTable('exfactory', true);
 checkTable('revenue', true);
 checkTable('none', false);
+
+/* ---- 3b. 損益表：B/E/G/I 大項可收合，且提示改用 data-tip(不是原生 title) ---- */
+api('collapsedGroups = new Set()');
+const expandedTable = api('plTableHtml')(cols, lines);
+assert(expandedTable.indexOf('class="row-toggle"') !== -1, '大項小計列應該有收合按鈕');
+assert(expandedTable.indexOf('aria-expanded="true"') !== -1, '預設應該是展開狀態');
+assert(expandedTable.indexOf(' title="') === -1, '公式/自動計算提示不該用原生 title(會被表格的橫向捲動裁切)');
+assert((expandedTable.match(/data-tip="/g) || []).length > 0, '公式/自動計算提示應該用 data-tip');
+assert(expandedTable.indexOf('class="auto-dot"') !== -1, '自動計算科目應該有提示用的圓點');
+
+api("toggleGroupCollapse('B')");
+assert(api('collapsedGroups').has('B'), '收合後 collapsedGroups 應該記得 B 已收合');
+const collapsedTable = api('plTableHtml')(cols, lines);
+assert(collapsedTable.indexOf('aria-expanded="false"') !== -1, '收合後按鈕狀態應該變成 false');
+const collapsedDetailRows = collapsedTable.split('<tbody>')[1].split('</tbody>')[0]
+  .split('<tr').slice(1).filter(r => r.indexOf('class="detail"') !== -1 && r.indexOf(' hidden') !== -1);
+assert(collapsedDetailRows.length > 0, 'B 收合後，B 底下的明細列應該帶 hidden 屬性');
+api("toggleGroupCollapse('B')"); // 復原，避免影響後面的測試
+assert(!api('collapsedGroups').has('B'), '再次點擊應該恢復展開');
 
 /* ---- 4. % 欄的基準要真的不同（這份資料有強配件，廠價 ≠ 收入） ---- */
 api("pctBase = 'exfactory'");
@@ -140,7 +160,7 @@ assert(api('subtotalCheckHtml')(broken).indexOf('check-box') !== -1, '有差異�
 api("chartLineCodes = ['A', 'K']");
 const toolbar = api('dashboardToolbarHtml')();
 assert(toolbar.indexOf('id="chart-lines"') === -1, '% 基準工具列不該再混著圖表科目選擇區(已移到圖表旁邊)');
-const chartSection = api('chartSectionHtml')(lines);
+const chartSection = api('chartSectionHtml')(cols, lines);
 assert(chartSection.indexOf('id="chart-lines"') !== -1, '圖表區塊應該有科目選擇區');
 assert(chartSection.indexOf('id="chart-compare"') !== -1, '圖表區塊應該跟科目選擇區放在一起');
 // 原生 multiple select 要按住 Ctrl 才能複選，等於選不動；必須是核取方塊

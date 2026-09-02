@@ -48,15 +48,35 @@
   .type-badge { background: #2b6cb0; color: #fff; border-radius: 10px; padding: 1px 8px; font-size: 11px; }
   .csv-box { width: 100%; height: 160px; font-family: monospace; font-size: 12px; margin-bottom: 10px; }
   .pl-table tr.subtotal { background: #f7fafc; font-weight: 600; }
-  .cmp-chip { display: inline-flex; align-items: center; gap: 6px; background: #edf2f7; border: 1px solid #cbd5e0;
-    border-radius: 14px; padding: 3px 6px 3px 12px; font-size: 12px; }
-  .cmp-chip .btn { padding: 2px 8px; font-size: 11px; border-radius: 10px; }
+  .cmp-chip { display: inline-flex; align-items: stretch; gap: 0; background: #edf2f7; border: 1px solid #cbd5e0;
+    border-radius: 100px; overflow: hidden; font-size: 12px; }
+  .cmp-chip .chip-label { display: flex; align-items: center; padding: 3px 8px; font-weight: 600; color: #2d3748; white-space: nowrap; }
+  .cmp-chip .chip-move { background: transparent; border: none; color: #718096; cursor: pointer; font-size: 11px; padding: 0 4px; }
+  .cmp-chip .chip-move:hover:not(:disabled) { color: #2b6cb0; }
+  .cmp-chip .chip-move:disabled { opacity: .3; cursor: not-allowed; }
+  .cmp-chip .btn { padding: 2px 8px; font-size: 11px; border-radius: 0; margin: 0; }
+
+  /* ---- 儀表板：建構欄位卡片，選擇跟已加入的比較欄位放在同一張卡，不必分散找 ---- */
+  .dash-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .dash-head h3 { margin: 0; }
+  .builder-card { background: #f9fafb; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; }
+  .builder-card .toolbar { margin-bottom: 10px; }
+  .builder-card .chip-row-label { font-size: 11px; color: #718096; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .04em; }
   .auto-tag { font-size: 10px; color: #2b6cb0; border: 1px solid #90cdf4; border-radius: 3px; padding: 0 3px; margin-left: 4px; }
   .charts-row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; align-items: stretch; }
   .chart-box { flex: 2 1 420px; min-height: 320px; background: #fff; border: 1px solid #eee; border-radius: 6px; padding: 8px; }
-  /* 柱狀圖科目勾選框直接靠在圖旁邊，選了就近看到圖重畫，不必跟圖隔著一整張損益表 */
+  /* 柱狀圖科目勾選框直接靠在圖旁邊，選了就近看到圖重畫，不必跟圖隔著一整張損益表；
+     勾選框本身就是圖例(legend)，順便顯示目前的金額，一眼看得出勾的是哪個科目 */
   .chart-picker-box { flex: 1 1 260px; min-width: 220px; background: #f9fafb; border: 1px solid #e2e8f0;
     border-radius: 6px; padding: 10px 12px; }
+  .legend-list { display: flex; flex-direction: column; gap: 1px; max-height: 260px; overflow-y: auto; }
+  .legend-item { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 4px; cursor: pointer; font-size: 12.5px; }
+  .legend-item:hover { background: #edf2f7; }
+  .legend-item input { margin: 0; }
+  .legend-item .legend-name { flex: 1; color: #4a5568; }
+  .legend-item.on .legend-name { color: #1a202c; font-weight: 600; }
+  .legend-item .legend-val { font-size: 11px; color: #a0aec0; font-variant-numeric: tabular-nums; }
+  .legend-source-hint { font-size: 11px; color: #a0aec0; margin-bottom: 6px; }
 
   /* ---- 表格橫向捲動：欄位多的頁面(銷售構成、成本矩陣、儀表板)不再把輸入框擠出畫面 ---- */
   .grid-scroll { overflow-x: auto; max-width: 100%; padding-bottom: 4px; }
@@ -87,9 +107,25 @@
   .pl-table thead th:first-child { z-index: 3; background: #f0f2f5; }
   .pl-table tr.detail td.row-head { padding-left: 22px; color: #4a5568; }
   .pl-table td.pct { color: #4a5568; font-size: 12px; }
-  /* 科目名稱後的公式平常隱藏，滑鼠移到 ƒ 圖示上才用 title 顯示 */
+  /* 科目名稱後的公式平常隱藏，滑鼠移到 ƒ 圖示（或自動計算的圓點）上才顯示提示。
+     用 data-tip + 自己寫的 fixed 定位 tooltip(見 script.html 的 installTooltipEngine_)，
+     不用瀏覽器原生 title —— 原生 title 在有橫向捲動/sticky 釘住欄位的表格裡常常被裁掉看不到。 */
   .formula-hint { display: inline-block; color: #a0aec0; border: 1px solid #cbd5e0; border-radius: 3px;
-    font-size: 10px; line-height: 1; padding: 1px 3px; cursor: help; font-style: italic; }
+    font-size: 10px; line-height: 1; padding: 1px 3px; cursor: help; font-style: italic; vertical-align: middle; margin-left: 3px; }
+  .formula-hint:hover, .formula-hint:focus-visible { color: #2b6cb0; border-color: #90cdf4; outline: none; }
+  .auto-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #2b6cb0;
+    vertical-align: middle; margin-left: 5px; cursor: help; }
+  [data-tip] { -webkit-tap-highlight-color: transparent; }
+  .js-tooltip { position: fixed; z-index: 999; display: none; max-width: 300px; background: #1a202c; color: #fff;
+    font-size: 11.5px; line-height: 1.6; padding: 8px 11px; border-radius: 6px; white-space: pre-line;
+    box-shadow: 0 8px 20px -6px rgba(0,0,0,.4); pointer-events: none; }
+  /* 大項可收合：B/E/G/I 小計列前面的箭頭，收合時把底下的明細列整個藏起來 */
+  .row-toggle { appearance: none; border: none; background: transparent; padding: 0; margin-right: 4px; cursor: pointer;
+    color: inherit; display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px;
+    vertical-align: middle; }
+  .row-toggle svg { width: 10px; height: 10px; transition: transform .15s; }
+  .row-toggle[aria-expanded="false"] svg { transform: rotate(-90deg); }
+  .pl-table tr.detail[hidden] { display: none; }
   /* 小計/區段列的底色要蓋過上面釘住欄位的白底，所以放在後面 */
   .pl-table tr.subtotal td { background: #fffbe6; font-weight: 600; }
   .pl-table tr.section td { background: #edf2f7; font-weight: 600; text-align: left; color: #2d3748; }

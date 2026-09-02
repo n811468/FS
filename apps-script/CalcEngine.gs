@@ -223,8 +223,10 @@ function calculateComparison(selections) {
     var vehicle = vehicles.filter(function (v) { return v.VehicleID === sel.VehicleID; })[0];
     var vehicleType = vehicleTypes.filter(function (t) { return t.VehicleTypeID === scenario.VehicleTypeID; })[0] || {};
 
-    var lines = sel.VehicleID ? calculatePL(sel.ScenarioID, sel.VehicleID).lines
-      : calculateScenarioWeighted(sel.ScenarioID);
+    // 加權平均是好幾個車系混出來的，貨物稅的計算過程沒有單一版本可以攤開顯示，只有選特定
+    // 車系時才附上 commodityTaxDetail(見 CalcEngine.gs commodityTaxBreakdown_())
+    var vehicleCalc = sel.VehicleID ? calculatePL(sel.ScenarioID, sel.VehicleID) : null;
+    var lines = vehicleCalc ? vehicleCalc.lines : calculateScenarioWeighted(sel.ScenarioID);
 
     var amounts = {};
     lines.forEach(function (l) { amounts[l.LineCode] = l.Amount; });
@@ -237,6 +239,7 @@ function calculateComparison(selections) {
       scenarioLabel: [scenario.Gate || '', scenario.ScenarioName || ''].filter(function (p) { return p; }).join(' '),
       vehicleLabel: sel.VehicleID ? ((vehicle && vehicle.VehicleCode) || sel.VehicleID) : '加權平均',
       isWeighted: !sel.VehicleID,
+      commodityTaxDetail: vehicleCalc ? vehicleCalc.commodityTaxDetail : null,
       label: [
         scenario.VehicleTypeID || vehicleType.VehicleTypeID || '',
         scenario.Gate || '',

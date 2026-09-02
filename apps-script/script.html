@@ -1398,12 +1398,12 @@ function renderComparisonColumns() {
       sel.VehicleID ? ((vehicle && vehicle.VehicleCode) || sel.VehicleID) : '加權平均'
     ].filter(p => p).join(' / ');
     return `<span class="cmp-chip">
-      <button type="button" class="btn secondary" title="往左移" ${i === 0 ? 'disabled' : ''}
+      <button type="button" class="chip-move" title="往左移" ${i === 0 ? 'disabled' : ''}
         onclick="moveComparisonColumn(${i}, -1)">◀</button>
-      ${esc(label)}
-      <button type="button" class="btn secondary" title="往右移" ${i === comparisonSelections.length - 1 ? 'disabled' : ''}
+      <span class="chip-label">${esc(label)}</span>
+      <button type="button" class="chip-move" title="往右移" ${i === comparisonSelections.length - 1 ? 'disabled' : ''}
         onclick="moveComparisonColumn(${i}, 1)">▶</button>
-      <button type="button" class="btn danger" onclick="removeComparisonColumn(${i})">移除</button></span>`;
+      <button type="button" class="btn danger" onclick="removeComparisonColumn(${i})">✕</button></span>`;
   }).join('') + `<button type="button" class="btn secondary" onclick="clearComparisonColumns()">全部清除</button></div>`;
 }
 
@@ -1411,6 +1411,7 @@ function renderComparisonColumns() {
 let pctBase = 'exfactory';            // 'exfactory' = 對廠價(未稅) / 'revenue' = 對收入A / 'none' = 不顯示
 let showPriceStructure = true;        // 是否顯示 P1~P9 售價結構
 let chartLineCodes = ['A', 'K'];      // 圖表要畫哪幾個科目
+let collapsedGroups = new Set();      // 目前收合中的大項(B/E/G/I)，切換 % 基準等重畫時要保留住
 
 function refreshDashboard() {
   const content = document.getElementById('dashboard-content');
@@ -1436,7 +1437,7 @@ function renderDashboard(result) {
     ${dashboardToolbarHtml()}
     ${subtotalCheckHtml(cols)}
     <div id="csv-output" style="display:none;"></div>
-    ${chartSectionHtml(lines)}
+    ${chartSectionHtml(cols, lines)}
     <div class="grid-scroll">${plTableHtml(cols, lines)}</div>
   `;
   drawCharts(result);
@@ -1457,23 +1458,36 @@ function dashboardToolbarHtml() {
         <input type="checkbox"${showPriceStructure ? ' checked' : ''} onchange="setShowPriceStructure(this.checked)">
         顯示售價結構(P1~P9)
       </label>
+      <button type="button" class="btn secondary" onclick="toggleAllGroups()">全部收合/展開大項</button>
       <span class="toolbar-sep"></span>
       <button type="button" class="btn secondary" onclick="showComparisonCsv()">匯出 CSV</button>
     </div>`;
 }
 
-/** 柱狀圖跟「要畫哪幾個科目」的勾選框放在同一個區塊裡，選了馬上就在旁邊看到圖重畫，不必上下捲動對照 */
-function chartSectionHtml(lines) {
+/**
+ * 柱狀圖跟「要畫哪幾個科目」的勾選框放在同一個區塊裡（勾選框本身就是圖例），
+ * 選了馬上就在旁邊看到圖重畫，不必上下捲動對照；每個科目後面順便顯示目前的金額
+ * (取第一個比較欄位的數字，只是給個參考值，不代表所有欄位)。
+ */
+function chartSectionHtml(cols, lines) {
   const chartable = lines.filter(l => !l.isPriceStructure);
+  const refCol = cols[0];
   return `
     <div class="charts-row">
       <div class="chart-picker-box">
-        <div class="toolbar-block-title">柱狀圖科目（可複選）</div>
-        <div class="chip-picker" id="chart-lines">
-          ${chartable.map(l => `<label class="chk">
-            <input type="checkbox" value="${esc(l.LineCode)}"${chartLineCodes.indexOf(l.LineCode) !== -1 ? ' checked' : ''}
-              onchange="onChartLineToggle(this.value, this.checked)">
-            ${esc(shortLineName(l.LineName))}</label>`).join('')}
+        <div class="toolbar-block-title">柱狀圖科目（可複選，即時重畫）</div>
+        ${refCol ? `<div class="legend-source-hint">金額參考：${esc(refCol.label)}</div>` : ''}
+        <div class="legend-list" id="chart-lines">
+          ${chartable.map(l => {
+            const on = chartLineCodes.indexOf(l.LineCode) !== -1;
+            const val = refCol ? refCol.amounts[l.LineCode] : undefined;
+            return `<label class="legend-item${on ? ' on' : ''}">
+              <input type="checkbox" value="${esc(l.LineCode)}"${on ? ' checked' : ''}
+                onchange="onChartLineToggle(this.value, this.checked, this)">
+              <span class="legend-name">${esc(shortLineName(l.LineName))}</span>
+              ${val !== undefined && val !== null ? `<span class="legend-val">${fmt(val)}</span>` : ''}
+            </label>`;
+          }).join('')}
         </div>
       </div>
       <div class="chart-box" id="chart-compare"></div>
@@ -1490,10 +1504,11 @@ function shortLineName(name) {
   return cut > 1 ? s.slice(0, cut) : s;
 }
 
-function onChartLineToggle(code, checked) {
+function onChartLineToggle(code, checked, el) {
   const at = chartLineCodes.indexOf(code);
   if (checked && at === -1) chartLineCodes.push(code);
   if (!checked && at !== -1) chartLineCodes.splice(at, 1);
+  if (el) el.closest('.legend-item').classList.toggle('on', checked);
   drawCharts(lastComparison);
 }
 
@@ -1522,7 +1537,7 @@ function subtotalCheckHtml(cols) {
 function nameWithFormulaHint(name) {
   const parts = splitFormula(name);
   return esc(parts.base) + (parts.formula
-    ? ` <span class="formula-hint" title="${esc(parts.formula)}">ƒ</span>` : '');
+    ? ` <span class="formula-hint" tabindex="0" data-tip="${esc(parts.formula)}">ƒ</span>` : '');
 }
 function splitFormula(name) {
   const s = String(name || '');
@@ -1530,11 +1545,43 @@ function splitFormula(name) {
   return m ? { base: m[1], formula: m[2] } : { base: s, formula: '' };
 }
 
+/** 自動計算科目(AutoSource)的圓點提示：滑鼠移過去看它是怎麼算出來的 */
+const AUTO_SOURCE_HINTS = {
+  PRICE: '由「銷售構成」的售價欄位與稅務費用比率推算',
+  DEV_MOLD: '開發總投「模具」攤提落點 ÷ LIFE CYCLE 總台數',
+  DEV_EQUIP: '開發總投「設備」攤提落點 ÷ LIFE CYCLE 總台數',
+  DEV_EXPENSE_CMC: '開發總投「開發費-CMC」攤提落點 ÷ LIFE CYCLE 總台數',
+  DEV_EXPENSE_BASE: '開發總投「開發費-BASE廠」攤提落點 ÷ LIFE CYCLE 總台數',
+  DEV_AMORT: '開發總投攤提落點 ÷ LIFE CYCLE 總台數',
+  RATE_COMMODITY_TAX: '(廠價−水平配件外移調降−廣宣/促銷/批標售/季Margin)×完稅價格計算率÷(1+貨物稅率)×貨物稅率\n滑鼠移到金額上可看這一欄實際算出來的每一步',
+  RATE_QUARTER_MARGIN: '廠價(未稅) × 季Margin率'
+};
+function autoSourceDot(autoSource) {
+  if (!autoSource) return '';
+  const hint = AUTO_SOURCE_HINTS[autoSource] || '自動計算';
+  return ` <span class="auto-dot" tabindex="0" data-tip="自動計算\n${esc(hint)}"></span>`;
+}
+
+/** 貨物稅(b13)這一格的完整計算過程，滑鼠移到金額上顯示 */
+function commodityTaxDetailText(d) {
+  const pct = n => (Number(n) * 100).toFixed(1) + '%';
+  return [
+    `廠價(未稅) ${fmt(d.exFactoryPrice)}`,
+    `− 水平配件外移調降廠價 ${fmt(d.horizontalPartsAdj)}`,
+    `− 廣宣+促銷+批標售+季Margin ${fmt(d.deductTotal)}`,
+    `= 完稅價格基礎 ${fmt(d.dutiableBase / (d.calcRate || 1))}`,
+    `× 完稅價格計算率 ${pct(d.calcRate)} = ${fmt(d.dutiableBase)}`,
+    `÷ (1+貨物稅率${pct(d.taxRate)}) × 貨物稅率 = 貨物稅 ${fmt(d.tax)}`
+  ].join('\n');
+}
+
 function plTableHtml(cols, lines) {
   const showPct = pctBase !== 'none';
   const span = cols.length * (showPct ? 2 : 1) + 1;
   const priceLines = lines.filter(l => l.isPriceStructure);
   const plLines = lines.filter(l => !l.isPriceStructure);
+  // B/E/G/I 底下有明細的大項才給收合箭頭
+  const groupParents = ['B', 'E', 'G', 'I'].filter(p => lines.some(l => l.ParentLine === p));
 
   const sectionRow = text => `<tr class="section"><td colspan="${span}">${esc(text)}</td></tr>`;
 
@@ -1545,11 +1592,19 @@ function plTableHtml(cols, lines) {
       if (v === undefined || v === null) {
         return `<td class="muted">—</td>${showPct ? '<td class="muted">—</td>' : ''}`;
       }
-      return amountCellHtml(v) + (showPct ? pctCellHtml(v, col) : '');
+      const tip = (line.LineCode === 'b13' && col.commodityTaxDetail) ? commodityTaxDetailText(col.commodityTaxDetail) : '';
+      return amountCellHtml(v, tip) + (showPct ? pctCellHtml(v, col) : '');
     }).join('');
-    const autoTag = line.AutoSource ? ' <span class="auto-tag">自動</span>' : '';
+    const autoTag = autoSourceDot(line.AutoSource);
+    const isGroupHead = groupParents.indexOf(line.LineCode) !== -1;
+    const toggleBtn = isGroupHead
+      ? `<button class="row-toggle" data-group="${esc(line.LineCode)}" aria-expanded="${!collapsedGroups.has(line.LineCode)}"
+           onclick="toggleGroupCollapse('${esc(line.LineCode)}')" data-tip="收合/展開">
+           <svg viewBox="0 0 10 10" fill="none"><path d="M2 3.5L5 7l3-3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+         </button>` : '';
+    const hidden = (line.ParentLine && collapsedGroups.has(line.ParentLine)) ? ' hidden' : '';
     const cls = [line.isSubtotal ? 'subtotal' : '', line.ParentLine ? 'detail' : ''].filter(c => c).join(' ');
-    return `<tr class="${cls}"><td class="row-head">${nameWithFormulaHint(line.LineName)}${autoTag}</td>${cells}</tr>`;
+    return `<tr class="${cls}"${hidden}><td class="row-head">${toggleBtn}${nameWithFormulaHint(line.LineName)}${autoTag}</td>${cells}</tr>`;
   };
 
   return `
@@ -1575,9 +1630,25 @@ function plTableHtml(cols, lines) {
     </table>`;
 }
 
-function amountCellHtml(v) {
+/** 大項收合：只重畫損益表本體，不必整個 dashboard 重新計算 */
+function toggleGroupCollapse(code) {
+  if (collapsedGroups.has(code)) collapsedGroups.delete(code);
+  else collapsedGroups.add(code);
+  if (lastComparison) renderDashboard(lastComparison);
+}
+/** 全部收合/展開：目前有任何一個大項是展開的就全部收合，否則全部展開 */
+function toggleAllGroups() {
+  if (!lastComparison) return;
+  const parents = ['B', 'E', 'G', 'I'].filter(p => (lastComparison.lines || []).some(l => l.ParentLine === p));
+  const anyExpanded = parents.some(p => !collapsedGroups.has(p));
+  collapsedGroups = new Set(anyExpanded ? parents : []);
+  renderDashboard(lastComparison);
+}
+
+function amountCellHtml(v, tip) {
   const n = Number(v) || 0;
-  return `<td class="${n < 0 ? 'negative' : ''}">${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>`;
+  const tipAttr = tip ? ` tabindex="0" data-tip="${esc(tip)}"` : '';
+  return `<td class="${n < 0 ? 'negative' : ''}"${tipAttr}>${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>`;
 }
 
 function pctCellHtml(v, col) {
@@ -1652,9 +1723,44 @@ function drawCharts(result) {
   });
 }
 
+/**
+ * 全域 tooltip：滑鼠移到任何帶 data-tip 的元素上就顯示，用固定定位 + 依元素座標計算，
+ * 不會被表格的橫向捲動(.grid-scroll)或釘住欄位(sticky)裁切掉 —— 這是改用瀏覽器原生
+ * title 屬性做不到的地方(原生 title 在有捲動容器的表格裡常常整個被裁掉，滑鼠移過去看不到)。
+ * 同時支援鍵盤 focus，觸控裝置沒有 hover 也能用 tab 鍵切到該元素看到提示。
+ */
+function installTooltipEngine_() {
+  const tip = document.createElement('div');
+  tip.className = 'js-tooltip';
+  tip.id = 'js-tooltip';
+  document.body.appendChild(tip);
+
+  function place(el) {
+    const text = el.getAttribute('data-tip');
+    if (!text) return;
+    tip.textContent = text;
+    tip.style.display = 'block';
+    const r = el.getBoundingClientRect();
+    const tw = tip.offsetWidth, th = tip.offsetHeight;
+    let top = r.top - th - 8;
+    if (top < 8) top = r.bottom + 8;
+    let left = r.left + r.width / 2 - tw / 2;
+    left = Math.max(8, Math.min(left, window.innerWidth - tw - 8));
+    tip.style.top = top + 'px';
+    tip.style.left = left + 'px';
+  }
+  function hide() { tip.style.display = 'none'; }
+
+  document.addEventListener('mouseover', e => { const t = e.target.closest('[data-tip]'); if (t) place(t); });
+  document.addEventListener('mouseout', e => { const t = e.target.closest('[data-tip]'); if (t) hide(); });
+  document.addEventListener('focusin', e => { const t = e.target.closest('[data-tip]'); if (t) place(t); });
+  document.addEventListener('focusout', e => { const t = e.target.closest('[data-tip]'); if (t) hide(); });
+}
+
 /* ---------------- 初始化 ---------------- */
 window.addEventListener('DOMContentLoaded', () => {
   google.charts.load('current', { packages: ['corechart'] });
+  installTooltipEngine_();
   switchTab('vehicletypes');
   loadVehicleTypeSelector();
 });

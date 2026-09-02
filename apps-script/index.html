@@ -45,11 +45,14 @@
     <div id="panel-paramrates" class="panel"></div>
     <div id="panel-paramfx" class="panel"></div>
     <div id="panel-dashboard" class="panel">
-      <h3>損益儀表板 &mdash; 多車型/多情境比較</h3>
-      <p class="muted">每個比較欄位 = 車型 × 情境 × 車系（或加權平均），可加入的比較欄位可用左右箭頭調整順序。</p>
-      <div id="comparison-picker" class="toolbar"></div>
-      <div id="comparison-columns"></div>
-      <button class="btn" onclick="refreshDashboard()">重新計算</button>
+      <div class="dash-head">
+        <h3>損益儀表板</h3>
+        <button class="btn" onclick="refreshDashboard()">重新計算</button>
+      </div>
+      <div class="builder-card">
+        <div id="comparison-picker" class="toolbar"></div>
+        <div id="comparison-columns"></div>
+      </div>
       <div id="dashboard-content"></div>
     </div>
   </main>
