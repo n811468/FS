@@ -96,7 +96,10 @@ function calculatePL(scenarioId, vehicleId) {
   // ---- B 銷貨成本：手動輸入的成本列 + 自動計算的成本列 ----
   var costRows = getCostOfSales(scenarioId, vehicleId);
   var knownCodes = getPLLineItems().map(function (d) { return d.LineCode; });
+  // 先把所有可手動輸入的成本科目都放進來(值 0)，沒填金額的科目才不會整列從儀表板消失 ——
+  // 少了幾列的話，畫面上看到的 b 科目加起來會對不上 B 銷貨成本合計，看起來就像加總算錯。
   var bLines = {};
+  manualLineCodesFor_(['B']).forEach(function (code) { bLines[code] = 0; });
   costRows.forEach(function (r) {
     var code = r.LineCode;
     // 科目已被刪除的殘留金額不計入，否則 B 會跟畫面上列出的 b 科目合計對不起來
@@ -145,13 +148,15 @@ function calculatePL(scenarioId, vehicleId) {
   );
 
   var timestamp = new Date();
-  writePLResult_(scenarioId, vehicleId, lineValues, revenueA, timestamp);
+  writePLResult_(scenarioId, vehicleId, lineValues, revenueA, exFactoryPrice, timestamp);
 
   return {
     scenarioId: scenarioId,
     vehicleId: vehicleId,
     calculatedAt: timestamp.toISOString(), // 巢狀 Date 物件會讓 google.script.run 整包回傳變 null，一律轉字串
-    lines: buildResultLines_(lineValues, revenueA)
+    revenue: revenueA,
+    exFactoryPrice: exFactoryPrice,
+    lines: buildResultLines_(lineValues, revenueA, exFactoryPrice)
   };
 }
 
@@ -170,12 +175,12 @@ function calculatePLAllVehicles(scenarioId) {
     });
   });
   var timestamp = new Date();
-  writePLResult_(scenarioId, '', weighted, weighted.A || 0, timestamp);
+  writePLResult_(scenarioId, '', weighted, weighted.A || 0, weighted.P8 || 0, timestamp);
 
   return {
     scenarioId: scenarioId,
     vehicles: results,
-    weightedAverage: buildResultLines_(weighted, weighted.A || 0)
+    weightedAverage: buildResultLines_(weighted, weighted.A || 0, weighted.P8 || 0)
   };
 }
 
@@ -187,8 +192,13 @@ function calculateScenarioWeighted(scenarioId) {
 /**
  * 多車型/多情境比較：儀表板的核心 API。
  * selections = [{ ScenarioID, VehicleID }]，VehicleID 留空代表該情境的「加權平均」。
- * 因為不同車型的科目不見得相同，回傳的 lines 是所有欄位實際出現過科目的聯集(依 SortOrder 排序)，
+ *
+ * 回傳的 lines 是所有欄位實際出現過科目的聯集(依 SortOrder 排序)，並且帶上 ParentLine，
+ * 讓前端可以把明細科目縮排在它的小計底下 —— 這樣「哪幾列加起來等於哪一列」在畫面上是看得見的。
  * 某欄位沒有該科目時值為 null，前端顯示空白而不是 0。
+ *
+ * 每個欄位另外附一份 checks：把小計逐條重算一次(B=Σb、C=A-B、E=C-Σd...)，
+ * 只有對不起來的才會出現在陣列裡，前端據此在畫面上示警，不用靠肉眼加總去發現錯誤。
  */
 function calculateComparison(selections) {
   selections = selections || [];
@@ -212,6 +222,10 @@ function calculateComparison(selections) {
       scenarioId: sel.ScenarioID,
       vehicleId: sel.VehicleID || '',
       vehicleTypeId: scenario.VehicleTypeID || '',
+      vehicleTypeLabel: scenario.VehicleTypeID || vehicleType.VehicleTypeID || '',
+      scenarioLabel: [scenario.Gate || '', scenario.ScenarioName || ''].filter(function (p) { return p; }).join(' '),
+      vehicleLabel: sel.VehicleID ? ((vehicle && vehicle.VehicleCode) || sel.VehicleID) : '加權平均',
+      isWeighted: !sel.VehicleID,
       label: [
         scenario.VehicleTypeID || vehicleType.VehicleTypeID || '',
         scenario.Gate || '',
@@ -219,7 +233,9 @@ function calculateComparison(selections) {
         sel.VehicleID ? ((vehicle && vehicle.VehicleCode) || sel.VehicleID) : '加權平均'
       ].filter(function (p) { return p; }).join(' / '),
       amounts: amounts,
-      revenue: amounts.A || 0
+      revenue: amounts.A || 0,
+      exFactoryPrice: amounts.P8 || 0,
+      checks: subtotalChecks_(amounts, lineDefs)
     };
   });
 
@@ -227,10 +243,50 @@ function calculateComparison(selections) {
   var usedLines = lineDefs.filter(function (def) {
     return columns.some(function (col) { return col.amounts[def.LineCode] !== undefined; });
   }).map(function (def) {
-    return { LineCode: def.LineCode, LineName: def.LineName, Category: def.Category, AutoSource: def.AutoSource || '' };
+    return {
+      LineCode: def.LineCode,
+      LineName: def.LineName,
+      Category: def.Category,
+      ParentLine: def.ParentLine || '',
+      SortOrder: toNumber_(def.SortOrder),
+      AutoSource: def.AutoSource || '',
+      isSubtotal: PROTECTED_LINE_CODES.indexOf(def.LineCode) !== -1,
+      isPriceStructure: String(def.Category || '') === '售價結構'
+    };
   });
 
-  return { columns: columns, lines: usedLines };
+  return { columns: columns, lines: usedLines, subtotalCodes: PROTECTED_LINE_CODES };
+}
+
+/**
+ * 小計驗算：把損益鏈上每一條「等式」重算一次，回傳對不起來的項目。
+ * 一分損益表最容易出錯的地方就是加總 —— 明細改了、小計沒跟著動，或是某個明細科目
+ * 被歸到錯的父科目而沒有被任何小計吃到。這裡直接用畫面上要顯示的同一組數字去驗，
+ * 有問題就一定看得到，不必自己拿計算機加。
+ */
+function subtotalChecks_(amounts, lineDefs) {
+  var v = function (code) { return Number(amounts[code]) || 0; };
+  var sumChildren = function (parent) {
+    return lineDefs.filter(function (d) { return d.ParentLine === parent; })
+      .reduce(function (sum, d) { return sum + v(d.LineCode); }, 0);
+  };
+
+  var equations = [
+    { code: 'A', label: 'A 收入 = P8 廠價 + P9 強配收入', expected: v('P8') + v('P9') },
+    { code: 'B', label: 'B 銷貨成本 = Σ 成本明細', expected: sumChildren('B') },
+    { code: 'C', label: 'C 生產毛利 = A - B', expected: v('A') - v('B') },
+    { code: 'E', label: 'E 銷貨毛利 = C - Σ 銷售費用', expected: v('C') - sumChildren('E') },
+    { code: 'G', label: 'G 產品貢獻 = E - Σ 產品貢獻前費用', expected: v('E') - sumChildren('G') },
+    { code: 'I', label: 'I 營業淨利(未扣前瞻) = G - Σ 固定營業費用', expected: v('G') - sumChildren('I') },
+    { code: 'K', label: 'K 營業淨利 = I - J 前瞻費用', expected: v('I') - v('J') }
+  ];
+
+  return equations.filter(function (eq) {
+    // 容差 0.5 元：營業稅/佣金有四捨五入，差幾角不是錯誤
+    return Math.abs(eq.expected - v(eq.code)) > 0.5;
+  }).map(function (eq) {
+    return { code: eq.code, label: eq.label, expected: eq.expected, actual: v(eq.code), diff: v(eq.code) - eq.expected };
+  });
 }
 
 /** 儀表板比較欄位選擇器用：一次回傳車型 -> 情境/車系的完整選項樹 */
@@ -258,35 +314,34 @@ function getComparisonOptions() {
 function amortizeDevInvestmentPerUnit_(scenarioId) {
   var devRows = getDevInvestment(scenarioId);
   var totalUnits = getLifeCycleUnits(scenarioId);
-  var empty = { moldPerUnit: 0, equipPerUnit: 0, cmcExpensePerUnit: 0, baseExpensePerUnit: 0, totalUnits: totalUnits };
+  var empty = {
+    moldPerUnit: 0, equipPerUnit: 0, cmcExpensePerUnit: 0, baseExpensePerUnit: 0,
+    totalsByLine: { b5: 0, b8: 0, f3: 0, f4: 0 }, totalUnits: totalUnits
+  };
   if (totalUnits <= 0) return empty;
 
   // 現況情境沒有挑戰低減目標，一律用原始金額；目標情境才套用低減率。
   var isBaseline = isBaselineScenario_(scenarioId);
   var params = getParameters(scenarioId);
 
-  var moldTotal = 0, equipTotal = 0, cmcExpenseTotal = 0, baseExpenseTotal = 0;
+  // 依「攤提落點科目」分組，落點由 AssetType 直接決定(舊的「費用」才需要看 Department)
+  var totals = { b5: 0, b8: 0, f3: 0, f4: 0 };
   devRows.forEach(function (r) {
     // 投入金額可用外幣登打(如 BASE廠開發費以 CNY 計)，換算方式與銷貨成本一致
     var amount = toNumber_(r.Amount) * fxRateFor_(params, r.Currency, '');
     // ChallengeReductionPct 以 0~100 的百分比數值儲存(如 15 代表 15%)
     var reduced = amount * (isBaseline ? 1 : 1 - pct_(r.ChallengeReductionPct));
-    if (r.AssetType === '模具') {
-      moldTotal += reduced;
-    } else if (r.AssetType === '設備') {
-      equipTotal += reduced;
-    } else if (r.Department === DEV_INVESTMENT_BASE_FACTORY_DEPT) {
-      baseExpenseTotal += reduced;
-    } else {
-      cmcExpenseTotal += reduced;
-    }
+    var target = devAmortTargetOf_(r);
+    if (totals[target] === undefined) return;   // 沒選資產類型的列不攤提(儲存時已擋下有金額卻沒選的情形)
+    totals[target] += reduced;
   });
 
   return {
-    moldPerUnit: moldTotal / totalUnits,
-    equipPerUnit: equipTotal / totalUnits,
-    cmcExpensePerUnit: cmcExpenseTotal / totalUnits,
-    baseExpensePerUnit: baseExpenseTotal / totalUnits,
+    moldPerUnit: totals.b5 / totalUnits,
+    equipPerUnit: totals.b8 / totalUnits,
+    cmcExpensePerUnit: totals.f3 / totalUnits,
+    baseExpensePerUnit: totals.f4 / totalUnits,
+    totalsByLine: totals,
     totalUnits: totalUnits
   };
 }
@@ -324,23 +379,41 @@ function getSalesMixLifeCycleUnits(scenarioId) {
 function getDevInvestmentSummary(scenarioId) {
   var perUnit = amortizeDevInvestmentPerUnit_(scenarioId);
   var isBaseline = isBaselineScenario_(scenarioId);
+  var lineNames = {};
+  getPLLineItems().forEach(function (d) { lineNames[d.LineCode] = d.LineName; });
+
   var rows = getDevInvestment(scenarioId).map(function (r) {
     var pctValue = isBaseline ? 0 : toNumber_(r.ChallengeReductionPct);
+    var target = devAmortTargetOf_(r);
     return {
       RowID: r.RowID,
       Department: r.Department,
-      AssetType: r.AssetType,
+      // 舊的「費用」在這裡就轉成新的選項值，使用者一存檔就跟著寫回去
+      AssetType: normalizeDevAssetType_(r),
       Currency: r.Currency || BASE_CURRENCY,
       Notes: r.Notes || '',
       Amount: toNumber_(r.Amount),
       ChallengeReductionPct: pctValue,
-      ReducedAmount: toNumber_(r.Amount) * (1 - pctValue / 100)
+      ReducedAmount: toNumber_(r.Amount) * (1 - pctValue / 100),
+      // 這一列的錢會攤到哪個科目，直接寫在畫面上
+      TargetLineCode: target,
+      TargetLineName: target ? (lineNames[target] || target) : ''
     };
   });
   var scenario = getScenarios().filter(function (s) { return s.ScenarioID === scenarioId; })[0] || {};
   return {
     lifeCycleUnits: perUnit.totalUnits,
     salesMixLifeCycleUnits: getSalesMixLifeCycleUnits(scenarioId),
+    assetTypes: DEV_ASSET_TYPES,
+    // 每個落點科目的投資總額(低減後)與單台攤提，讓「開發總投 → 損益科目」對得起來
+    targets: DEV_ASSET_TYPES.map(function (type) {
+      var code = DEV_ASSET_TYPE_TARGET[type];
+      return {
+        AssetType: type, LineCode: code, LineName: lineNames[code] || code,
+        Total: perUnit.totalsByLine[code] || 0,
+        PerUnit: perUnit.totalUnits ? (perUnit.totalsByLine[code] || 0) / perUnit.totalUnits : 0
+      };
+    }),
     amortMonthlyVolume: scenario.AmortMonthlyVolume === undefined ? '' : scenario.AmortMonthlyVolume,
     amortLifeCycleYears: scenario.AmortLifeCycleYears === undefined ? '' : scenario.AmortLifeCycleYears,
     currencies: getConfiguredCurrencies(scenarioId),
@@ -375,7 +448,7 @@ function sumValues_(obj) {
  * 舊資料用「整張重寫」而非逐列 deleteRow —— 儀表板一次比較多個欄位時，
  * 逐列刪除會累積成上百次 Sheet 異動，容易撞到執行時間上限。
  */
-function writePLResult_(scenarioId, vehicleId, lineValues, revenue, timestamp) {
+function writePLResult_(scenarioId, vehicleId, lineValues, revenue, exFactoryPrice, timestamp) {
   var sheet = getSheet_(SHEETS.PL_RESULT);
   var width = SCHEMA.PLResult.length;
   var lastRow = sheet.getLastRow();
@@ -391,7 +464,8 @@ function writePLResult_(scenarioId, vehicleId, lineValues, revenue, timestamp) {
 
   var rows = Object.keys(lineValues).map(function (code) {
     var amount = lineValues[code];
-    return [generateId_('PR'), scenarioId, vehicleId, code, amount, revenue ? amount / revenue : 0, timestamp];
+    return [generateId_('PR'), scenarioId, vehicleId, code, amount,
+      revenue ? amount / revenue : 0, exFactoryPrice ? amount / exFactoryPrice : 0, timestamp];
   });
 
   var all = kept.concat(rows);
@@ -399,7 +473,14 @@ function writePLResult_(scenarioId, vehicleId, lineValues, revenue, timestamp) {
   invalidateSheetCache_(SHEETS.PL_RESULT);
 }
 
-function buildResultLines_(lineValues, revenue) {
+/**
+ * 把計算結果攤成畫面用的列。
+ * 每一列同時給兩個百分比基準：
+ *   PctOfRevenue     — 對 A 收入(未稅,含強配)，就是 Gate F Excel 上那一欄 %
+ *   PctOfExFactory   — 對 P8 廠價(未稅)
+ * 沒有強配件時兩者相同；有強配收入時廠價比較能反映本業單價，所以兩個都留著讓使用者切換。
+ */
+function buildResultLines_(lineValues, revenue, exFactoryPrice) {
   var lineDefs = getPLLineItems();
   return lineDefs
     .filter(function (def) { return lineValues[def.LineCode] !== undefined; })
@@ -409,8 +490,11 @@ function buildResultLines_(lineValues, revenue) {
         LineCode: def.LineCode,
         LineName: def.LineName,
         Category: def.Category,
+        ParentLine: def.ParentLine || '',
+        AutoSource: def.AutoSource || '',
         Amount: amount,
-        PctOfRevenue: revenue ? amount / revenue : 0
+        PctOfRevenue: revenue ? amount / revenue : 0,
+        PctOfExFactory: exFactoryPrice ? amount / exFactoryPrice : 0
       };
     });
 }

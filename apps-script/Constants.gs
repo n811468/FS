@@ -40,7 +40,7 @@ var SCHEMA = {
   OperatingExpense: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'Notes', 'EffectiveDate'],
   Parameters: ['ParamID', 'ScenarioID', 'VehicleID', 'ParamName', 'Currency', 'Value', 'EffectiveDate'],
   PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'SortOrder', 'AutoSource', 'CommodityTaxDeduct'],
-  PLResult: ['ResultID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'PctOfRevenue', 'CalcTimestamp']
+  PLResult: ['ResultID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'PctOfRevenue', 'PctOfExFactory', 'CalcTimestamp']
 };
 
 // 情境代號改用 GATE 別；同一個 GATE 底下可以有多個情境(GATE F 現況 / GATE F 目標)，
@@ -55,14 +55,33 @@ var SCENARIO_TYPE_BASELINE = '現況';
 // 廢車處理費稅別選項：讓損益試算全程稅別口徑一致(一律換算為含稅金額後再從零售價扣除)。
 var SCRAP_FEE_TAX_STATUS = ['含稅', '未稅'];
 
-// 開發總投資產類型：模具/設備攤提進銷貨成本(b5/b8)，費用類攤提為車型專案開發費用(f3/f4)。
-var DEV_ASSET_TYPES = ['模具', '設備', '費用'];
+// 開發總投資產類型 = 這筆投資要攤提到哪一個科目。
+// 費用類原本只有一個「費用」，落到 f3 還是 f4 靠 Department 是不是剛好等於 'BASE廠開發費' 來決定 ——
+// 部門名稱是自由輸入的，打成「BASE廠」「BASE 廠開發費」就會整筆跑到 f3，而且畫面上完全看不出來。
+// 現在把落點直接做成選項，使用者選什麼就攤到什麼。
+var DEV_ASSET_TYPES = ['模具', '設備', '費用-CMC', '費用-BASE廠'];
+
+// 舊資料相容：以前只有一個「費用」，讀取時會依 Department 自動判斷後轉成新的選項值。
+var DEV_ASSET_TYPE_LEGACY_EXPENSE = '費用';
+var DEV_ASSET_TYPES_ACCEPTED = DEV_ASSET_TYPES.concat([DEV_ASSET_TYPE_LEGACY_EXPENSE]);
+
+// 資產類型 -> 攤提落點科目。畫面上會把落點科目直接寫在每一列旁邊，
+// 讓「開發總投填的錢跑去哪個科目」是看得見的，不必回頭翻文件。
+var DEV_ASSET_TYPE_TARGET = {
+  '模具': 'b5',
+  '設備': 'b8',
+  '費用-CMC': 'f3',
+  '費用-BASE廠': 'f4'
+};
 
 // Parameters 依用途分兩組管理：稅務/費用比率(0~100 百分比) vs 匯率設定(原始匯率數值)。
 // 貨物稅完稅價格計算率：貨物稅完稅價格 = (廠價 - 水平配件外移調降 - 廣促margin) × 本率 ÷ (1+貨物稅率)，
 // 對應實務上完稅價格的法定扣除（Gate F Excel 用 0.91）。
 var TAX_RATE_PARAM_NAMES = ['營業稅率', '銷售佣金率', '季Margin率', '貨物稅率', '貨物稅完稅價格計算率'];
-var FX_PARAM_NAMES = ['集團預算匯率', '現況匯率'];
+// 匯率只保留一種「現況匯率」：原本還有「集團預算匯率」，但全系統只有匯率設定頁面自己在顯示它，
+// 沒有任何計算讀它(銷貨成本與開發總投換算都固定用 COST_FX_PARAM_NAME = 現況匯率)，
+// 留著只會讓人以為要填兩種匯率，故移除。
+var FX_PARAM_NAMES = ['現況匯率'];
 
 // 匯率設定以「幣別 × 匯率種類」管理，1 外幣 = Value 台幣。
 // 本位幣不需設定匯率；銷貨成本頁的幣別選單就是這裡設定過的幣別。
@@ -88,6 +107,18 @@ var AUTO_SOURCE = {
 // 否則損益鏈會斷掉。其餘明細科目(b*/d*/f1/h*/J)皆可自由新增與刪除。
 var PROTECTED_LINE_CODES = ['A', 'B', 'C', 'E', 'G', 'I', 'K'];
 
+// 科目代碼由系統自動產生流水號：父科目字首 + 目前未被使用的最小號碼(b1、b2、d1、f1、h1...)。
+// 使用者只需要選父科目、填科目名稱，不必自己編碼、也不會撞號。
+var LINE_CODE_PREFIX = { B: 'b', E: 'd', G: 'f', I: 'h' };
+
+// 「科目設定」「營業費用」等頁面共用的父科目下拉選項（父科目決定這個科目落在損益鏈的哪一段）
+var PL_LINE_PARENT_OPTIONS = [
+  ['B', 'B 銷貨成本'],
+  ['E', 'E 銷售費用(銷貨毛利前)'],
+  ['G', 'G 產品貢獻前費用'],
+  ['I', 'I 固定營業費用']
+];
+
 // 損益科目鏈（SetupSheets 會寫入 PLLineItems 分頁，之後可在「科目設定」頁面增刪明細科目）
 var PL_LINE_ITEMS = [
   // ---- 售價結構(P*)：全部由 SalesMix 售價欄位與比率設定推算，讓儀表板看得到中間過程 ----
@@ -103,19 +134,21 @@ var PL_LINE_ITEMS = [
 
   { LineCode: 'A', LineName: '收入(未稅,含強配)(=P8+P9)', ParentLine: '', Category: '收入', SortOrder: 10, AutoSource: '' },
   { LineCode: 'B', LineName: '銷貨成本合計', ParentLine: '', Category: '成本', SortOrder: 20, AutoSource: '' },
+  // SortOrder 依實際 Gate F 損益試算表的列序排列（科目代碼維持原值，改代碼會讓已輸入的金額對不到科目）
   { LineCode: 'b1', LineName: '材料成本-LP', ParentLine: 'B', Category: '成本明細', SortOrder: 21, AutoSource: '' },
-  { LineCode: 'b2', LineName: '材料成本-KD(含內陸運雜)', ParentLine: 'B', Category: '成本明細', SortOrder: 22, AutoSource: '' },
-  { LineCode: 'b3', LineName: '強配成本', ParentLine: 'B', Category: '成本明細', SortOrder: 23, AutoSource: '' },
-  { LineCode: 'b4', LineName: '一般材料', ParentLine: 'B', Category: '成本明細', SortOrder: 24, AutoSource: '' },
-  { LineCode: 'b5', LineName: '模具費用(開發總投/LC總台數)', ParentLine: 'B', Category: '成本明細', SortOrder: 25, AutoSource: AUTO_SOURCE.DEV_MOLD },
-  { LineCode: 'b6', LineName: '直接人工', ParentLine: 'B', Category: '成本明細', SortOrder: 26, AutoSource: '' },
-  { LineCode: 'b7', LineName: '製造費用', ParentLine: 'B', Category: '成本明細', SortOrder: 27, AutoSource: '' },
-  { LineCode: 'b8', LineName: '新增專屬設備(開發總投/LC總台數)', ParentLine: 'B', Category: '成本明細', SortOrder: 28, AutoSource: AUTO_SOURCE.DEV_EQUIP },
-  { LineCode: 'b9', LineName: '技酬金', ParentLine: 'B', Category: '成本明細', SortOrder: 29, AutoSource: '' },
-  { LineCode: 'b10', LineName: '水平配件', ParentLine: 'B', Category: '成本明細', SortOrder: 30, AutoSource: '' },
-  { LineCode: 'b11', LineName: '防鏽', ParentLine: 'B', Category: '成本明細', SortOrder: 31, AutoSource: '' },
-  { LineCode: 'b12', LineName: '廢棄物處理及包材', ParentLine: 'B', Category: '成本明細', SortOrder: 32, AutoSource: '' },
-  { LineCode: 'b13', LineName: '貨物稅(完稅價格×貨物稅率)', ParentLine: 'B', Category: '成本明細', SortOrder: 33, AutoSource: AUTO_SOURCE.RATE_COMMODITY_TAX },
+  { LineCode: 'b14', LineName: '內陸運雜', ParentLine: 'B', Category: '成本明細', SortOrder: 22, AutoSource: '' },
+  { LineCode: 'b2', LineName: '材料成本-KD', ParentLine: 'B', Category: '成本明細', SortOrder: 23, AutoSource: '' },
+  { LineCode: 'b3', LineName: '強配成本', ParentLine: 'B', Category: '成本明細', SortOrder: 24, AutoSource: '' },
+  { LineCode: 'b4', LineName: '一般材料', ParentLine: 'B', Category: '成本明細', SortOrder: 25, AutoSource: '' },
+  { LineCode: 'b10', LineName: '水平配件', ParentLine: 'B', Category: '成本明細', SortOrder: 26, AutoSource: '' },
+  { LineCode: 'b8', LineName: '新增專屬設備(開發總投/LC總台數)', ParentLine: 'B', Category: '成本明細', SortOrder: 27, AutoSource: AUTO_SOURCE.DEV_EQUIP },
+  { LineCode: 'b5', LineName: '模具費用(開發總投/LC總台數)', ParentLine: 'B', Category: '成本明細', SortOrder: 28, AutoSource: AUTO_SOURCE.DEV_MOLD },
+  { LineCode: 'b6', LineName: '直接人工', ParentLine: 'B', Category: '成本明細', SortOrder: 29, AutoSource: '' },
+  { LineCode: 'b7', LineName: '製造費用', ParentLine: 'B', Category: '成本明細', SortOrder: 30, AutoSource: '' },
+  { LineCode: 'b9', LineName: '技酬金', ParentLine: 'B', Category: '成本明細', SortOrder: 31, AutoSource: '' },
+  { LineCode: 'b11', LineName: '防鏽', ParentLine: 'B', Category: '成本明細', SortOrder: 32, AutoSource: '' },
+  { LineCode: 'b12', LineName: '廢棄物處理及包材', ParentLine: 'B', Category: '成本明細', SortOrder: 33, AutoSource: '' },
+  { LineCode: 'b13', LineName: '貨物稅(完稅價格×貨物稅率)', ParentLine: 'B', Category: '成本明細', SortOrder: 34, AutoSource: AUTO_SOURCE.RATE_COMMODITY_TAX },
   { LineCode: 'C', LineName: '生產毛利(=A-B)', ParentLine: '', Category: '毛利', SortOrder: 40, AutoSource: '' },
   { CommodityTaxDeduct: 'Y', LineCode: 'd1', LineName: '廣宣費用', ParentLine: 'E', Category: '費用明細', SortOrder: 41, AutoSource: '' },
   { CommodityTaxDeduct: 'Y', LineCode: 'd2', LineName: '促銷', ParentLine: 'E', Category: '費用明細', SortOrder: 42, AutoSource: '' },
@@ -143,11 +176,11 @@ var DEFAULT_PARAMS = {
   '季Margin率': 0.5,
   '貨物稅率': 15,
   '貨物稅完稅價格計算率': 91,
-  '集團預算匯率': 1,
   '現況匯率': 1
 };
 
-var DEV_INVESTMENT_BASE_FACTORY_DEPT = 'BASE廠開發費'; // Department 欄位用這個值標記 f4 的攤提來源
+// 舊資料轉換用：資產類型還是舊的「費用」時，Department 等於這個值就視為 f4(BASE廠)，其餘為 f3(CMC)。
+var DEV_INVESTMENT_BASE_FACTORY_DEPT = 'BASE廠開發費';
 
 // ChallengeReductionPct 同樣以百分比數值(0~100)輸入及儲存(如 15 代表 15%)。
 // 挑戰低減目標屬於情境層級的假設：同一個 GATE 下的「現況」與「目標」情境各自填自己的低減目標，

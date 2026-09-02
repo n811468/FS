@@ -5,60 +5,92 @@
  *   2. 表格編輯頁 — 銷售構成、銷貨成本、營業費用、開發總投、費率、匯率，
  *      改成一次看到全部、直接在格子裡改、最後按一次「儲存」的表格式介面。
  * ------------------------------------------------------------- */
+const GATE_OPTIONS = ['GATE F', 'GATE E', 'GATE D', 'GATE C', 'GATE B', 'GATE A', 'GATE Z'];
+const SCENARIO_TYPES = ['現況', '目標'];
+// 結構科目與自動計算科目不能刪、父科目也不能改，否則損益鏈會接錯段（後端也會擋，這裡只是不畫按鈕）
+const PROTECTED_LINE_CODES = ['A', 'B', 'C', 'E', 'G', 'I', 'K'];
+const LINE_PARENT_OPTIONS = [
+  ['', '(結構科目，不可改)'],
+  ['B', 'B 銷貨成本'],
+  ['E', 'E 銷售費用(銷貨毛利前)'],
+  ['G', 'G 產品貢獻前費用'],
+  ['I', 'I 固定營業費用']
+];
+// 建立新情境時可以整批帶入的資料類別
+const SCENARIO_COPY_PARTS = [
+  { key: 'salesmix', label: '銷售構成' },
+  { key: 'costofsales', label: '銷貨成本' },
+  { key: 'devinvestment', label: '開發總投' },
+  { key: 'operatingexpense', label: '營業費用' },
+  { key: 'parameters', label: '費率/匯率' }
+];
+
 const ENTITIES = {
   vehicletypes: {
     label: '車型主檔', pk: 'VehicleTypeID',
-    getFn: 'getVehicleTypes', saveFn: 'saveVehicleType', deleteFn: 'deleteVehicleType',
+    getFn: 'getVehicleTypes', saveGridFn: 'saveVehicleTypeGrid', deleteFn: 'deleteVehicleType',
     scopedBy: null,
-    fields: [
-      { name: 'VehicleTypeID', label: '車型代號', required: true },
-      { name: 'Notes', label: '備註' }
+    note: '整張表直接編輯，改完按一次「儲存」；「新增一列」會在最後補一列空白列，填好一起存。'
+      + ' 已建立的車型代號不能再改 —— 代號是所有資料的鍵值，改掉等於另外開一個新車型、原本的資料會留在舊代號底下。',
+    columns: [
+      { name: 'VehicleTypeID', label: '車型代號', lockAfterCreate: true, width: 140 },
+      { name: 'Notes', label: '備註', width: 360 }
     ]
   },
   vehicles: {
     label: '車系設定', pk: 'VehicleID',
-    getFn: 'getVehicles', saveFn: 'saveVehicle', deleteFn: 'deleteVehicle',
+    getFn: 'getVehicles', saveGridFn: 'saveVehicleGrid', deleteFn: 'deleteVehicle',
     scopedBy: 'vehicleType',
-    note: '車系建立後，「銷售構成」「銷貨成本」「營業費用」等頁面會自動帶出對應的欄位，不必再重複輸入車系。',
-    fields: [
-      { name: 'VehicleID', label: '車系代號', required: true },
-      { name: 'VehicleCode', label: '車系名稱' },
-      { name: 'Notes', label: '備註' }
+    note: '車系建立後，「銷售構成」「銷貨成本」「營業費用」等頁面會自動帶出對應的欄位，不必再重複輸入車系。'
+      + ' 整張表直接編輯，改完按一次「儲存」；車系代號同樣在建立後就固定。',
+    columns: [
+      { name: 'VehicleID', label: '車系代號', lockAfterCreate: true, width: 140 },
+      { name: 'VehicleCode', label: '車系名稱', width: 220 },
+      { name: 'Notes', label: '備註', width: 320 }
     ]
   },
   scenarios: {
     label: '情境設定', pk: 'ScenarioID',
-    getFn: 'getScenarios', saveFn: 'saveScenario', deleteFn: 'deleteScenario',
-    scopedBy: 'vehicleType',
-    note: '同一個 GATE 底下可以有多個情境。情境性質選「現況」時沒有挑戰低減目標；選「目標」才需要填低減目標，並可從其他情境整批帶入資料。',
-    fields: [
-      { name: 'ScenarioID', label: 'ScenarioID', hiddenOnCreate: true },
-      { name: 'Gate', label: 'GATE 別', required: true, type: 'select',
-        options: ['GATE F', 'GATE E', 'GATE D', 'GATE C', 'GATE B', 'GATE A', 'GATE Z'] },
-      { name: 'ScenarioName', label: '情境名稱', required: true },
-      { name: 'ScenarioType', label: '情境性質', required: true, type: 'select', options: ['現況', '目標'] },
-      { name: 'CreatedDate', label: '建立日期', type: 'date' },
-      { name: 'Notes', label: '備註' }
+    getFn: 'getScenarios', saveGridFn: 'saveScenarioGrid', deleteFn: 'deleteScenario',
+    scopedBy: 'vehicleType', createUi: 'scenario',
+    note: '新情境可以「以既有情境為基礎」建立：選一個來源情境，銷售構成、成本、開發總投等資料會整批複製過來，'
+      + '再改幾個數字就好（例如「GATE F 目標」以「GATE F 現況」為底，下一版目標又以上一版目標為底）。'
+      + ' 既有情境直接在表格裡改，按一次「儲存」。',
+    columns: [
+      { name: 'Gate', label: 'GATE 別', type: 'select', options: GATE_OPTIONS, width: 110 },
+      { name: 'ScenarioName', label: '情境名稱', width: 200 },
+      { name: 'ScenarioType', label: '情境性質', type: 'select', options: SCENARIO_TYPES, width: 90 },
+      { name: 'CreatedDate', label: '建立日期', type: 'date', width: 140 },
+      { name: 'Notes', label: '備註', width: 280 }
     ]
   },
   lineitems: {
     label: '科目設定', pk: 'LineCode',
-    getFn: 'getPLLineItems', saveFn: 'savePLLineItem', deleteFn: 'deletePLLineItem',
+    getFn: 'getPLLineItems', saveGridFn: 'savePLLineItemGrid', deleteFn: 'deletePLLineItem',
     scopedBy: null,
-    note: '一般情況不需要用到這頁 —— 成本項目與費用科目可以直接在「銷貨成本」「營業費用」頁面新增/刪除。'
-      + ' 這裡只用來調整科目名稱與排序。結構科目與自動計算科目不可刪除。',
-    fields: [
-      { name: 'LineCode', label: '科目代碼', required: true },
-      { name: 'LineName', label: '科目名稱', required: true },
-      { name: 'ParentLine', label: '父科目', type: 'select', options: [
-        ['B', 'B 銷貨成本'], ['E', 'E 銷售費用'], ['G', 'G 產品貢獻前費用'], ['I', 'I 固定營業費用']
-      ] },
-      { name: 'Category', label: '分類' },
-      { name: 'SortOrder', label: '排序值', type: 'number' },
-      { name: 'AutoSource', label: '自動計算來源', readOnly: true }
+    note: '科目代碼由系統自動編號（父科目字首 + 流水號，如 b1、d2、f5），不需要自己填，新增列存檔時才會配號。'
+      + ' 一般情況不太需要用到這頁 —— 成本項目與費用科目也可以直接在「銷貨成本」「營業費用」頁面新增/刪除。'
+      + ' 結構科目(A/B/C/E/G/I/K)與自動計算科目的名稱、父科目、排序都由程式決定（名稱寫的就是它的公式），'
+      + '不開放修改也不能刪除 —— 改了只會讓欄位名稱跟算出來的數字對不起來。'
+      + ' 自己改過的明細科目名稱想一次回復成預設值，按下方的「恢復內建科目預設值」。',
+    restorable: true,
+    columns: [
+      { name: 'LineCode', label: '科目代碼', auto: true, width: 80 },
+      // 自動計算科目與結構科目的名稱寫的就是它的公式，由程式決定；改了只會讓名稱跟數字對不起來
+      { name: 'LineName', label: '科目名稱', width: 280, lockIf: r => r.__existing && isFixedLineItem(r) },
+      { name: 'ParentLine', label: '父科目', type: 'select', options: LINE_PARENT_OPTIONS, width: 190,
+        lockIf: r => r.__existing && isFixedLineItem(r) },
+      { name: 'Category', label: '分類', width: 110 },
+      { name: 'SortOrder', label: '排序值', type: 'number', width: 80 },
+      { name: 'AutoSource', label: '自動計算來源', readOnly: true, width: 150 }
     ]
   }
 };
+
+/** 結構科目或自動計算科目：父科目固定、不可刪除 */
+function isFixedLineItem(row) {
+  return PROTECTED_LINE_CODES.indexOf(row.LineCode) !== -1 || !!row.AutoSource;
+}
 
 // 表格編輯頁：key -> 渲染函式名稱
 const GRID_PANELS = {
@@ -230,7 +262,10 @@ function onScenarioChange(value) {
   renderTab(currentTab);
 }
 
-/* ---------------- 主檔維護（表單 + 列表） ---------------- */
+/* ---------------- 主檔維護（表格直接編輯，不需要先按「編輯」） ---------------- */
+let entityRows = {};        // key -> 目前表格上的資料列（__existing 標記是否已存在於後端）
+let pendingStatus = null;   // 重畫表格後才顯示的訊息（例如建立情境後整個面板會被重繪）
+
 function renderEntityPanel(key) {
   const cfg = ENTITIES[key];
   const panel = document.getElementById('panel-' + key);
@@ -238,121 +273,277 @@ function renderEntityPanel(key) {
     panel.innerHTML = '<p class="muted">請先在上方選擇車型</p>';
     return;
   }
-  panel.innerHTML = `
-    <h3>${cfg.label}</h3>
-    ${cfg.note ? `<p class="muted">${cfg.note}</p>` : ''}
-    <div id="form-container-${key}"></div>
-    <div id="status-${key}" class="status-msg"></div>
-    <div id="table-container-${key}"></div>
-  `;
-  renderForm(key, cfg);
-  loadEntityData(key, cfg);
+  panel.innerHTML = gridShell(key, cfg.label, cfg.note);
+  loadEntityData(key);
 }
 
-function renderForm(key, cfg) {
-  const container = document.getElementById('form-container-' + key);
-  const fieldsHtml = cfg.fields.map(f => {
-    const id = `f-${key}-${f.name}`;
-    if (f.hiddenOnCreate) return `<input type="hidden" id="${id}"/>`;
-    let control;
-    if (f.type === 'select') {
-      control = `<select id="${id}"><option value=""></option></select>`;
-    } else {
-      control = `<input id="${id}" type="${f.type || 'text'}" step="any"${f.required ? ' required' : ''}${f.readOnly ? ' readonly' : ''}/>`;
-    }
-    return `<label>${f.label}${f.required ? ' *' : ''} ${control}</label>`;
-  }).join('');
-
-  container.innerHTML = `
-    <form class="entry-form" onsubmit="return submitEntityForm(event, '${key}')">
-      ${fieldsHtml}
-      <button type="submit" class="btn">儲存</button>
-      <button type="button" class="btn secondary" onclick="resetForm('${key}')">清空</button>
-    </form>
-  `;
-
-  cfg.fields.forEach(f => {
-    if (f.type === 'select' && f.options) {
-      const sel = document.getElementById(`f-${key}-${f.name}`);
-      f.options.forEach(opt => {
-        const [v, text] = Array.isArray(opt) ? opt : [opt, opt];
-        sel.insertAdjacentHTML('beforeend', `<option value="${esc(v)}">${esc(text)}</option>`);
-      });
-    }
-  });
-}
-
-function resetForm(key) {
-  ENTITIES[key].fields.forEach(f => { document.getElementById(`f-${key}-${f.name}`).value = ''; });
-}
-
-function submitEntityForm(evt, key) {
-  evt.preventDefault();
+function loadEntityData(key) {
   const cfg = ENTITIES[key];
-  const rowObj = {};
-  cfg.fields.forEach(f => { rowObj[f.name] = val(`f-${key}-${f.name}`); });
-  if (cfg.scopedBy === 'vehicleType') rowObj.VehicleTypeID = currentVehicleTypeId;
-
-  setStatus(key, '儲存中...');
-  google.script.run
-    .withSuccessHandler(saved => {
-      setStatus(key, '已儲存', 'ok');
-      resetForm(key);
-      loadEntityData(key, cfg);
-      if (key === 'vehicletypes') loadVehicleTypeSelector(rowObj.VehicleTypeID);
-      if (key === 'scenarios') loadScenarioSelector((saved && saved.ScenarioID) || rowObj.ScenarioID);
-    })
-    .withFailureHandler(err => setStatus(key, '錯誤：' + err.message, 'err'))
-    [cfg.saveFn](rowObj);
-  return false;
-}
-
-function loadEntityData(key, cfg) {
   const args = cfg.scopedBy === 'vehicleType' ? [currentVehicleTypeId] : [];
   google.script.run
-    .withSuccessHandler(safeHandler(rows => renderEntityTable(key, cfg, rows || [])))
+    .withSuccessHandler(safeHandler(rows => {
+      entityRows[key] = (rows || []).map(r => Object.assign({}, r, { __existing: true }));
+      drawEntityGrid(key);
+    }))
     .withFailureHandler(showGlobalError)
     [cfg.getFn](...args);
 }
 
-function renderEntityTable(key, cfg, rows) {
-  const container = document.getElementById('table-container-' + key);
-  if (!rows.length) { container.innerHTML = '<p class="muted">尚無資料</p>'; return; }
-  const cols = cfg.fields.map(f => f.name);
-  container.innerHTML = `
-    <table>
-      <thead><tr>${cfg.fields.map(f => `<th>${f.label}</th>`).join('')}<th>操作</th></tr></thead>
-      <tbody>
-        ${rows.map(r => `
-          <tr>
-            ${cols.map(c => `<td>${esc(r[c] !== undefined ? r[c] : '')}</td>`).join('')}
-            <td>
-              <button class="btn secondary" onclick='editRow("${key}", ${JSON.stringify(r).replace(/'/g, "&#39;")})'>編輯</button>
-              <button class="btn danger" onclick="deleteEntityRow('${key}', '${esc(r[cfg.pk])}')">刪除</button>
-            </td>
-          </tr>`).join('')}
-      </tbody>
-    </table>`;
-}
-
-function editRow(key, rowObj) {
-  ENTITIES[key].fields.forEach(f => {
-    const el = document.getElementById(`f-${key}-${f.name}`);
-    if (el) el.value = rowObj[f.name] !== undefined ? rowObj[f.name] : '';
-  });
-}
-
-function deleteEntityRow(key, pkValue) {
-  if (!confirm('確定要刪除這筆資料嗎？')) return;
+function drawEntityGrid(key) {
   const cfg = ENTITIES[key];
+  const rows = entityRows[key] || [];
+
+  document.getElementById('toolbar-' + key).innerHTML = `
+    <button type="button" class="btn" onclick="saveEntityGrid('${key}')">儲存</button>
+    ${cfg.createUi === 'scenario' ? '' :
+      `<button type="button" class="btn secondary" onclick="addEntityRow('${key}')">新增一列</button>`}
+    ${cfg.restorable ? '<button type="button" class="btn secondary" onclick="restoreBuiltInLines()">恢復內建科目預設值</button>' : ''}
+    <span class="muted">直接在格子裡修改，改完按「儲存」。</span>
+  ` + (cfg.createUi === 'scenario' ? scenarioToolbarHtml() : '');
+
+  const body = rows.length
+    ? rows.map((r, i) => `<tr${r.__existing ? '' : ' class="new-row"'}>
+        ${cfg.columns.map(col => entityCellHtml(key, i, col, r)).join('')}
+        <td>${entityRowActionHtml(key, i, r)}</td>
+      </tr>`).join('')
+    : `<tr><td class="muted" colspan="${cfg.columns.length + 1}">尚無資料</td></tr>`;
+
+  document.getElementById('grid-' + key).innerHTML = `
+    <div class="grid-scroll">
+      <table class="grid-table entity-table">
+        <thead><tr>${cfg.columns.map(c => `<th>${esc(c.label)}</th>`).join('')}<th>操作</th></tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>`;
+
+  if (pendingStatus && pendingStatus.key === key) {
+    setStatus(key, pendingStatus.text, pendingStatus.cls);
+    pendingStatus = null;
+  }
+}
+
+function entityCellHtml(key, i, col, row) {
+  const value = row[col.name] === undefined || row[col.name] === null ? '' : row[col.name];
+  const locked = col.readOnly || col.auto ||
+    (col.lockAfterCreate && row.__existing) ||
+    (col.lockIf && col.lockIf(row));
+  const style = col.width ? ` style="width:${col.width}px;"` : '';
+
+  if (locked) {
+    // 新增列的自動編號欄位還沒有值，先讓使用者知道存檔時系統會配號
+    const shown = col.auto && !value ? '(儲存時自動編號)' : value;
+    return `<td class="row-head calc">${esc(shown)}</td>`;
+  }
+  if (col.type === 'select') {
+    const options = col.options.map(o => {
+      const [v, text] = Array.isArray(o) ? o : [o, o];
+      return `<option value="${esc(v)}"${String(value) === String(v) ? ' selected' : ''}>${esc(text)}</option>`;
+    }).join('');
+    return `<td><select${style} onchange="onEntityField('${key}', ${i}, '${col.name}', this.value)">${options}</select></td>`;
+  }
+  return `<td><input type="${col.type || 'text'}" step="any" value="${esc(value)}"${style}
+    oninput="onEntityField('${key}', ${i}, '${col.name}', this.value)"></td>`;
+}
+
+function entityRowActionHtml(key, i, row) {
+  if (!row.__existing) {
+    return `<button type="button" class="btn secondary" onclick="removeEntityRow('${key}', ${i})">移除</button>`;
+  }
+  if (key === 'lineitems' && isFixedLineItem(row)) {
+    return '<span class="muted">不可刪除</span>';
+  }
+  return `<button type="button" class="btn danger" onclick="deleteEntityRow('${key}', ${i})">刪除</button>`;
+}
+
+function onEntityField(key, i, field, value) {
+  entityRows[key][i][field] = value;
+}
+
+function addEntityRow(key) {
+  const cfg = ENTITIES[key];
+  const row = { __existing: false };
+  cfg.columns.forEach(c => { row[c.name] = ''; });
+  if (cfg.pk) row[cfg.pk] = '';
+  entityRows[key].push(row);
+  drawEntityGrid(key);
+}
+
+/** 還沒存進後端的新增列，直接從畫面上拿掉就好 */
+function removeEntityRow(key, i) {
+  entityRows[key].splice(i, 1);
+  drawEntityGrid(key);
+}
+
+function deleteEntityRow(key, i) {
+  const cfg = ENTITIES[key];
+  const row = entityRows[key][i];
+  if (!confirm('確定要刪除這筆資料嗎？')) return;
+  setStatus(key, '刪除中...');
   google.script.run
-    .withSuccessHandler(() => {
-      loadEntityData(key, cfg);
-      if (key === 'vehicletypes') loadVehicleTypeSelector();
-      if (key === 'scenarios') loadScenarioSelector();
-    })
+    .withSuccessHandler(safeHandler(() => {
+      pendingStatus = { key: key, text: '已刪除', cls: 'ok' };
+      loadEntityData(key);
+      afterEntityChange(key);
+    }))
     .withFailureHandler(err => setStatus(key, '錯誤：' + err.message, 'err'))
-    [cfg.deleteFn](pkValue);
+    [cfg.deleteFn](row[cfg.pk]);
+}
+
+function saveEntityGrid(key) {
+  const cfg = ENTITIES[key];
+  const rows = (entityRows[key] || []).map(r => {
+    // 只送出後端 schema 認得的欄位，__existing 這類前端旗標不要一起送過去
+    const copy = {};
+    cfg.columns.forEach(c => { copy[c.name] = r[c.name] === undefined ? '' : r[c.name]; });
+    if (cfg.pk) copy[cfg.pk] = r[cfg.pk] === undefined ? '' : r[cfg.pk];
+    return copy;
+  });
+  const args = cfg.scopedBy === 'vehicleType' ? [currentVehicleTypeId, rows] : [rows];
+
+  setStatus(key, '儲存中...');
+  google.script.run
+    .withSuccessHandler(safeHandler(saved => {
+      entityRows[key] = (saved || []).map(r => Object.assign({}, r, { __existing: true }));
+      drawEntityGrid(key);
+      setStatus(key, '已儲存', 'ok');
+      afterEntityChange(key);
+    }))
+    .withFailureHandler(err => setStatus(key, '錯誤：' + err.message, 'err'))
+    [cfg.saveGridFn](...args);
+}
+
+/**
+ * 把內建科目的名稱、父科目、分類、排序整個回復成程式預設值。
+ * 自動計算科目的名稱平常就會自動對回程式碼（開頁時 getBootstrap 會同步），
+ * 這顆按鈕是給明細科目的名稱與排序被改亂之後用的。
+ */
+function restoreBuiltInLines() {
+  if (!confirm('會把所有內建科目的名稱、父科目、分類與排序回復成系統預設值（自己新增的科目不受影響），確定嗎？')) return;
+  setStatus('lineitems', '回復中...');
+  google.script.run
+    .withSuccessHandler(safeHandler(rows => {
+      entityRows.lineitems = (rows || []).map(r => Object.assign({}, r, { __existing: true }));
+      drawEntityGrid('lineitems');
+      setStatus('lineitems', '已回復內建科目的預設名稱與排序', 'ok');
+    }))
+    .withFailureHandler(err => setStatus('lineitems', '錯誤：' + err.message, 'err'))
+    .restoreBuiltInLineItems();
+}
+
+/** 車型/情境改動後，上方的選單也要跟著更新（但不要重畫目前這個分頁，會蓋掉剛顯示的訊息） */
+function afterEntityChange(key) {
+  if (key === 'vehicletypes') refreshVehicleTypeOptions();
+  if (key === 'scenarios') refreshScenarioOptions();
+}
+
+function refreshVehicleTypeOptions() {
+  google.script.run.withSuccessHandler(safeHandler(types => {
+    renderVehicleTypeOptions(types || [], currentVehicleTypeId);
+  })).getVehicleTypes();
+}
+
+function refreshScenarioOptions(preferredId) {
+  google.script.run.withSuccessHandler(safeHandler(scenarios => {
+    renderScenarioOptions(scenarios, preferredId);
+  })).getScenarios(currentVehicleTypeId);
+}
+
+/* ---- 情境設定：以既有情境為基礎建立 / 把既有情境的資料帶進目前情境 ---- */
+function scenarioToolbarHtml() {
+  const existing = (entityRows.scenarios || []).filter(s => s.__existing);
+  const sourceOptions = existing
+    .map(s => `<option value="${esc(s.ScenarioID)}">${esc(scenarioLabel(s))}</option>`).join('');
+  const partChecks = SCENARIO_COPY_PARTS.map(p => `
+    <label class="chk"><input type="checkbox" id="copy-part-${p.key}" checked> ${p.label}</label>`).join('');
+
+  return `
+    <div class="toolbar-block">
+      <div class="toolbar-block-title">新增情境</div>
+      <div class="toolbar">
+        <label>GATE 別
+          <select id="new-scenario-gate">${GATE_OPTIONS.map(g => `<option value="${g}">${g}</option>`).join('')}</select>
+        </label>
+        <label>情境名稱
+          <input id="new-scenario-name" type="text" style="width:170px;" placeholder="例：目標 26/8">
+        </label>
+        <label>情境性質
+          <select id="new-scenario-type">${SCENARIO_TYPES.map(t => `<option value="${t}">${t}</option>`).join('')}</select>
+        </label>
+        <label>以既有情境為基礎
+          <select id="new-scenario-source">
+            <option value="">(不帶入，建立空白情境)</option>${sourceOptions}
+          </select>
+        </label>
+        <button type="button" class="btn" onclick="createScenario()">建立情境</button>
+      </div>
+      <div class="toolbar">
+        <span class="muted">要帶入的資料：</span>${partChecks}
+      </div>
+      <div class="toolbar">
+        <span class="muted">或把既有情境的資料帶進目前選取的情境（${esc(currentScenario ? scenarioLabel(currentScenario) : '尚未選擇情境')}）：</span>
+        <select id="import-scenario-source">
+          <option value="">-- 選擇來源情境 --</option>${sourceOptions}
+        </select>
+        <button type="button" class="btn secondary" onclick="importIntoCurrentScenario()">帶入目前情境</button>
+      </div>
+    </div>`;
+}
+
+function selectedCopyParts() {
+  return SCENARIO_COPY_PARTS
+    .filter(p => { const el = document.getElementById('copy-part-' + p.key); return el && el.checked; })
+    .map(p => p.key);
+}
+
+function createScenario() {
+  const name = val('new-scenario-name');
+  if (!name) { setStatus('scenarios', '請輸入情境名稱', 'err'); return; }
+  const source = val('new-scenario-source');
+  const parts = selectedCopyParts();
+  if (source && !parts.length) {
+    setStatus('scenarios', '請至少勾選一項要帶入的資料，或把來源情境改成「不帶入」', 'err');
+    return;
+  }
+  setStatus('scenarios', '建立中...');
+  google.script.run
+    .withSuccessHandler(safeHandler(saved => {
+      pendingStatus = { key: 'scenarios', text: source ? '已建立情境，並帶入來源情境的資料' : '已建立情境', cls: 'ok' };
+      loadEntityData('scenarios');
+      refreshScenarioOptions(saved && saved.ScenarioID);
+    }))
+    .withFailureHandler(err => setStatus('scenarios', '錯誤：' + err.message, 'err'))
+    .createScenarioFrom({
+      ScenarioID: '',
+      Gate: val('new-scenario-gate'),
+      ScenarioName: name,
+      ScenarioType: val('new-scenario-type'),
+      VehicleTypeID: currentVehicleTypeId,
+      CreatedDate: today(),
+      Notes: ''
+    }, source, parts);
+}
+
+function importIntoCurrentScenario() {
+  const source = val('import-scenario-source');
+  if (!currentScenarioId) { setStatus('scenarios', '請先在上方選擇要帶入的目標情境', 'err'); return; }
+  if (!source) { setStatus('scenarios', '請選擇來源情境', 'err'); return; }
+  const parts = selectedCopyParts();
+  if (!parts.length) { setStatus('scenarios', '請至少勾選一項要帶入的資料', 'err'); return; }
+  if (!confirm('帶入會先清掉目前情境所勾選類別的資料，再整批複製來源情境的內容，確定嗎？')) return;
+
+  setStatus('scenarios', '帶入中...');
+  google.script.run
+    .withSuccessHandler(safeHandler(() => {
+      setStatus('scenarios', '已帶入來源情境的資料（開發總投的挑戰低減目標已清空，請重新填寫）', 'ok');
+    }))
+    .withFailureHandler(err => setStatus('scenarios', '錯誤：' + err.message, 'err'))
+    .copyScenarioData(source, currentScenarioId, parts);
+}
+
+function today() {
+  const d = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 /* ================= 銷售構成（依車系自動列出，台數/構成比動態連動） ================= */
@@ -392,11 +583,12 @@ function drawSalesMixGrid() {
   `;
 
   grid.innerHTML = `
-    <table class="grid-table">
+    <div class="grid-scroll">
+    <table class="grid-table sticky-head-col">
       <thead><tr>
         <th>車系</th><th>構成比%</th><th>月台數</th><th>LC年限</th><th>LC總台數</th>
-        <th>建議零售價(含稅)</th><th>強配件售價</th><th>廢車處理費</th><th>稅別</th>
-        <th>水平配件外移調降廠價</th><th>備註</th>
+        <th>建議零售價<br>(含稅)</th><th>強配件<br>售價</th><th>廢車<br>處理費</th><th>稅別</th>
+        <th>水平配件外移<br>調降廠價</th><th>備註</th>
       </tr></thead>
       <tbody>
         ${salesMixRows.map((r, i) => `
@@ -413,7 +605,7 @@ function drawSalesMixGrid() {
               ${['含稅', '未稅'].map(o => `<option value="${o}"${r.ScrapFeeTaxStatus === o ? ' selected' : ''}>${o}</option>`).join('')}
             </select></td>
             <td><input type="number" step="any" value="${esc(r.HorizontalPartsPriceAdj)}" oninput="onSalesMixField(${i}, 'HorizontalPartsPriceAdj', this.value)"></td>
-            <td><input type="text" value="${esc(r.Notes)}" oninput="onSalesMixField(${i}, 'Notes', this.value)"></td>
+            <td><input type="text" class="note-input" value="${esc(r.Notes)}" oninput="onSalesMixField(${i}, 'Notes', this.value)"></td>
           </tr>`).join('')}
       </tbody>
       <tfoot><tr>
@@ -423,7 +615,8 @@ function drawSalesMixGrid() {
         <td></td><td id="sm-sum-lc" class="calc"></td>
         <td colspan="6"></td>
       </tr></tfoot>
-    </table>`;
+    </table>
+    </div>`;
   updateSalesMixTotals();
 }
 
@@ -515,13 +708,13 @@ const MATRIX_CONFIG = {
     note: '一列 = 一個成本項目，一欄 = 一個車系，直接在格子裡填金額，最後按一次儲存。'
       + ' 模具費用、新增專屬設備由「開發總投」自動攤提，貨物稅由貨物稅率自動計算，不在這裡輸入。',
     getFn: 'getCostOfSalesMatrix', saveFn: 'saveCostOfSalesMatrix',
-    parentLine: 'B', hasCurrency: true
+    parentLine: 'B', hasCurrency: true, totalLabel: '該車系合計(手動輸入部分)'
   },
   operatingexpense: {
     title: '營業費用',
     note: '一列 = 一個費用科目，一欄 = 一個車系。季Margin 由季Margin率自動計算、車型專案開發費用由開發總投攤提，不在這裡輸入。',
     getFn: 'getOperatingExpenseMatrix', saveFn: 'saveOperatingExpenseMatrix',
-    parentLine: 'E', hasCurrency: false,
+    parentLine: 'E', hasCurrency: false, totalLabel: '該車系合計(手動輸入部分)',
     parentOptions: [['E', '銷售費用(銷貨毛利前)'], ['G', '產品貢獻前費用'], ['I', '固定營業費用']]
   }
 };
@@ -572,13 +765,18 @@ function drawMatrix(key) {
     </select></td>`;
   };
 
+  // 欄標題直接標出銷售構成比，才看得出右邊那欄「加權平均」是用什麼權重算出來的
+  const mixTotal = data.vehicles.reduce((sum, v) => sum + num(v.SalesMixPct), 0);
   grid.innerHTML = `
-    <table class="grid-table">
+    ${mixTotal ? '' : '<p class="status-msg err">這個情境還沒有銷售構成比，加權平均無法計算，請先到「銷售構成」頁填構成比。</p>'}
+    <div class="grid-scroll">
+    <table class="grid-table sticky-head-col">
       <thead><tr>
         <th>項目</th>
         ${cfg.hasCurrency ? '<th>幣別</th>' : ''}
-        ${data.vehicles.map(v => `<th>${esc(v.VehicleCode || v.VehicleID)}</th>`).join('')}
-        <th>合計</th><th>備註</th><th></th>
+        ${data.vehicles.map(v => `<th>${esc(v.VehicleCode || v.VehicleID)}
+          <div class="th-sub">構成比 ${fmt(num(v.SalesMixPct), 1)}%</div></th>`).join('')}
+        <th>加權平均</th><th>備註</th><th></th>
       </tr></thead>
       <tbody>
         ${data.lines.map(line => `
@@ -597,12 +795,15 @@ function drawMatrix(key) {
           </tr>`).join('')}
       </tbody>
       <tfoot><tr>
-        <td class="row-head">合計</td>
+        <td class="row-head">${esc(cfg.totalLabel)}</td>
         ${cfg.hasCurrency ? '<td></td>' : ''}
         ${data.vehicles.map(v => `<td class="calc" id="${key}-colsum-${esc(v.VehicleID)}"></td>`).join('')}
         <td class="calc" id="${key}-grandsum"></td><td colspan="2"></td>
       </tr></tfoot>
-    </table>`;
+    </table>
+    </div>
+    <p class="muted">「加權平均」= Σ(各車系金額 × 該車系銷售構成比) ÷ Σ構成比，與損益儀表板的加權平均欄位同一個口徑。
+      不同車系的單台金額相加沒有意義，所以這裡不列跨車系的合計。</p>`;
   updateMatrixTotals(key);
 }
 
@@ -613,28 +814,38 @@ function firstCellProp(data, lineCode, prop) {
   return key ? row[key][prop] : '';
 }
 
+/**
+ * 右邊那一欄是「加權平均」而不是合計：一列是同一個成本項目在各車系的單台金額，
+ * 把它們相加只會得到一個沒有意義的數字。改成用銷售構成比加權，跟儀表板的加權平均欄位一致。
+ * 表尾則是各車系自己的科目合計（同一車系各科目相加是有意義的）。
+ */
 function updateMatrixTotals(key) {
-  const cfg = MATRIX_CONFIG[key];
   const data = matrixData[key];
+  const mix = {};
+  let mixTotal = 0;
+  data.vehicles.forEach(v => { mix[v.VehicleID] = num(v.SalesMixPct); mixTotal += num(v.SalesMixPct); });
+
   const colSum = {};
-  let grand = 0;
+  let weightedGrand = 0;
   data.lines.forEach(line => {
-    let rowSum = 0;
+    let weighted = 0;
     document.querySelectorAll(`#grid-${key} input[data-line="${line.value}"]`).forEach(inp => {
       const v = num(inp.value);
-      rowSum += v;
       colSum[inp.dataset.vehicle] = (colSum[inp.dataset.vehicle] || 0) + v;
+      weighted += v * (mix[inp.dataset.vehicle] || 0);
     });
-    grand += rowSum;
+    weighted = mixTotal ? weighted / mixTotal : 0;
+    weightedGrand += weighted;
     const cell = document.getElementById(`${key}-sum-${line.value}`);
-    if (cell) cell.textContent = fmt(rowSum);
+    if (cell) cell.textContent = mixTotal ? fmt(weighted) : '—';
   });
+
   data.vehicles.forEach(v => {
     const cell = document.getElementById(`${key}-colsum-${v.VehicleID}`);
     if (cell) cell.textContent = fmt(colSum[v.VehicleID] || 0);
   });
   const g = document.getElementById(`${key}-grandsum`);
-  if (g) g.textContent = fmt(grand);
+  if (g) g.textContent = mixTotal ? fmt(weightedGrand) : '—';
 }
 
 function saveMatrix(key) {
@@ -689,9 +900,12 @@ function renderDevInvestmentPanel() {
   if (!requireScope('devinvestment', true)) return;
   const isTarget = currentScenario && currentScenario.ScenarioType === '目標';
   document.getElementById('panel-devinvestment').innerHTML = gridShell('devinvestment', '開發總投',
-    isTarget
-      ? '目標情境：可從其他情境整批帶入資料後，再逐列填挑戰低減目標%。'
-      : '現況情境：不需要填挑戰低減目標（一律以原始金額計算）。若要做低減試算，請在情境設定新增一個「目標」情境。');
+    '每一列選「攤提落點」決定這筆投資要攤到哪個損益科目（模具→b5、設備→b8、'
+    + '費用-CMC→f3 車型專案開發費用-CMC、費用-BASE廠→f4 車型專案開發費用-BASE廠），'
+    + '旁邊會直接顯示對應的科目。'
+    + (isTarget
+      ? ' 目標情境：可從其他情境整批帶入資料後，再逐列填挑戰低減目標%。'
+      : ' 現況情境：不需要填挑戰低減目標（一律以原始金額計算）。若要做低減試算，請在情境設定新增一個「目標」情境。'));
   // 攤提基準台數可與銷售構成的預估台數不同（如銷售估 365 台/月，開發投資以 300 台/月 × 12 年攤提）
 
   google.script.run
@@ -729,9 +943,10 @@ function drawDevGrid() {
   `;
 
   document.getElementById('grid-devinvestment').innerHTML = `
+    <div class="grid-scroll">
     <table class="grid-table">
       <thead><tr>
-        <th>部門</th><th>資產類型</th><th>金額</th><th>幣別</th>
+        <th>部門</th><th>攤提落點</th><th>攤提到的損益科目</th><th>金額</th><th>幣別</th>
         ${isTarget ? '<th>挑戰低減目標%</th><th>低減後金額</th>' : ''}
         <th>備註</th><th></th>
       </tr></thead>
@@ -740,8 +955,10 @@ function drawDevGrid() {
           <tr>
             <td><input type="text" list="dev-departments" value="${esc(r.Department)}" oninput="onDevField(${i}, 'Department', this.value)"></td>
             <td><select onchange="onDevField(${i}, 'AssetType', this.value)">
-              ${['', '模具', '設備', '費用'].map(o => `<option value="${o}"${r.AssetType === o ? ' selected' : ''}>${o || '(請選擇)'}</option>`).join('')}
+              ${[''].concat(devSummary.assetTypes || []).map(o =>
+                `<option value="${esc(o)}"${r.AssetType === o ? ' selected' : ''}>${esc(o) || '(請選擇)'}</option>`).join('')}
             </select></td>
+            <td class="calc" id="dev-target-${i}">${esc(devTargetLabel(r.AssetType))}</td>
             <td><input type="number" step="any" value="${esc(r.Amount)}" oninput="onDevField(${i}, 'Amount', this.value)"></td>
             <td><select onchange="onDevField(${i}, 'Currency', this.value)">
               ${(devSummary.currencies || ['TWD']).map(c => `<option value="${c}"${(r.Currency || 'TWD') === c ? ' selected' : ''}>${c}</option>`).join('')}
@@ -754,15 +971,26 @@ function drawDevGrid() {
           </tr>`).join('')}
       </tbody>
     </table>
+    </div>
     <datalist id="dev-departments"></datalist>
     <div class="summary-box">
       <div><span class="muted">攤提用 LIFE CYCLE 總台數</span><strong>${fmt(devSummary.lifeCycleUnits)}</strong></div>
       <div><span class="muted">銷售構成推算台數</span><strong>${fmt(devSummary.salesMixLifeCycleUnits)}</strong></div>
-      <div><span class="muted">模具/台 (b5)</span><strong>${fmt(devSummary.perUnit.moldPerUnit)}</strong></div>
-      <div><span class="muted">設備/台 (b8)</span><strong>${fmt(devSummary.perUnit.equipPerUnit)}</strong></div>
-      <div><span class="muted">開發費-CMC/台 (f3)</span><strong>${fmt(devSummary.perUnit.cmcExpensePerUnit)}</strong></div>
-      <div><span class="muted">開發費-BASE廠/台 (f4)</span><strong>${fmt(devSummary.perUnit.baseExpensePerUnit)}</strong></div>
-    </div>`;
+    </div>
+    <table class="grid-table" style="max-width:760px;">
+      <thead><tr><th>攤提落點</th><th>損益科目</th><th>投資總額(低減後)</th><th>單台攤提</th></tr></thead>
+      <tbody>
+        ${(devSummary.targets || []).map(t => `
+          <tr>
+            <td class="row-head">${esc(t.AssetType)}</td>
+            <td class="row-head">${esc(t.LineCode)} ${esc(t.LineName)}</td>
+            <td class="calc">${fmt(t.Total)}</td>
+            <td class="calc">${fmt(t.PerUnit)}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>
+    <p class="muted">上表每一列的「單台攤提」就是損益表上那個科目的金額（投資總額 ÷ LIFE CYCLE 總台數）。
+      某個科目是 0，代表沒有任何一列的攤提落點選到它。</p>`;
 
   google.script.run.withSuccessHandler(safeHandler(list => {
     const dl = document.getElementById('dev-departments');
@@ -770,10 +998,18 @@ function drawDevGrid() {
   })).getKnownDepartments();
 }
 
+/** 這一列的錢會攤到哪個損益科目：直接查 getDevInvestmentSummary 回傳的落點對照表 */
+function devTargetLabel(assetType) {
+  const target = (devSummary.targets || []).filter(t => t.AssetType === assetType)[0];
+  return target ? target.LineCode + ' ' + target.LineName : '(未選擇，不會攤提)';
+}
+
 function onDevField(i, field, value) {
   devRows[i][field] = value;
   const cell = document.getElementById('dev-reduced-' + i);
   if (cell) cell.textContent = fmt(num(devRows[i].Amount) * (1 - num(devRows[i].ChallengeReductionPct) / 100));
+  const targetCell = document.getElementById('dev-target-' + i);
+  if (targetCell && field === 'AssetType') targetCell.textContent = devTargetLabel(value);
 }
 function addDevRow() {
   devRows.push({ RowID: '', Department: '', AssetType: '', Amount: '', Currency: 'TWD', ChallengeReductionPct: '', Notes: '' });
@@ -844,7 +1080,8 @@ function drawRateGrid() {
     '<button type="button" class="btn" onclick="saveRateGrid()">儲存</button>';
 
   document.getElementById('grid-paramrates').innerHTML = `
-    <table class="grid-table">
+    <div class="grid-scroll">
+    <table class="grid-table sticky-head-col">
       <thead><tr>
         <th>比率項目</th><th>全車系適用</th>
         ${rateData.vehicles.map(v => `<th>${esc(v.VehicleCode || v.VehicleID)}</th>`).join('')}
@@ -865,6 +1102,7 @@ function drawRateGrid() {
           </tr>`).join('')}
       </tbody>
     </table>
+    </div>
     <p class="muted">車系欄位留白 = 沿用全車系適用的值（灰字為目前沿用的數值）。</p>`;
 }
 
@@ -896,7 +1134,9 @@ let fxData = null;
 function renderFxPanel() {
   if (!requireScope('paramfx', true)) return;
   document.getElementById('panel-paramfx').innerHTML = gridShell('paramfx', '匯率設定',
-    '以幣別管理匯率，1 外幣 = ? 台幣。設定過「現況匯率」的幣別，才會出現在銷貨成本頁的幣別選單中。');
+    '以幣別管理匯率，1 外幣 = ? 台幣。設定過匯率的幣別，才會出現在銷貨成本與開發總投的幣別選單中。'
+    + ' 舊版的「集團預算匯率」已移除 —— 所有換算(銷貨成本、開發總投)都只用這裡的現況匯率，'
+    + '多一種匯率並不會影響任何計算結果。');
   google.script.run
     .withSuccessHandler(safeHandler(data => { fxData = data; drawFxGrid(); }))
     .withFailureHandler(showGlobalError)
@@ -912,8 +1152,10 @@ function drawFxGrid() {
   `;
 
   document.getElementById('grid-paramfx').innerHTML = `
+    <div class="grid-scroll">
     <table class="grid-table">
-      <thead><tr><th>幣別</th>${fxData.paramNames.map(n => `<th>${esc(n)}</th>`).join('')}</tr></thead>
+      <thead><tr><th>幣別</th>${fxData.paramNames.map(n =>
+        `<th>${esc(n)}<div class="th-sub">1 外幣 = ? ${esc(fxData.baseCurrency)}</div></th>`).join('')}</tr></thead>
       <tbody>
         <tr><td class="row-head">${esc(fxData.baseCurrency)}（本位幣）</td>
           ${fxData.paramNames.map(() => '<td class="calc">1</td>').join('')}</tr>
@@ -928,7 +1170,8 @@ function drawFxGrid() {
           </tr>`).join('')}
       </tbody>
     </table>
-    <p class="muted">留白 = 未設定該幣別的匯率；銷貨成本以外幣登打時會用「現況匯率」換算。</p>`;
+    </div>
+    <p class="muted">留白 = 未設定該幣別的匯率；銷貨成本與開發總投以外幣登打時會用這個匯率換算。</p>`;
 }
 
 function addFxCurrency() {
@@ -1064,6 +1307,11 @@ function renderComparisonColumns() {
   }).join('') + `<button type="button" class="btn secondary" onclick="clearComparisonColumns()">全部清除</button></div>`;
 }
 
+/* ---- 儀表板顯示選項（切換時只重畫，不重算） ---- */
+let pctBase = 'exfactory';            // 'exfactory' = 對廠價(未稅) / 'revenue' = 對收入A / 'none' = 不顯示
+let showPriceStructure = true;        // 是否顯示 P1~P9 售價結構
+let chartLineCodes = ['A', 'K'];      // 圖表要畫哪幾個科目
+
 function refreshDashboard() {
   const content = document.getElementById('dashboard-content');
   if (!comparisonOptions.length) { loadComparisonPicker(); return; }
@@ -1081,67 +1329,207 @@ function refreshDashboard() {
 function renderDashboard(result) {
   const content = document.getElementById('dashboard-content');
   const cols = result.columns || [];
-
-  const rowsHtml = (result.lines || []).map(line => {
-    const cells = cols.map(col => {
-      const v = col.amounts[line.LineCode];
-      // 不同車型的科目不見得相同，該欄位沒有這個科目就留白，不要顯示 0 誤導
-      return v === undefined || v === null ? '<td class="muted">—</td>' : fmtCell(v);
-    }).join('');
-    const autoTag = line.AutoSource ? ' <span class="auto-tag">自動</span>' : '';
-    const cls = ['A', 'B', 'C', 'E', 'G', 'I', 'K'].indexOf(line.LineCode) !== -1 ? ' class="subtotal"' : '';
-    return `<tr${cls}><td>${esc(line.LineCode)}</td><td>${esc(line.LineName)}${autoTag}</td>${cells}</tr>`;
-  }).join('');
+  const lines = result.lines || [];
+  if (!cols.length) { content.innerHTML = '<p class="muted">請先加入至少一個比較欄位。</p>'; return; }
 
   content.innerHTML = `
-    <div class="toolbar">
-      <button type="button" class="btn secondary" onclick="showComparisonCsv()">匯出 CSV</button>
-    </div>
+    ${dashboardToolbarHtml(lines)}
+    ${subtotalCheckHtml(cols)}
     <div id="csv-output" style="display:none;"></div>
-    <table class="pl-table">
-      <thead><tr><th>科目</th><th>項目</th>${cols.map(c => `<th>${esc(c.label)}</th>`).join('')}</tr></thead>
-      <tbody>${rowsHtml}</tbody>
-    </table>
-    <div class="charts-row"><div class="chart-box" id="chart-revenue"></div></div>
+    <div class="grid-scroll">${plTableHtml(cols, lines)}</div>
+    <div class="charts-row"><div class="chart-box" id="chart-compare"></div></div>
   `;
   drawCharts(result);
+}
+
+function dashboardToolbarHtml(lines) {
+  const chartable = lines.filter(l => !l.isPriceStructure);
+  const baseOption = (v, text) => `<option value="${v}"${pctBase === v ? ' selected' : ''}>${text}</option>`;
+  return `
+    <div class="toolbar">
+      <label>% 基準
+        <select onchange="setPctBase(this.value)">
+          ${baseOption('exfactory', '對廠價(未稅) P8')}
+          ${baseOption('revenue', '對收入(未稅,含強配) A')}
+          ${baseOption('none', '不顯示 %')}
+        </select>
+      </label>
+      <label class="chk">
+        <input type="checkbox"${showPriceStructure ? ' checked' : ''} onchange="setShowPriceStructure(this.checked)">
+        顯示售價結構(P1~P9)
+      </label>
+      <span class="toolbar-sep"></span>
+      <button type="button" class="btn secondary" onclick="showComparisonCsv()">匯出 CSV</button>
+    </div>
+    <div class="toolbar-block">
+      <div class="toolbar-block-title">下方柱狀圖要畫哪幾個科目（可複選，勾了就即時重畫）</div>
+      <div class="chip-picker" id="chart-lines">
+        ${chartable.map(l => `<label class="chk">
+          <input type="checkbox" value="${esc(l.LineCode)}"${chartLineCodes.indexOf(l.LineCode) !== -1 ? ' checked' : ''}
+            onchange="onChartLineToggle(this.value, this.checked)">
+          ${esc(l.LineCode)} ${esc(shortLineName(l.LineName))}</label>`).join('')}
+      </div>
+    </div>`;
+}
+
+function setPctBase(v) { pctBase = v; renderDashboard(lastComparison); }
+function setShowPriceStructure(v) { showPriceStructure = v; renderDashboard(lastComparison); }
+
+/** 勾選框標籤用短名稱：科目名稱後面那串公式(如「營業淨利(=I-J)」)在這裡只會佔空間 */
+function shortLineName(name) {
+  const s = String(name || '');
+  const cut = s.indexOf('(');
+  return cut > 1 ? s.slice(0, cut) : s;
+}
+
+function onChartLineToggle(code, checked) {
+  const at = chartLineCodes.indexOf(code);
+  if (checked && at === -1) chartLineCodes.push(code);
+  if (!checked && at !== -1) chartLineCodes.splice(at, 1);
+  drawCharts(lastComparison);
+}
+
+/**
+ * 小計驗算結果：後端把 B=Σb、C=A-B、E=C-Σd... 每一條等式都重算過，
+ * 對得起來就只顯示一行綠字，對不起來才把差異列出來。
+ */
+function subtotalCheckHtml(cols) {
+  const bad = cols.filter(c => (c.checks || []).length);
+  if (!bad.length) {
+    return '<p class="status-msg ok">小計驗算通過：每一段的明細加總都等於它的小計（A=P8+P9、B=Σ成本明細、C=A-B、E=C-Σd、G=E-Σf、I=G-Σh、K=I-J）。</p>';
+  }
+  return `<div class="check-box">
+    <strong>小計驗算發現差異：</strong>
+    <ul>${bad.map(c => c.checks.map(k =>
+      `<li>${esc(c.label)} — ${esc(k.label)}：表上 ${fmt(k.actual)}，應為 ${fmt(k.expected)}（差 ${fmt(k.diff)}）</li>`
+    ).join('')).join('')}</ul>
+  </div>`;
+}
+
+/**
+ * 損益表本體。版面照實際 Gate F 損益試算表：一欄比較欄位 = 金額 + % 兩個小欄，
+ * 明細科目縮排在它的小計底下，小計/毛利/淨利整列反白，一眼看得出哪幾列加起來是哪一列。
+ */
+function plTableHtml(cols, lines) {
+  const showPct = pctBase !== 'none';
+  const span = cols.length * (showPct ? 2 : 1) + 2;
+  const priceLines = lines.filter(l => l.isPriceStructure);
+  const plLines = lines.filter(l => !l.isPriceStructure);
+
+  const sectionRow = text => `<tr class="section"><td colspan="${span}">${esc(text)}</td></tr>`;
+
+  const dataRow = line => {
+    const cells = cols.map(col => {
+      const v = col.amounts[line.LineCode];
+      // 該欄位沒有這個科目就留白，不要顯示 0 誤導
+      if (v === undefined || v === null) {
+        return `<td class="muted">—</td>${showPct ? '<td class="muted">—</td>' : ''}`;
+      }
+      return amountCellHtml(v) + (showPct ? pctCellHtml(v, col) : '');
+    }).join('');
+    const autoTag = line.AutoSource ? ' <span class="auto-tag">自動</span>' : '';
+    const cls = [line.isSubtotal ? 'subtotal' : '', line.ParentLine ? 'detail' : ''].filter(c => c).join(' ');
+    return `<tr class="${cls}"><td class="code">${esc(line.LineCode)}</td>
+      <td class="row-head">${esc(line.LineName)}${autoTag}</td>${cells}</tr>`;
+  };
+
+  return `
+    <table class="pl-table">
+      <thead>
+        <tr>
+          <th rowspan="2">科目</th><th rowspan="2">項目</th>
+          ${cols.map(c => `<th colspan="${showPct ? 2 : 1}">
+            <div>${esc([c.vehicleTypeLabel, c.scenarioLabel].filter(p => p).join(' / '))}</div>
+            <div class="th-sub">${esc(c.vehicleLabel)}</div>
+          </th>`).join('')}
+        </tr>
+        <tr>${cols.map(() => `<th class="th-sub">金額</th>${showPct ? `<th class="th-sub">${pctBase === 'revenue' ? '對收入' : '對廠價'}%</th>` : ''}`).join('')}</tr>
+      </thead>
+      <tbody>
+        ${showPriceStructure && priceLines.length
+          ? sectionRow('售價結構（由「銷售構成」的售價欄位與稅務費用比率推算，不計入下方損益加總）') +
+            priceLines.map(dataRow).join('')
+          : ''}
+        ${sectionRow('損益')}
+        ${plLines.map(dataRow).join('')}
+      </tbody>
+    </table>`;
+}
+
+function amountCellHtml(v) {
+  const n = Number(v) || 0;
+  return `<td class="${n < 0 ? 'negative' : ''}">${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>`;
+}
+
+function pctCellHtml(v, col) {
+  const base = pctBase === 'revenue' ? Number(col.revenue) : Number(col.exFactoryPrice);
+  if (!base) return '<td class="muted">—</td>';
+  const p = Number(v) / base * 100;
+  return `<td class="pct${p < 0 ? ' negative' : ''}">${p.toFixed(1)}%</td>`;
 }
 
 /** Apps Script 沙箱不方便直接下載檔案，改成把 CSV 內容顯示出來供複製貼上到 Excel */
 function showComparisonCsv() {
   if (!lastComparison) return;
   const cols = lastComparison.columns;
-  const lines = [['科目', '項目'].concat(cols.map(c => c.label))];
-  lastComparison.lines.forEach(line => {
-    lines.push([line.LineCode, line.LineName].concat(cols.map(c => {
-      const v = c.amounts[line.LineCode];
-      return v === undefined || v === null ? '' : Math.round(v);
-    })));
+  const showPct = pctBase !== 'none';
+  const pctHeader = pctBase === 'revenue' ? '對收入%' : '對廠價%';
+
+  const header = ['科目', '項目'];
+  cols.forEach(c => {
+    header.push(c.label);
+    if (showPct) header.push(c.label + ' ' + pctHeader);
   });
-  const csv = lines.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+
+  const rows = [header];
+  lastComparison.lines
+    .filter(line => showPriceStructure || !line.isPriceStructure)
+    .forEach(line => {
+      const row = [line.LineCode, line.LineName];
+      cols.forEach(c => {
+        const v = c.amounts[line.LineCode];
+        if (v === undefined || v === null) {
+          row.push('');
+          if (showPct) row.push('');
+          return;
+        }
+        row.push(Math.round(v));
+        if (showPct) {
+          const base = pctBase === 'revenue' ? Number(c.revenue) : Number(c.exFactoryPrice);
+          row.push(base ? (v / base * 100).toFixed(1) : '');
+        }
+      });
+      rows.push(row);
+    });
+
+  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
   const box = document.getElementById('csv-output');
   box.style.display = 'block';
-  box.innerHTML = `<p class="muted">全選複製後可直接貼進 Excel：</p><textarea class="csv-box">${csv}</textarea>`;
+  box.innerHTML = `<p class="muted">全選複製後可直接貼進 Excel：</p><textarea class="csv-box">${esc(csv)}</textarea>`;
   box.querySelector('textarea').select();
 }
 
-function fmtCell(v) {
-  const n = Number(v) || 0;
-  const cls = n < 0 ? ' class="negative"' : '';
-  return `<td${cls}>${n.toLocaleString(undefined, { maximumFractionDigits: 0 })}</td>`;
-}
-
 function drawCharts(result) {
+  if (!result) return;
+  const cols = result.columns || [];
+  const codes = chartLineCodes.length ? chartLineCodes : ['A'];
+  const nameOf = code => {
+    const line = (result.lines || []).filter(l => l.LineCode === code)[0];
+    return line ? code + ' ' + line.LineName : code;
+  };
   google.charts.setOnLoadCallback(() => {
-    const revData = new google.visualization.DataTable();
-    revData.addColumn('string', '比較欄位');
-    revData.addColumn('number', '收入(A)');
-    revData.addColumn('number', '營業淨利(K)');
-    (result.columns || []).forEach(col => {
-      revData.addRow([col.label, Number(col.amounts.A) || 0, Number(col.amounts.K) || 0]);
+    const box = document.getElementById('chart-compare');
+    if (!box) return;
+    const dt = new google.visualization.DataTable();
+    dt.addColumn('string', '比較欄位');
+    codes.forEach(c => dt.addColumn('number', nameOf(c)));
+    cols.forEach(col => dt.addRow([col.label].concat(codes.map(c => Number(col.amounts[c]) || 0))));
+    new google.visualization.ColumnChart(box).draw(dt, {
+      title: '各比較欄位：' + codes.join(' / '),
+      legend: { position: 'top' },
+      vAxis: { format: '#,###' },
+      chartArea: { width: '78%', height: '62%' }
     });
-    new google.visualization.ColumnChart(document.getElementById('chart-revenue'))
-      .draw(revData, { title: '各比較欄位：收入 vs 營業淨利', legend: { position: 'top' }, vAxis: { format: '#,###' } });
   });
 }
 

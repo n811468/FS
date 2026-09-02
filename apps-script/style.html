@@ -5,7 +5,8 @@
   nav { display: flex; gap: 4px; padding: 8px 20px; background: #fff; border-bottom: 1px solid #ddd; flex-wrap: wrap; }
   nav button { border: none; background: transparent; padding: 8px 14px; cursor: pointer; font-size: 14px; border-radius: 4px; }
   nav button.active { background: #1f2d3d; color: #fff; }
-  main { padding: 20px; max-width: 1200px; margin: 0 auto; }
+  /* 比較欄位一多就會超出 1200px，改成撐滿視窗、由表格自己橫向捲動 */
+  main { padding: 20px; max-width: 1800px; margin: 0 auto; }
   .panel { display: none; background: #fff; border-radius: 6px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
   .panel.active { display: block; }
   .toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
@@ -53,4 +54,47 @@
   .auto-tag { font-size: 10px; color: #2b6cb0; border: 1px solid #90cdf4; border-radius: 3px; padding: 0 3px; margin-left: 4px; }
   .charts-row { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 20px; }
   .chart-box { flex: 1 1 420px; min-height: 320px; background: #fff; border: 1px solid #eee; border-radius: 6px; padding: 8px; }
+
+  /* ---- 表格橫向捲動：欄位多的頁面(銷售構成、成本矩陣、儀表板)不再把輸入框擠出畫面 ---- */
+  .grid-scroll { overflow-x: auto; max-width: 100%; padding-bottom: 4px; }
+  .grid-scroll table { min-width: max-content; }
+  th .th-sub { font-weight: 400; font-size: 11px; color: #718096; }
+  table.grid-table input[type=number] { width: 84px; }
+  table.grid-table input.note-input { width: 110px; }
+
+  /* 橫向捲動時把最左邊的科目/車系欄釘住，捲到右邊還看得出在看哪一列 */
+  table.sticky-head-col td.row-head,
+  table.sticky-head-col thead th:first-child { position: sticky; left: 0; z-index: 2; }
+  table.sticky-head-col td.row-head { background: #fafbfc; }
+  table.sticky-head-col thead th:first-child { z-index: 3; background: #f0f2f5; }
+
+  label.chk { display: inline-flex; flex-direction: row; align-items: center; gap: 4px; font-size: 12px; color: #444; }
+  .toolbar label { display: flex; flex-direction: column; font-size: 12px; color: #555; gap: 3px; }
+  .toolbar-block { width: 100%; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px 12px; margin-top: 8px; background: #f9fafb; }
+  .toolbar-block-title { font-size: 12px; font-weight: 600; color: #4a5568; margin-bottom: 4px; }
+  .toolbar-block .toolbar { margin-bottom: 6px; }
+  table.entity-table td.calc { color: #4a5568; }
+  table.entity-table tr.new-row td { background: #fffaf0; }
+
+  /* ---- 損益表：版面比照實際損益試算表，小計整列反白、明細縮排 ---- */
+  .pl-table thead th { text-align: center; white-space: nowrap; }
+  .pl-table td.code { text-align: left; color: #718096; font-size: 12px; white-space: nowrap; }
+  /* 科目代碼與項目名稱兩欄一起釘住：寬度寫死，第二欄才知道要從哪裡開始 */
+  .pl-table td.code, .pl-table thead th:first-child {
+    position: sticky; left: 0; z-index: 2; min-width: 56px; max-width: 56px; background: #fff;
+  }
+  .pl-table td.row-head, .pl-table thead th:nth-child(2) {
+    position: sticky; left: 56px; z-index: 2; text-align: left; white-space: nowrap; background: #fff;
+  }
+  .pl-table thead th:first-child, .pl-table thead th:nth-child(2) { z-index: 3; background: #f0f2f5; }
+  .pl-table tr.detail td.row-head { padding-left: 22px; color: #4a5568; }
+  .pl-table td.pct { color: #4a5568; font-size: 12px; }
+  /* 小計/區段列的底色要蓋過上面釘住欄位的白底，所以放在後面 */
+  .pl-table tr.subtotal td { background: #fffbe6; font-weight: 600; }
+  .pl-table tr.section td { background: #edf2f7; font-weight: 600; text-align: left; color: #2d3748; }
+  .chip-picker { display: flex; flex-wrap: wrap; gap: 2px 14px; max-height: 110px; overflow-y: auto;
+    background: #fff; border: 1px solid #e2e8f0; border-radius: 4px; padding: 6px 10px; }
+  .chip-picker label.chk { white-space: nowrap; }
+  .check-box { background: #fffaf0; border: 1px solid #f6ad55; border-radius: 6px; padding: 8px 14px; font-size: 13px; color: #7b341e; }
+  .check-box ul { margin: 6px 0 0; padding-left: 20px; }
 </style>
