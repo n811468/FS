@@ -16,7 +16,7 @@
 |---|---|---|
 | 0 | 手動設定 GCP 專案、啟用 Firestore、建立服務帳戶金鑰 | **需要你手動完成** |
 | 1 | `FirestoreClient.gs`：REST API 用戶端 | ✅ 已完成 |
-| 2 | Firestore 資料模型設計 | 進行中 |
+| 2 | Firestore 資料模型設計 | ✅ 已完成 |
 | 3 | 一次性搬遷腳本（Sheets → Firestore，跟現有系統並存） | 待做 |
 | 4 | `DataService.gs` 逐表改寫成 Firestore 版 | 待做 |
 | 5 | `SetupSheets.gs` → Firestore 版初始化/科目表 seed | 待做 |
@@ -88,7 +88,54 @@ node tools/verify-firestore-client.js
 
 ---
 
-## 階段 2：資料模型設計（進行中）
+## 階段 2：資料模型設計（已完成）
 
-（後續會在這裡補上 Firestore collection/document 結構，對應原本 `Constants.gs` 的
-`SCHEMA` 定義。）
+### 設計決定：扁平集合，不用子集合分層
+
+原本跟你討論時提過「依車型分層(`vehicleTypes/{id}/scenarios/{id}/...`)」的想法，主要理由是
+避免不同車型互搶鎖。實際設計時發現不需要——**Firestore 每份文件的寫入本身就是原子操作，
+不需要像 Sheets 版那樣靠 `LockService` 做整個 script 等級的鎖**（Sheets 版需要鎖是因為
+`appendRow`／逐列掃描比對 PK 這套邏輯在多人同時寫入時會互相蓋掉；Firestore 沒有這個問題）。
+
+而 Firestore 的 `WHERE 欄位 == 值` 查詢在**任何集合大小下都是索引查詢**（不是像 Sheets
+版整張表掃過一遍），所以扁平集合 + 條件查詢一樣快，不需要靠深層巢狀路徑才能快速鎖定範圍。
+改採扁平結構的好處：集合名稱、欄位、`RowID`/`ScenarioID` 這些鍵值都跟現在的 Sheet 結構
+一一對應，階段 4 改寫 `DataService.gs` 時風險最小、最容易跟舊版行為比對。
+
+**結論：不需要 `LockService`、不需要子集合分層。** 這對「3-5 人各自負責各自車型」的情境
+反而更好——不同人本來就在查不同的 `ScenarioID`，各自的讀寫天生就不會互相阻塞。
+
+### 集合對照表
+
+| Firestore 集合 | 對應原 Sheet | 文件 ID | 說明 |
+|---|---|---|---|
+| `vehicleTypes` | VehicleTypes | `VehicleTypeID` | |
+| `vehicles` | Vehicles | `VehicleID` | 欄位含 `VehicleTypeID`(查詢用) |
+| `scenarios` | Scenarios | `ScenarioID` | 欄位含 `VehicleTypeID` |
+| `salesMix` | SalesMix | `RowID` | 欄位含 `ScenarioID`／`VehicleID` |
+| `costOfSales` | CostOfSales | `RowID` | 同上 |
+| `devInvestment` | DevInvestment | `RowID` | 欄位含 `ScenarioID`／`TargetLineCode`／`SortOrder` |
+| `operatingExpense` | OperatingExpense | `RowID` | 同上 |
+| `parameters` | Parameters | `ParamID` | 欄位含 `ScenarioID`／`VehicleID`／`ParamName` |
+| `lineItems` | PLLineItems | `LineCode` | **全域共用**，不分車型/情境 |
+| `plResult` | PLResult | `ResultID` | 損益計算快照 |
+| `auditLog` | AuditLog | 自動配 ID | 選配的操作紀錄 |
+
+欄位名稱與型別直接沿用 `Constants.gs` 的 `SCHEMA` 定義，不重新命名——這樣 `CalcEngine.gs`
+（讀進來的 JS 物件長什麼樣子）幾乎不用改，只有 `DataService.gs`／`Utils.gs` 存取資料的方式要換。
+
+### 讀寫函式對照（階段 4 改寫時的對應關係）
+
+| 原本(Sheets) | 換成(Firestore) |
+|---|---|
+| `sheetToObjects_(sheet).filter(r => r.X === v)` | `firestoreQuery_(collection, { X: v })` |
+| `sheetToObjects_(sheet)`（讀整表） | `firestoreListAll_(collection)` |
+| `upsertRow_` 新增分支 | `firestoreCreate_` |
+| `upsertRow_` 更新分支（整列覆蓋） | `firestoreSet_('collection/' + id, obj)` |
+| `upsertRowMerge_`（只更新有帶到的欄位） | `firestoreUpdateFields_('collection/' + id, obj)` |
+| `deleteRow_` | `firestoreDelete_('collection/' + id)` |
+| 整批儲存(`saveXxxGrid`)裡一列列呼叫 `upsertRow_` | 收集成陣列後一次呼叫 `firestoreBatchWrite_` |
+| `SHEET_CACHE_`（單次執行內的讀取快取） | 可以沿用同樣的模式，只是快取的東西換成 Firestore 查詢結果 |
+
+`LineCode` 的自動編號(`nextLineCode_()`)、%小計驗算等純邏輯函式完全不受影響，
+因為它們操作的都是已經讀進記憶體的 JS 物件，不直接碰 Sheet/Firestore。

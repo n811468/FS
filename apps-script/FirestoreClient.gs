@@ -209,6 +209,41 @@ function firestoreListAll_(collectionPath, idField) {
   return out;
 }
 
+/**
+ * 條件查詢：對應原本 sheetToObjects_(sheet).filter(r => r.ScenarioID === scenarioId) 這種用法，
+ * 但用 Firestore 的索引查詢(:runQuery)，不必整個集合讀回來自己在 Apps Script 裡篩選 ——
+ * 集合越大這個差異越明顯(Sheets 版是每次都整張表掃過一遍)。
+ * whereEquals: { 欄位名: 值, ... }，多個條件是 AND；目前只需要等值查詢，够用就好，
+ * 不支援比較/範圍查詢(這系統目前沒有這種需求)。
+ */
+function firestoreQuery_(collectionPath, whereEquals, idField) {
+  var slashIdx = collectionPath.lastIndexOf('/');
+  var parentPath = slashIdx === -1 ? '' : collectionPath.slice(0, slashIdx);
+  var collectionId = slashIdx === -1 ? collectionPath : collectionPath.slice(slashIdx + 1);
+
+  var filters = Object.keys(whereEquals || {}).map(function (field) {
+    return {
+      fieldFilter: {
+        field: { fieldPath: field },
+        op: 'EQUAL',
+        value: toFirestoreValue_(whereEquals[field])
+      }
+    };
+  });
+  var structuredQuery = { from: [{ collectionId: collectionId }] };
+  if (filters.length === 1) {
+    structuredQuery.where = filters[0];
+  } else if (filters.length > 1) {
+    structuredQuery.where = { compositeFilter: { op: 'AND', filters: filters } };
+  }
+
+  var url = firestoreBaseUrl_() + (parentPath ? '/' + parentPath : '') + ':runQuery';
+  var results = firestoreRequest_('post', url, { structuredQuery: structuredQuery });
+  return (results || [])
+    .filter(function (r) { return r.document; })
+    .map(function (r) { return fromFirestoreDocument_(r.document, idField); });
+}
+
 /** 新增一筆、由 Firestore 自動配文件 ID；回傳含 ID 的物件 */
 function firestoreCreate_(collectionPath, obj, idField) {
   var url = firestoreBaseUrl_() + '/' + collectionPath;

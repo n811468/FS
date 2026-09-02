@@ -107,6 +107,17 @@ function handleFirestoreRequest_(url, options) {
   if (options.method === 'delete' && url.endsWith('/Scenarios/sc1')) {
     return fakeResponse_(200, {});
   }
+  if (options.method === 'post' && url.endsWith(':runQuery')) {
+    const sent = JSON.parse(options.payload);
+    assertEqual(sent.structuredQuery.from, [{ collectionId: 'salesMix' }], 'runQuery 應該指定正確的集合');
+    assertEqual(sent.structuredQuery.where, {
+      fieldFilter: { field: { fieldPath: 'ScenarioID' }, op: 'EQUAL', value: { stringValue: 'sc1' } }
+    }, 'runQuery 單一條件應該是 fieldFilter');
+    return fakeResponse_(200, [
+      { document: { name: '.../salesMix/row1', fields: { ScenarioID: { stringValue: 'sc1' }, VehicleID: { stringValue: 'V1' } } } },
+      { document: { name: '.../salesMix/row2', fields: { ScenarioID: { stringValue: 'sc1' }, VehicleID: { stringValue: 'V2' } } } }
+    ]);
+  }
   if (options.method === 'post' && url.endsWith(':batchWrite')) {
     // 官方路徑樣板是 .../documents:batchWrite，容易誤刪成 .../(default):batchWrite(拿掉 /documents)，
     // 明確斷言完整 URL，避免這種「payload 對、URL 錯」的錯誤又混過去。
@@ -152,6 +163,12 @@ const missing = (() => {
 
 const list = ctx.firestoreListAll_('Scenarios', 'ScenarioID');
 assertEqual(list, [{ ScenarioName: '0901', ScenarioID: 'sc1' }, { ScenarioName: '0902', ScenarioID: 'sc2' }], 'firestoreListAll_ 讀整個集合');
+
+const queried = ctx.firestoreQuery_('salesMix', { ScenarioID: 'sc1' }, 'RowID');
+assertEqual(queried, [
+  { ScenarioID: 'sc1', VehicleID: 'V1', RowID: 'row1' },
+  { ScenarioID: 'sc1', VehicleID: 'V2', RowID: 'row2' }
+], 'firestoreQuery_ 條件查詢');
 
 const created = ctx.firestoreCreate_('Scenarios', { ScenarioName: '0901' }, 'ScenarioID');
 assertEqual(created, { ScenarioName: '0901', ScenarioID: 'new-id' }, 'firestoreCreate_ 建立文件並帶回自動配的 ID');
