@@ -127,6 +127,29 @@ function saveVehicleGrid(vehicleTypeId, rows) {
 }
 
 /**
+ * 車系順序：跟目標某一列交換排序值(SortOrder)，立即生效並回傳最新順序。
+ * 讓「銷貨成本」「營業費用」矩陣頁面也能直接調車系順序，不必特地切去「車系設定」頁。
+ * 交換前先把目前顯示順序整批依序編號，確保每一列都有明確的 SortOrder 可以交換
+ * （原本留白的舊資料靠 sortByOrder_ 排在最後、彼此順序不定，直接互換空白值沒有意義）。
+ */
+function reorderVehicle(vehicleTypeId, vehicleId, direction) {
+  return withLock_(function () {
+    var vehicles = getVehicles(vehicleTypeId);
+    var idx = -1;
+    vehicles.forEach(function (v, i) { if (v.VehicleID === vehicleId) idx = i; });
+    if (idx === -1) throw new Error('找不到車系：' + vehicleId);
+    var targetIdx = idx + (direction < 0 ? -1 : 1);
+    if (targetIdx < 0 || targetIdx >= vehicles.length) return vehicles;
+    vehicles.forEach(function (v, i) { v.SortOrder = i; });
+    var tmp = vehicles[idx].SortOrder;
+    vehicles[idx].SortOrder = vehicles[targetIdx].SortOrder;
+    vehicles[targetIdx].SortOrder = tmp;
+    vehicles.forEach(function (v) { upsertRow_(SHEETS.VEHICLES, 'VehicleID', v); });
+    return getVehicles(vehicleTypeId);
+  });
+}
+
+/**
  * 車系代號重新命名：新增一列新代號、把所有引用舊代號的資料(銷售構成、銷貨成本、營業費用、
  * 費率覆寫、損益快照)一併改成新代號，最後刪掉舊代號那一列。開發總投是情境層級，不記車系，
  * 不受影響。

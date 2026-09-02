@@ -880,7 +880,14 @@ function drawMatrix(key) {
       <thead><tr>
         <th>項目</th>
         ${cfg.hasCurrency ? '<th>幣別</th>' : ''}
-        ${data.vehicles.map(v => `<th>${esc(v.VehicleCode || v.VehicleID)}
+        ${data.vehicles.map((v, i) => `<th>
+          <div class="col-move">
+            <button type="button" class="btn secondary row-move" title="往左移" ${i === 0 ? 'disabled' : ''}
+              onclick="reorderMatrixVehicle('${key}', '${esc(v.VehicleID)}', -1)">◀</button>
+            <button type="button" class="btn secondary row-move" title="往右移" ${i === data.vehicles.length - 1 ? 'disabled' : ''}
+              onclick="reorderMatrixVehicle('${key}', '${esc(v.VehicleID)}', 1)">▶</button>
+          </div>
+          ${esc(v.VehicleCode || v.VehicleID)}
           <div class="th-sub">構成比 ${fmt(num(v.SalesMixPct), 1)}%</div></th>`).join('')}
         <th>加權平均</th><th>備註</th><th></th>
       </tr></thead>
@@ -1039,6 +1046,23 @@ function deleteMatrixLine(key, lineCode) {
     .withSuccessHandler(() => { setStatus(key, '已刪除項目', 'ok'); renderMatrixPanel(key); })
     .withFailureHandler(err => setStatus(key, '錯誤：' + err.message, 'err'))
     .deleteLineItemInline(lineCode);
+}
+
+/**
+ * 車系欄位順序：直接在矩陣頁面用左右移動鈕調整，不必切去「車系設定」頁。
+ * 車系順序是全車型共用的設定（跟儀表板、車系設定頁看到的是同一份），
+ * 立即存檔生效，其他頁面的快取要一併清掉，不然切分頁時會先看到還沒更新的舊順序。
+ */
+function reorderMatrixVehicle(key, vehicleId, direction) {
+  setStatus(key, '調整車系順序中...');
+  google.script.run
+    .withSuccessHandler(safeHandler(() => {
+      Object.keys(panelDataCache_).forEach(k => delete panelDataCache_[k]);
+      setStatus(key, '已調整車系順序', 'ok');
+      renderMatrixPanel(key);
+    }))
+    .withFailureHandler(err => setStatus(key, '錯誤：' + err.message, 'err'))
+    .reorderVehicle(currentVehicleTypeId, vehicleId, direction);
 }
 
 /* ================= 開發總投 ================= */
