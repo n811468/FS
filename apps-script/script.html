@@ -1620,7 +1620,8 @@ let pctBase = 'exfactory';            // 'exfactory' = 對廠價(未稅) / 'reve
 let showPriceStructure = true;        // 是否顯示 P1~P9 售價結構
 let chartLineCodes = ['A', 'K'];      // 圖表要畫哪幾個科目
 let collapsedGroups = new Set();      // 目前收合中的大項(B/E/G/I)，切換 % 基準等重畫時要保留住
-let showDiffCards = false;            // 是否顯示「情境差異卡片」(相鄰比較欄位兩兩相減)
+let showDiffCards = false;            // 是否顯示「情境差異卡片」
+let diffPairs = [];                   // 使用者自己選的差異比較組合 [{aKey, bKey}]，key 見 colKey_()
 
 function refreshDashboard() {
   const content = document.getElementById('dashboard-content');
@@ -1651,6 +1652,7 @@ function renderDashboard(result) {
     <div class="grid-scroll">${plTableHtml(cols, lines)}</div>
   `;
   drawCharts(result);
+  drawDiffCharts(result);
 }
 
 function dashboardToolbarHtml() {
@@ -1679,21 +1681,71 @@ function dashboardToolbarHtml() {
 }
 function setShowDiffCards(v) { showDiffCards = v; renderDashboard(lastComparison); }
 
+/** 比較欄位的唯一鍵值：情境+車系（跟 comparisonSelections 是同一組資料，只是換一種查法） */
+function colKey_(col) {
+  return (col.scenarioId || '') + '|' + (col.vehicleId || '');
+}
+
 /**
- * 情境差異卡片：把目前依序排好的比較欄位，相鄰兩兩相減（上一欄 → 下一欄），
- * 只挑小計/毛利/淨利等關鍵科目，避免每個明細都列出來反而看不出重點。
- * 順序是使用者自己在比較欄位卡片上排的（見 renderComparisonColumns 的拖曳/左右移），
- * 想比「現況 vs 目標」或「不同時間點的現況」，把兩欄排在一起即可。
+ * 差異比較挑選器：使用者自己選「比較基準」跟「比較對象」兩個欄位，按「加入差異比較」
+ * 才會產生一組差異卡片(可以同時加好幾組，如「現況 vs 目標」再加一組「A情境 vs B情境」)。
+ * 不像原本自動兩兩相減整排欄位、被迫照順序來 —— 使用者要比哪兩欄就直接選那兩欄。
+ */
+function diffPairPickerHtml(cols) {
+  if (cols.length < 2) return '<p class="muted">差異比較至少要有兩個比較欄位。</p>';
+  const options = cols.map((c, i) => `<option value="${i}">${esc(c.label)}</option>`).join('');
+  const chips = diffPairs.map((p, i) => {
+    const a = cols.find(c => colKey_(c) === p.aKey);
+    const b = cols.find(c => colKey_(c) === p.bKey);
+    if (!a || !b) return '';
+    return `<span class="cmp-chip">
+      <span class="chip-label">${esc(a.label)} <span class="diff-arrow">→</span> ${esc(b.label)}</span>
+      <button type="button" class="btn danger" onclick="removeDiffPair(${i})">✕</button></span>`;
+  }).join('');
+  return `
+    <div class="toolbar">
+      <label>比較基準
+        <select id="diff-a-select">${options}</select>
+      </label>
+      <label>比較對象
+        <select id="diff-b-select">${options}</select>
+      </label>
+      <button type="button" class="btn secondary" onclick="addDiffPair()">加入差異比較</button>
+    </div>
+    ${diffPairs.length ? `<div class="toolbar">${chips}
+      <button type="button" class="btn secondary" onclick="clearDiffPairs()">全部清除</button></div>` : ''}`;
+}
+
+function addDiffPair() {
+  if (!lastComparison) return;
+  const cols = lastComparison.columns || [];
+  const aIdx = Number(val('diff-a-select'));
+  const bIdx = Number(val('diff-b-select'));
+  if (isNaN(aIdx) || isNaN(bIdx) || aIdx === bIdx || !cols[aIdx] || !cols[bIdx]) return;
+  const aKey = colKey_(cols[aIdx]), bKey = colKey_(cols[bIdx]);
+  if (diffPairs.some(p => p.aKey === aKey && p.bKey === bKey)) return;
+  diffPairs.push({ aKey: aKey, bKey: bKey });
+  renderDashboard(lastComparison);
+}
+function removeDiffPair(i) { diffPairs.splice(i, 1); renderDashboard(lastComparison); }
+function clearDiffPairs() { diffPairs = []; renderDashboard(lastComparison); }
+
+/**
+ * 情境差異卡片：只算使用者自己選過的組合(diffPairs)，只挑小計/毛利/淨利等關鍵科目，
+ * 避免每個明細都列出來反而看不出重點。每張卡下面附一個差異柱狀圖(見 drawDiffCharts)。
  */
 function diffCardsHtml(cols, lines) {
   if (!showDiffCards) return '';
-  if (cols.length < 2) {
-    return '<p class="muted">情境差異卡片至少要有兩個比較欄位，且順序上要相鄰(如現況緊接著目標)才會拿來相減。</p>';
+  const picker = diffPairPickerHtml(cols);
+  if (!diffPairs.length) {
+    return `<div class="diff-section">${picker}
+      <p class="muted">選好要比較的兩個欄位後按「加入差異比較」，下面會列出金額/百分比差異與差異柱狀圖。</p></div>`;
   }
   const keyLines = lines.filter(l => !l.isPriceStructure && (l.isSubtotal || l.LineCode === 'A'));
-  const cards = [];
-  for (let i = 1; i < cols.length; i++) {
-    const a = cols[i - 1], b = cols[i];
+  const cards = diffPairs.map((pair, i) => {
+    const a = cols.find(c => colKey_(c) === pair.aKey);
+    const b = cols.find(c => colKey_(c) === pair.bKey);
+    if (!a || !b) return '';
     const rows = keyLines.map(l => {
       const va = a.amounts[l.LineCode], vb = b.amounts[l.LineCode];
       if (va === undefined || va === null || vb === undefined || vb === null) return '';
@@ -1707,15 +1759,48 @@ function diffCardsHtml(cols, lines) {
         <td class="${cls}">${pct === null ? '—' : (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%'}</td>
       </tr>`;
     }).join('');
-    cards.push(`<div class="diff-card">
+    return `<div class="diff-card">
       <div class="diff-card-title">${esc(a.label)} <span class="diff-arrow">→</span> ${esc(b.label)}</div>
       <table class="grid-table diff-table">
         <thead><tr><th>項目</th><th>${esc(a.vehicleLabel || a.label)}</th><th>${esc(b.vehicleLabel || b.label)}</th><th>差異</th><th>差異%</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
-    </div>`);
-  }
-  return `<div class="diff-cards-row">${cards.join('')}</div>`;
+      <div class="chart-box diff-chart-box" id="diff-chart-${i}"></div>
+    </div>`;
+  }).join('');
+  return `<div class="diff-section">${picker}<div class="diff-cards-row">${cards}</div></div>`;
+}
+
+/** 每組差異比較底下的柱狀圖：畫出關鍵科目的差異金額(b-a)，跟差異卡片的表格是同一組數字 */
+function drawDiffCharts(result) {
+  if (!showDiffCards || !diffPairs.length || !result) return;
+  const cols = result.columns || [];
+  const lines = result.lines || [];
+  const keyLines = lines.filter(l => !l.isPriceStructure && (l.isSubtotal || l.LineCode === 'A'));
+  google.charts.setOnLoadCallback(() => {
+    diffPairs.forEach((pair, i) => {
+      const box = document.getElementById('diff-chart-' + i);
+      if (!box) return;
+      const a = cols.find(c => colKey_(c) === pair.aKey);
+      const b = cols.find(c => colKey_(c) === pair.bKey);
+      if (!a || !b) return;
+      const dt = new google.visualization.DataTable();
+      dt.addColumn('string', '項目');
+      dt.addColumn('number', '差異');
+      keyLines.forEach(l => {
+        const va = a.amounts[l.LineCode], vb = b.amounts[l.LineCode];
+        if (va === undefined || va === null || vb === undefined || vb === null) return;
+        dt.addRow([shortLineName(l.LineName), vb - va]);
+      });
+      new google.visualization.ColumnChart(box).draw(dt, {
+        title: a.label + ' → ' + b.label + ' 差異',
+        legend: { position: 'none' },
+        vAxis: { format: '#,###' },
+        chartArea: { width: '80%', height: '60%' },
+        colors: ['#2b6cb0']
+      });
+    });
+  });
 }
 
 /**

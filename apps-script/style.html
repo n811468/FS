@@ -142,8 +142,9 @@
   .check-box { background: #fffaf0; border: 1px solid #f6ad55; border-radius: 6px; padding: 8px 14px; font-size: 13px; color: #7b341e; }
   .check-box ul { margin: 6px 0 0; padding-left: 20px; }
 
-  /* ---- 情境差異卡片：相鄰比較欄位兩兩相減，一張卡看一組差異 ---- */
-  .diff-cards-row { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 16px; }
+  /* ---- 情境差異卡片：使用者自選要比較的兩個欄位，一張卡看一組差異 ---- */
+  .diff-section { margin-bottom: 16px; }
+  .diff-cards-row { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; }
   .diff-card { flex: 1 1 360px; min-width: 320px; background: #f9fafb; border: 1px solid #e2e8f0;
     border-radius: 8px; padding: 12px 14px; }
   .diff-card-title { font-size: 13px; font-weight: 600; color: #2d3748; margin-bottom: 8px; }
@@ -151,4 +152,6 @@
   .diff-table { margin-top: 0; font-size: 12.5px; }
   .diff-table tr.subtotal { background: #fffbe6; font-weight: 600; }
   .diff-table td.negative, .diff-table th.negative { color: #c53030; }
+  .diff-chart-box { margin-top: 10px; min-height: 220px; background: #fff; border: 1px solid #eee;
+    border-radius: 6px; padding: 6px; }
 </style>
