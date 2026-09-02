@@ -46,11 +46,25 @@ const noopEl = {
   innerHTML: '', textContent: '', className: '', value: '', style: {}, options: [],
   querySelector: () => noopEl, querySelectorAll: () => [], insertAdjacentHTML: () => { }, select: () => { }
 };
+// draw*() 函式常常對好幾個不同 id 的元素各自設 innerHTML(工具列/表格分開設定)，
+// 單一共用的 noopEl 會讓後面的賦值蓋掉前面的內容，測試就讀不到工具列那段 HTML。
+// 這裡改成依 id 各自存一份，才能個別檢查每個區塊實際產生的內容。
+const elById_ = {};
+function elFor_(id) {
+  if (!elById_[id]) {
+    elById_[id] = Object.assign({}, noopEl, { innerHTML: '' });
+  }
+  return elById_[id];
+}
+// google.script.run 呼叫鏈(withSuccessHandler().withFailureHandler().任何RPC函式())在 Node 裡沒有
+// 真的後端可以回應，這裡用一個「呼叫什麼都回傳自己」的 Proxy 接住整條鏈，讓 draw*/render* 這類
+// 會觸發 google.script.run 的函式在測試裡也能正常跑完，不會因為 run 是空物件而丟例外。
+const scriptRunStub = new Proxy(() => scriptRunStub, { get: () => scriptRunStub });
 const ctx = {
   console,
-  document: { getElementById: () => noopEl, querySelector: () => noopEl, querySelectorAll: () => [] },
+  document: { getElementById: id => elFor_(id), querySelector: () => noopEl, querySelectorAll: () => [] },
   window: { addEventListener: () => { } },
-  google: { charts: { load: () => { }, setOnLoadCallback: () => { } }, script: { run: {} } },
+  google: { charts: { load: () => { }, setOnLoadCallback: () => { } }, script: { run: scriptRunStub } },
   confirm: () => true, alert: () => { }
 };
 vm.createContext(ctx);
@@ -72,7 +86,7 @@ function checkTable(pctBase, showPriceStructure) {
   const label = `pctBase=${pctBase} 售價結構=${showPriceStructure}`;
   const table = api('plTableHtml')(cols, lines);
   const perCol = pctBase === 'none' ? 1 : 2;
-  const span = cols.length * perCol + 2;
+  const span = cols.length * perCol + 1;
 
   assert(table.indexOf('undefined') === -1, `${label}：表格中出現 undefined`);
   assert(table.indexOf('[object Object]') === -1, `${label}：表格中出現 [object Object]`);
@@ -83,7 +97,7 @@ function checkTable(pctBase, showPriceStructure) {
   assert(sectionSpans.length > 0, `${label}：找不到區段標題列`);
   sectionSpans.forEach(n => assert(n === span, `${label}：區段列 colspan ${n} 應為 ${span}`));
 
-  // 每一列的儲存格數 = 科目 + 項目 + 各比較欄位
+  // 每一列的儲存格數 = 項目(不含科目代碼) + 各比較欄位
   const bodyRows = table.split('<tbody>')[1].split('</tbody>')[0]
     .split('<tr').slice(1).filter(r => r.indexOf('class="section"') === -1);
   bodyRows.forEach(row => {
@@ -91,9 +105,10 @@ function checkTable(pctBase, showPriceStructure) {
     assert(tds === span, `${label}：資料列的儲存格數為 ${tds}，應為 ${span}`);
   });
 
-  // 科目代碼與名稱是兩個儲存格，所以找代碼欄本身
-  const priceRowShown = table.indexOf('<td class="code">P8</td>') !== -1;
+  // 科目代碼欄已移除(不利閱讀)，改用 P8 的科目名稱判斷售價結構有沒有顯示
+  const priceRowShown = table.indexOf('廠價(未稅)') !== -1;
   assert(priceRowShown === showPriceStructure, `${label}：售價結構的顯示狀態不正確`);
+  assert(table.indexOf('<td class="code">') === -1, `${label}：不應再出現科目代碼欄`);
 
   // 明細科目要縮排、小計要反白
   assert(table.indexOf('class="detail"') !== -1, `${label}：成本明細列應該帶 detail 樣式`);
@@ -123,11 +138,14 @@ const broken = [{ label: '測試欄', checks: [{ label: 'C = A - B', actual: 1, 
 assert(api('subtotalCheckHtml')(broken).indexOf('check-box') !== -1, '有差異時應顯示警告框');
 
 api("chartLineCodes = ['A', 'K']");
-const toolbar = api('dashboardToolbarHtml')(lines);
-assert(toolbar.indexOf('id="chart-lines"') !== -1, '工具列應該有圖表科目選擇區');
+const toolbar = api('dashboardToolbarHtml')();
+assert(toolbar.indexOf('id="chart-lines"') === -1, '% 基準工具列不該再混著圖表科目選擇區(已移到圖表旁邊)');
+const chartSection = api('chartSectionHtml')(lines);
+assert(chartSection.indexOf('id="chart-lines"') !== -1, '圖表區塊應該有科目選擇區');
+assert(chartSection.indexOf('id="chart-compare"') !== -1, '圖表區塊應該跟科目選擇區放在一起');
 // 原生 multiple select 要按住 Ctrl 才能複選，等於選不動；必須是核取方塊
-assert(toolbar.indexOf('multiple') === -1, '圖表科目不該用原生 multiple select');
-const chartPicker = toolbar.split('id="chart-lines"')[1].split('</div>')[0];
+assert(chartSection.indexOf('multiple') === -1, '圖表科目不該用原生 multiple select');
+const chartPicker = chartSection.split('id="chart-lines"')[1].split('</div>')[0];
 assert((chartPicker.match(/type="checkbox"/g) || []).length > 10, '每個科目都應該有一個核取方塊');
 assert((chartPicker.match(/ checked/g) || []).length === 2, '預設應勾選 A 與 K 兩個科目');
 assert(chartPicker.indexOf('onchange="onChartLineToggle') !== -1, '勾選應該即時重畫圖表');
@@ -168,19 +186,23 @@ assert(entityCellHtml('vehicletypes', 0, idCol, { __existing: false, VehicleType
 assert(entityRowActionHtml('lineitems', 0, { __existing: true, LineCode: 'B' }).indexOf('不可刪除') !== -1,
   '結構科目不該顯示刪除按鈕');
 
-/* ---- 6b. 開發總投：每一列都看得到自己會攤到哪個損益科目 ---- */
+/* ---- 6b. 開發總投：攤提落點直接選損益科目，畫面上不出現科目代碼 ---- */
 gs.saveDevInvestmentGrid(sc.ScenarioID, [
-  { RowID: '', Department: '大陸廠', AssetType: '費用-BASE廠', Amount: 8000, Currency: 'TWD' }
+  { RowID: '', Department: '大陸廠', TargetLineCode: 'f4', Amount: 8000, Currency: 'TWD' }
 ]);
-ctx.__in.devSummary = gs.getDevInvestmentSummary(sc.ScenarioID);
+const devSummary = gs.getDevInvestmentSummary(sc.ScenarioID);
+assert(devSummary.rows[0].TargetLineCode === 'f4', '存檔後攤提落點應為 f4');
+assert((devSummary.targetOptions || []).some(o => o.value === 'f4'), '落點選項應包含 f4');
+assert((devSummary.targetOptions || []).every(o => !/^[a-z]\d/.test(o.label)),
+  '落點選項的顯示名稱不該以科目代碼開頭');
+ctx.__in.devSummary = devSummary;
 api('devSummary = __in.devSummary');
-const devTargetLabel = api('devTargetLabel');
-assert(devTargetLabel('費用-BASE廠').indexOf('f4') === 0,
-  `費用-BASE廠 應顯示落點 f4，實際 ${devTargetLabel('費用-BASE廠')}`);
-assert(devTargetLabel('費用-CMC').indexOf('f3') === 0,
-  `費用-CMC 應顯示落點 f3，實際 ${devTargetLabel('費用-CMC')}`);
-assert(devTargetLabel('模具').indexOf('b5') === 0, '模具應顯示落點 b5');
-assert(devTargetLabel('').indexOf('不會攤提') !== -1, '沒選落點應明講不會攤提');
+api('devRows = __in.devSummary.rows.map(r => Object.assign({}, r))');
+api('drawDevGrid')();
+assert(elFor_('grid-devinvestment').innerHTML.indexOf('value="f4" selected') !== -1,
+  '目前選取的攤提落點應該在下拉選單中被選中');
+assert(elFor_('toolbar-devinvestment').innerHTML.indexOf('新增攤提科目') !== -1,
+  '應該有新增攤提科目的入口');
 
 /* ---- 7. CSV 匯出欄數 ---- */
 ctx.__in.comparison = comparison;

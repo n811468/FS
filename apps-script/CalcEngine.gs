@@ -84,18 +84,20 @@ function calculatePL(scenarioId, vehicleId) {
 
   var revenueA = exFactoryPrice + accessoryRevenue;                        // A 收入(未稅,含強配)
 
-  // ---- 開發總投攤提(模具/設備 -> 銷貨成本；費用 -> f3/f4) ----
+  // ---- 開發總投攤提：每一列自選攤提落點科目，套到損益各段時依科目所屬的父科目分組 ----
   var devPerUnit = amortizeDevInvestmentPerUnit_(scenarioId);
+  var lineDefsAll = getPLLineItems();
 
   // ---- Σd 銷售費用：貨物稅的完稅價格要扣廣促margin，所以 d 類要先算 ----
   var opexRows = getOperatingExpense(scenarioId, vehicleId);
   var dLines = pickLines_(opexRows, manualLineCodesFor_(['E']));
   dLines.d4 = exFactoryPrice * marginRate;                                 // 季Margin = 廠價(未稅) × 季Margin率
+  applyDevAmortLines_(dLines, 'E', devPerUnit, lineDefsAll);
   var totalD = sumValues_(dLines);
 
   // ---- B 銷貨成本：手動輸入的成本列 + 自動計算的成本列 ----
   var costRows = getCostOfSales(scenarioId, vehicleId);
-  var knownCodes = getPLLineItems().map(function (d) { return d.LineCode; });
+  var knownCodes = lineDefsAll.map(function (d) { return d.LineCode; });
   // 先把所有可手動輸入的成本科目都放進來(值 0)，沒填金額的科目才不會整列從儀表板消失 ——
   // 少了幾列的話，畫面上看到的 b 科目加起來會對不上 B 銷貨成本合計，看起來就像加總算錯。
   var bLines = {};
@@ -107,24 +109,28 @@ function calculatePL(scenarioId, vehicleId) {
     // 外幣成本用「匯率設定」頁該幣別的現況匯率換算，不在成本列逐筆填匯率
     bLines[code] = (bLines[code] || 0) + toNumber_(r.Amount) * fxRateFor_(params, r.Currency, vehicleId);
   });
-  bLines.b5 = devPerUnit.moldPerUnit;                    // 模具費用
-  bLines.b8 = devPerUnit.equipPerUnit;                   // 新增專屬設備
-  bLines.b13 = commodityTax_(exFactoryPrice, toNumber_(salesMixRow.HorizontalPartsPriceAdj),
-    dLines, commodityTaxRate, pct_(lookupParam_(params, '貨物稅完稅價格計算率', vehicleId)));
+  applyDevAmortLines_(bLines, 'B', devPerUnit, lineDefsAll);
+  // 貨物稅可直接填「自訂金額」覆蓋公式結果(廠價有時會為了完稅價格刻意增減，公式不一定適用所有情境)；
+  // 留空才照公式：(廠價 - 水平配件外移調降(可正可負) - 可扣除的d科目) × 完稅價格計算率 ÷ (1+稅率) × 稅率
+  var commodityTaxOverride = salesMixRow.CommodityTaxOverride;
+  bLines.b13 = (commodityTaxOverride === undefined || commodityTaxOverride === '' || commodityTaxOverride === null)
+    ? commodityTax_(exFactoryPrice, toNumber_(salesMixRow.HorizontalPartsPriceAdj),
+        dLines, commodityTaxRate, pct_(lookupParam_(params, '貨物稅完稅價格計算率', vehicleId)))
+    : toNumber_(commodityTaxOverride);
 
   var totalB = sumValues_(bLines);
   var grossProfitC = revenueA - totalB;     // C 生產毛利
   var grossProfitE = grossProfitC - totalD; // E 銷貨毛利
 
-  // ---- Σf 費用(f1 直接輸入 + f3/f4 由開發總投費用類攤提) ----
+  // ---- Σf 費用(f1 直接輸入 + 開發總投費用類攤提) ----
   var fLines = pickLines_(opexRows, manualLineCodesFor_(['G']));
-  fLines.f3 = devPerUnit.cmcExpensePerUnit;
-  fLines.f4 = devPerUnit.baseExpensePerUnit;
+  applyDevAmortLines_(fLines, 'G', devPerUnit, lineDefsAll);
   var totalF = sumValues_(fLines);
   var contributionG = grossProfitE - totalF; // G 產品貢獻
 
   // ---- Σh 固定營業費用 ----
   var hLines = pickLines_(opexRows, manualLineCodesFor_(['I']));
+  applyDevAmortLines_(hLines, 'I', devPerUnit, lineDefsAll);
   var totalH = sumValues_(hLines);
   var operatingProfitI = contributionG - totalH; // I 營業淨利(未扣前瞻)
 
@@ -307,43 +313,48 @@ function getComparisonOptions() {
 }
 
 /**
- * 依 DevInvestment 攤提出單台開發成本。
- * 模具/設備 -> 銷貨成本(b5/b8)；費用類 -> 車型專案開發費用(f3 CMC / f4 BASE廠)。
+ * 依 DevInvestment 攤提出單台開發成本，依每一列自選的攤提落點科目(TargetLineCode)分組加總。
  * 分母為該情境的 LIFE CYCLE 總台數 = Σ(月銷量 × 12 × LC年限)。
+ * 回傳的 perUnit / totalsByLine 都是「科目代碼 -> 金額」的動態物件，
+ * 落點不再限制成固定的 b5/b8/f3/f4 四個科目(見 applyDevAmortLines_ 如何套用到損益各段)。
  */
 function amortizeDevInvestmentPerUnit_(scenarioId) {
   var devRows = getDevInvestment(scenarioId);
   var totalUnits = getLifeCycleUnits(scenarioId);
-  var empty = {
-    moldPerUnit: 0, equipPerUnit: 0, cmcExpensePerUnit: 0, baseExpensePerUnit: 0,
-    totalsByLine: { b5: 0, b8: 0, f3: 0, f4: 0 }, totalUnits: totalUnits
-  };
+  var empty = { perUnit: {}, totalsByLine: {}, totalUnits: totalUnits };
   if (totalUnits <= 0) return empty;
 
   // 現況情境沒有挑戰低減目標，一律用原始金額；目標情境才套用低減率。
   var isBaseline = isBaselineScenario_(scenarioId);
   var params = getParameters(scenarioId);
 
-  // 依「攤提落點科目」分組，落點由 AssetType 直接決定(舊的「費用」才需要看 Department)
-  var totals = { b5: 0, b8: 0, f3: 0, f4: 0 };
+  var totals = {};
   devRows.forEach(function (r) {
+    var target = devAmortTargetOf_(r);
+    if (!target) return;   // 沒選攤提落點的列不攤提(儲存時已擋下有金額卻沒選的情形)
     // 投入金額可用外幣登打(如 BASE廠開發費以 CNY 計)，換算方式與銷貨成本一致
     var amount = toNumber_(r.Amount) * fxRateFor_(params, r.Currency, '');
     // ChallengeReductionPct 以 0~100 的百分比數值儲存(如 15 代表 15%)
     var reduced = amount * (isBaseline ? 1 : 1 - pct_(r.ChallengeReductionPct));
-    var target = devAmortTargetOf_(r);
-    if (totals[target] === undefined) return;   // 沒選資產類型的列不攤提(儲存時已擋下有金額卻沒選的情形)
-    totals[target] += reduced;
+    totals[target] = (totals[target] || 0) + reduced;
   });
 
-  return {
-    moldPerUnit: totals.b5 / totalUnits,
-    equipPerUnit: totals.b8 / totalUnits,
-    cmcExpensePerUnit: totals.f3 / totalUnits,
-    baseExpensePerUnit: totals.f4 / totalUnits,
-    totalsByLine: totals,
-    totalUnits: totalUnits
-  };
+  var perUnit = {};
+  Object.keys(totals).forEach(function (code) { perUnit[code] = totals[code] / totalUnits; });
+
+  return { perUnit: perUnit, totalsByLine: totals, totalUnits: totalUnits };
+}
+
+/**
+ * 把開發總投攤提結果套進損益某一段的科目集合：只套用「這一段底下、攤提用的科目」，
+ * 沒有任何一列選到的攤提落點科目也會補 0，確保畫面上一定看得到該科目那一列。
+ */
+function applyDevAmortLines_(targetDict, parentLine, devPerUnit, lineDefs) {
+  lineDefs.filter(function (d) {
+    return d.ParentLine === parentLine && DEV_AMORT_AUTO_SOURCES.indexOf(d.AutoSource) !== -1;
+  }).forEach(function (d) {
+    targetDict[d.LineCode] = devPerUnit.perUnit[d.LineCode] || 0;
+  });
 }
 
 /** 是否為現況情境（現況沒有挑戰低減目標） */
@@ -375,12 +386,17 @@ function getSalesMixLifeCycleUnits(scenarioId) {
   }, 0);
 }
 
-/** 開發總投頁面用：回傳低減後金額與單台攤提，讓使用者直接看到攤提結果 */
+/**
+ * 開發總投頁面用：回傳低減後金額與單台攤提，讓使用者直接看到攤提結果。
+ * 攤提落點(TargetLineCode)由使用者自己選，不再限制成固定的模具/設備/費用四種，
+ * 也可以在頁面上新增新的攤提落點科目(見 getDevAmortTargetOptions / addDevAmortLineItem)。
+ */
 function getDevInvestmentSummary(scenarioId) {
   var perUnit = amortizeDevInvestmentPerUnit_(scenarioId);
   var isBaseline = isBaselineScenario_(scenarioId);
   var lineNames = {};
   getPLLineItems().forEach(function (d) { lineNames[d.LineCode] = d.LineName; });
+  var targetOptions = getDevAmortTargetOptions();
 
   var rows = getDevInvestment(scenarioId).map(function (r) {
     var pctValue = isBaseline ? 0 : toNumber_(r.ChallengeReductionPct);
@@ -388,14 +404,12 @@ function getDevInvestmentSummary(scenarioId) {
     return {
       RowID: r.RowID,
       Department: r.Department,
-      // 舊的「費用」在這裡就轉成新的選項值，使用者一存檔就跟著寫回去
-      AssetType: normalizeDevAssetType_(r),
       Currency: r.Currency || BASE_CURRENCY,
       Notes: r.Notes || '',
       Amount: toNumber_(r.Amount),
       ChallengeReductionPct: pctValue,
       ReducedAmount: toNumber_(r.Amount) * (1 - pctValue / 100),
-      // 這一列的錢會攤到哪個科目，直接寫在畫面上
+      // 這一列的錢會攤到哪個科目，直接寫在畫面上（只給名稱，代碼對選擇沒有幫助）
       TargetLineCode: target,
       TargetLineName: target ? (lineNames[target] || target) : ''
     };
@@ -404,12 +418,12 @@ function getDevInvestmentSummary(scenarioId) {
   return {
     lifeCycleUnits: perUnit.totalUnits,
     salesMixLifeCycleUnits: getSalesMixLifeCycleUnits(scenarioId),
-    assetTypes: DEV_ASSET_TYPES,
+    targetOptions: targetOptions,
     // 每個落點科目的投資總額(低減後)與單台攤提，讓「開發總投 → 損益科目」對得起來
-    targets: DEV_ASSET_TYPES.map(function (type) {
-      var code = DEV_ASSET_TYPE_TARGET[type];
+    targets: targetOptions.map(function (opt) {
+      var code = opt.value;
       return {
-        AssetType: type, LineCode: code, LineName: lineNames[code] || code,
+        LineCode: code, LineName: opt.label,
         Total: perUnit.totalsByLine[code] || 0,
         PerUnit: perUnit.totalUnits ? (perUnit.totalsByLine[code] || 0) / perUnit.totalUnits : 0
       };

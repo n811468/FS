@@ -32,11 +32,11 @@ var SCHEMA = {
     'AmortMonthlyVolume', 'AmortLifeCycleYears', 'CreatedBy', 'CreatedDate', 'Notes'],
   SalesMix: ['RowID', 'ScenarioID', 'VehicleID', 'SalesMixPct', 'MonthlyVolume', 'LifeCycleYears',
     'ListPriceTaxIncl', 'MandatoryAccessoryPrice', 'ScrapFee', 'ScrapFeeTaxStatus',
-    'HorizontalPartsPriceAdj', 'EffectiveDate', 'Notes'],
+    'HorizontalPartsPriceAdj', 'EffectiveDate', 'Notes', 'CommodityTaxOverride'],
   CostOfSales: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'Currency',
     'Notes', 'EffectiveDate'],
   DevInvestment: ['RowID', 'ScenarioID', 'Department', 'AssetType',
-    'Amount', 'Currency', 'ChallengeReductionPct', 'Notes', 'EffectiveDate'],
+    'Amount', 'Currency', 'ChallengeReductionPct', 'Notes', 'EffectiveDate', 'TargetLineCode'],
   OperatingExpense: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'Notes', 'EffectiveDate'],
   Parameters: ['ParamID', 'ScenarioID', 'VehicleID', 'ParamName', 'Currency', 'Value', 'EffectiveDate'],
   PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'SortOrder', 'AutoSource', 'CommodityTaxDeduct'],
@@ -55,18 +55,16 @@ var SCENARIO_TYPE_BASELINE = '現況';
 // 廢車處理費稅別選項：讓損益試算全程稅別口徑一致(一律換算為含稅金額後再從零售價扣除)。
 var SCRAP_FEE_TAX_STATUS = ['含稅', '未稅'];
 
-// 開發總投資產類型 = 這筆投資要攤提到哪一個科目。
-// 費用類原本只有一個「費用」，落到 f3 還是 f4 靠 Department 是不是剛好等於 'BASE廠開發費' 來決定 ——
-// 部門名稱是自由輸入的，打成「BASE廠」「BASE 廠開發費」就會整筆跑到 f3，而且畫面上完全看不出來。
-// 現在把落點直接做成選項，使用者選什麼就攤到什麼。
+// 開發總投「攤提落點」現在直接選損益科目(DevInvestment.TargetLineCode)，不再限制成固定的
+// 4 個資產類型；使用者可以在「開發總投」頁面自己新增攤提落點科目(見 AUTO_SOURCE.DEV_AMORT)。
+// 以下常數只用來相容舊資料(尚未有 TargetLineCode 欄位時寫入的列)。
 var DEV_ASSET_TYPES = ['模具', '設備', '費用-CMC', '費用-BASE廠'];
 
 // 舊資料相容：以前只有一個「費用」，讀取時會依 Department 自動判斷後轉成新的選項值。
 var DEV_ASSET_TYPE_LEGACY_EXPENSE = '費用';
-var DEV_ASSET_TYPES_ACCEPTED = DEV_ASSET_TYPES.concat([DEV_ASSET_TYPE_LEGACY_EXPENSE]);
 
-// 資產類型 -> 攤提落點科目。畫面上會把落點科目直接寫在每一列旁邊，
-// 讓「開發總投填的錢跑去哪個科目」是看得見的，不必回頭翻文件。
+// 舊資料的資產類型 -> 攤提落點科目，只在還沒轉成 TargetLineCode 的舊列上使用一次，
+// 讀取時會直接把結果補寫回 TargetLineCode（見 DataService.gs devAmortTargetOf_）。
 var DEV_ASSET_TYPE_TARGET = {
   '模具': 'b5',
   '設備': 'b8',
@@ -100,8 +98,17 @@ var AUTO_SOURCE = {
   DEV_EXPENSE_CMC: 'DEV_EXPENSE_CMC',      // 開發總投(費用, CMC) / LIFE CYCLE 總台數
   DEV_EXPENSE_BASE: 'DEV_EXPENSE_BASE',    // 開發總投(費用, BASE廠) / LIFE CYCLE 總台數
   RATE_COMMODITY_TAX: 'RATE_COMMODITY_TAX',// 完稅價格 × 貨物稅率
-  RATE_QUARTER_MARGIN: 'RATE_QUARTER_MARGIN' // 廠價(未稅) × 季Margin率
+  RATE_QUARTER_MARGIN: 'RATE_QUARTER_MARGIN', // 廠價(未稅) × 季Margin率
+  DEV_AMORT: 'DEV_AMORT'                   // 使用者在「開發總投」頁面自訂新增的攤提落點科目
 };
+
+// 開發總投攤提落點可以選的科目 = AutoSource 屬於這個集合的科目。
+// 內建的 4 個(b5/b8/f3/f4)以及使用者新增的攤提落點科目都算，這些科目一律不能在
+// 「銷貨成本」「營業費用」頁面手動輸入金額(避免跟開發總投攤提的金額重複計列)。
+var DEV_AMORT_AUTO_SOURCES = [
+  AUTO_SOURCE.DEV_MOLD, AUTO_SOURCE.DEV_EQUIP,
+  AUTO_SOURCE.DEV_EXPENSE_CMC, AUTO_SOURCE.DEV_EXPENSE_BASE, AUTO_SOURCE.DEV_AMORT
+];
 
 // 結構科目(小計/毛利/淨利)與自動計算科目不允許在「科目設定」頁面刪除，
 // 否則損益鏈會斷掉。其餘明細科目(b*/d*/f1/h*/J)皆可自由新增與刪除。

@@ -52,8 +52,11 @@
     border-radius: 14px; padding: 3px 6px 3px 12px; font-size: 12px; }
   .cmp-chip .btn { padding: 2px 8px; font-size: 11px; border-radius: 10px; }
   .auto-tag { font-size: 10px; color: #2b6cb0; border: 1px solid #90cdf4; border-radius: 3px; padding: 0 3px; margin-left: 4px; }
-  .charts-row { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 20px; }
-  .chart-box { flex: 1 1 420px; min-height: 320px; background: #fff; border: 1px solid #eee; border-radius: 6px; padding: 8px; }
+  .charts-row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; align-items: stretch; }
+  .chart-box { flex: 2 1 420px; min-height: 320px; background: #fff; border: 1px solid #eee; border-radius: 6px; padding: 8px; }
+  /* 柱狀圖科目勾選框直接靠在圖旁邊，選了就近看到圖重畫，不必跟圖隔著一整張損益表 */
+  .chart-picker-box { flex: 1 1 260px; min-width: 220px; background: #f9fafb; border: 1px solid #e2e8f0;
+    border-radius: 6px; padding: 10px 12px; }
 
   /* ---- 表格橫向捲動：欄位多的頁面(銷售構成、成本矩陣、儀表板)不再把輸入框擠出畫面 ---- */
   .grid-scroll { overflow-x: auto; max-width: 100%; padding-bottom: 4px; }
@@ -78,17 +81,15 @@
 
   /* ---- 損益表：版面比照實際損益試算表，小計整列反白、明細縮排 ---- */
   .pl-table thead th { text-align: center; white-space: nowrap; }
-  .pl-table td.code { text-align: left; color: #718096; font-size: 12px; white-space: nowrap; }
-  /* 科目代碼與項目名稱兩欄一起釘住：寬度寫死，第二欄才知道要從哪裡開始 */
-  .pl-table td.code, .pl-table thead th:first-child {
-    position: sticky; left: 0; z-index: 2; min-width: 56px; max-width: 56px; background: #fff;
+  .pl-table td.row-head, .pl-table thead th:first-child {
+    position: sticky; left: 0; z-index: 2; text-align: left; white-space: nowrap; background: #fff;
   }
-  .pl-table td.row-head, .pl-table thead th:nth-child(2) {
-    position: sticky; left: 56px; z-index: 2; text-align: left; white-space: nowrap; background: #fff;
-  }
-  .pl-table thead th:first-child, .pl-table thead th:nth-child(2) { z-index: 3; background: #f0f2f5; }
+  .pl-table thead th:first-child { z-index: 3; background: #f0f2f5; }
   .pl-table tr.detail td.row-head { padding-left: 22px; color: #4a5568; }
   .pl-table td.pct { color: #4a5568; font-size: 12px; }
+  /* 科目名稱後的公式平常隱藏，滑鼠移到 ƒ 圖示上才用 title 顯示 */
+  .formula-hint { display: inline-block; color: #a0aec0; border: 1px solid #cbd5e0; border-radius: 3px;
+    font-size: 10px; line-height: 1; padding: 1px 3px; cursor: help; font-style: italic; }
   /* 小計/區段列的底色要蓋過上面釘住欄位的白底，所以放在後面 */
   .pl-table tr.subtotal td { background: #fffbe6; font-weight: 600; }
   .pl-table tr.section td { background: #edf2f7; font-weight: 600; text-align: left; color: #2d3748; }

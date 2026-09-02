@@ -245,11 +245,11 @@ check('舊的「費用」資料仍照原本的規則攤提，並自動轉成新�
   summary.targets.forEach(t => { byLine[t.LineCode] = t.Total; });
   assertEqual(byLine.f4, 9000, '舊資料的 BASE廠開發費仍應落在 f4');
   assertEqual(byLine.f3, 3000, '舊資料的其他部門仍應落在 f3');
-  // 讀進畫面時就轉成新的選項值，使用者一存檔就寫回去
-  assertEqual(summary.rows.filter(r => r.Department === 'BASE廠開發費')[0].AssetType, '費用-BASE廠',
-    '舊「費用」應轉成費用-BASE廠');
-  assertEqual(summary.rows.filter(r => r.Department === '研發處')[0].AssetType, '費用-CMC',
-    '舊「費用」應轉成費用-CMC');
+  // 讀進畫面時就把落點解析成 TargetLineCode，使用者一存檔就寫回去
+  assertEqual(summary.rows.filter(r => r.Department === 'BASE廠開發費')[0].TargetLineCode, 'f4',
+    '舊「費用」應解析成落點 f4');
+  assertEqual(summary.rows.filter(r => r.Department === '研發處')[0].TargetLineCode, 'f3',
+    '舊「費用」應解析成落點 f3');
   // 轉換後的值存得回去
   gs.saveDevInvestmentGrid(sid, summary.rows);
 });

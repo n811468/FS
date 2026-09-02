@@ -164,6 +164,7 @@ function getSalesMixGrid(scenarioId, vehicleTypeId) {
       ScrapFee: row.ScrapFee === undefined || row.ScrapFee === '' ? '' : toNumber_(row.ScrapFee),
       ScrapFeeTaxStatus: row.ScrapFeeTaxStatus || '含稅',
       HorizontalPartsPriceAdj: row.HorizontalPartsPriceAdj === undefined || row.HorizontalPartsPriceAdj === '' ? '' : toNumber_(row.HorizontalPartsPriceAdj),
+      CommodityTaxOverride: row.CommodityTaxOverride === undefined || row.CommodityTaxOverride === '' ? '' : toNumber_(row.CommodityTaxOverride),
       Notes: row.Notes || ''
     };
   });
@@ -356,12 +357,12 @@ function deleteLineItemInline(lineCode) {
 // ---- DevInvestment ----
 
 /**
- * 一列開發總投要攤提到哪個科目（b5 模具 / b8 設備 / f3 開發費-CMC / f4 開發費-BASE廠）。
- * 舊資料的資產類型只有一個「費用」，落點是靠 Department 剛好等於 'BASE廠開發費' 判斷的 ——
- * 部門是自由輸入欄位，打成「BASE廠」就會整筆跑到 f3，畫面上還看不出來。
- * 新資料直接用資產類型決定；舊資料仍沿用原本的判斷，讀進畫面時會順手轉成新的選項值。
+ * 一列開發總投要攤提到哪個損益科目：直接看 TargetLineCode（使用者在「開發總投」頁面自選）。
+ * 舊資料(改版前建立、還沒有 TargetLineCode)才會走下面的相容判斷：
+ * 舊資產類型直接查對照表；更舊的「費用」單一類型則靠 Department 是否等於 'BASE廠開發費' 判斷。
  */
 function devAmortTargetOf_(row) {
+  if (row.TargetLineCode) return row.TargetLineCode;
   var type = row.AssetType;
   if (type === DEV_ASSET_TYPE_LEGACY_EXPENSE) {
     return row.Department === DEV_INVESTMENT_BASE_FACTORY_DEPT ? 'f4' : 'f3';
@@ -369,10 +370,30 @@ function devAmortTargetOf_(row) {
   return DEV_ASSET_TYPE_TARGET[type] || '';
 }
 
-/** 舊的「費用」資產類型轉成新的「費用-CMC」/「費用-BASE廠」 */
-function normalizeDevAssetType_(row) {
-  if (row.AssetType !== DEV_ASSET_TYPE_LEGACY_EXPENSE) return row.AssetType;
-  return row.Department === DEV_INVESTMENT_BASE_FACTORY_DEPT ? '費用-BASE廠' : '費用-CMC';
+/**
+ * 開發總投「攤提落點」下拉選項：所有 AutoSource 屬於 DEV_AMORT_AUTO_SOURCES 的科目，
+ * 含內建 4 個(b5/b8/f3/f4)與使用者自己新增的攤提落點科目。只給名稱、不帶科目代碼
+ * （代碼對使用者選擇攤提落點沒有幫助，畫面只需要看得懂科目名稱）。
+ */
+function getDevAmortTargetOptions() {
+  return getPLLineItems()
+    .filter(function (d) { return DEV_AMORT_AUTO_SOURCES.indexOf(d.AutoSource) !== -1; })
+    .map(function (d) { return { value: d.LineCode, label: d.LineName, parentLine: d.ParentLine }; });
+}
+
+/**
+ * 在「開發總投」頁面直接新增一個攤提落點科目（不必跑去「科目設定」頁）。
+ * 父科目決定這筆攤提落在損益的哪一段(B 銷貨成本 / E 銷售費用 / G 產品貢獻前費用 / I 固定營業費用)，
+ * 新科目一律標記 AutoSource=DEV_AMORT，之後不會出現在「銷貨成本」「營業費用」的手動輸入選單裡，
+ * 避免跟開發總投攤提的金額重複計列。
+ */
+function addDevAmortLineItem(parentLine, lineName) {
+  return withLock_(function () {
+    if (!lineName) throw new Error('請輸入科目名稱');
+    var row = newLineItemRow_(parentLine, lineName);
+    row.AutoSource = AUTO_SOURCE.DEV_AMORT;
+    return upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', row);
+  });
 }
 
 function getDevInvestment(scenarioId) {
@@ -394,10 +415,9 @@ function saveDevInvestmentGrid(scenarioId, rows) {
         if (r.RowID) deleteRow_(SHEETS.DEV_INVESTMENT, 'RowID', r.RowID);
         return;
       }
-      // 沒選資產類型的列不會被攤提到任何科目，金額等於憑空消失，所以直接擋下來
-      if (toNumber_(r.Amount) && DEV_ASSET_TYPES_ACCEPTED.indexOf(r.AssetType) === -1) {
-        throw new Error('「' + (r.Department || '未命名部門') + '」有金額但沒有選攤提落點，請選擇 ' +
-          DEV_ASSET_TYPES.join(' / ') + '。');
+      // 沒選攤提落點的列不會被攤提到任何科目，金額等於憑空消失，所以直接擋下來
+      if (toNumber_(r.Amount) && !devAmortTargetOf_(r)) {
+        throw new Error('「' + (r.Department || '未命名部門') + '」有金額但沒有選攤提落點，請選擇這筆投資要攤到哪個損益科目。');
       }
       r.ScenarioID = scenarioId;
       upsertRow_(SHEETS.DEV_INVESTMENT, 'RowID', r);
