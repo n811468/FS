@@ -190,12 +190,19 @@ function calculatePLCore_(scenarioId, vehicleId) {
   };
 }
 
-/** 某情境(= 某車型)底下所有車系的損益，外加以銷售構成比加權的平均列 */
+/**
+ * 某情境(= 某車型)底下所有車系的損益，外加以銷售構成比加權的平均列。
+ * 儀表板/比較欄位每次開頁、每切一次 % 基準、每加一欄比較都會呼叫到這裡 ——
+ * 純粹是「看」，不是「存」，所以一律用不寫入快照的 calculatePLCore_()，
+ * 不要每次都把整張 PLResult 表讀出來、清掉、再寫回去(見 writePLResult_ 的成本說明)。
+ * 全系統目前也沒有任何地方會讀回 PLResult 快照(getPLResult() 沒有被呼叫)，
+ * 寫這個快照對「看儀表板」這件事只有成本、沒有效益。
+ */
 function calculatePLAllVehicles(scenarioId) {
   var salesMix = getSalesMix(scenarioId);
-  var results = salesMix.map(function (row) { return calculatePL(scenarioId, row.VehicleID); });
+  var results = salesMix.map(function (row) { return calculatePLCore_(scenarioId, row.VehicleID); });
 
-  // 加權平均列（以 SalesMixPct 加權，寫入 VehicleID 空白的 PLResult 列）
+  // 加權平均列（以 SalesMixPct 加權）
   var totalPct = salesMix.reduce(function (s, r) { return s + toNumber_(r.SalesMixPct); }, 0) || 1;
   var weighted = {};
   results.forEach(function (res, idx) {
@@ -204,8 +211,6 @@ function calculatePLAllVehicles(scenarioId) {
       weighted[line.LineCode] = (weighted[line.LineCode] || 0) + line.Amount * pct;
     });
   });
-  var timestamp = new Date();
-  writePLResult_(scenarioId, '', weighted, weighted.A || 0, weighted.P8 || 0, timestamp);
 
   return {
     scenarioId: scenarioId,
@@ -243,8 +248,9 @@ function calculateComparison(selections) {
     var vehicleType = vehicleTypes.filter(function (t) { return t.VehicleTypeID === scenario.VehicleTypeID; })[0] || {};
 
     // 加權平均是好幾個車系混出來的，貨物稅的計算過程沒有單一版本可以攤開顯示，只有選特定
-    // 車系時才附上 commodityTaxDetail(見 CalcEngine.gs commodityTaxBreakdown_())
-    var vehicleCalc = sel.VehicleID ? calculatePL(sel.ScenarioID, sel.VehicleID) : null;
+    // 車系時才附上 commodityTaxDetail(見 CalcEngine.gs commodityTaxBreakdown_())。
+    // 用 calculatePLCore_ 而非 calculatePL：儀表板只是「看」，不需要每次都寫一次 PLResult 快照。
+    var vehicleCalc = sel.VehicleID ? calculatePLCore_(sel.ScenarioID, sel.VehicleID) : null;
     var lines = vehicleCalc ? vehicleCalc.lines : calculateScenarioWeighted(sel.ScenarioID);
 
     var amounts = {};
@@ -344,9 +350,13 @@ function getComparisonOptions() {
  * 分母為該情境的 LIFE CYCLE 總台數 = Σ(月銷量 × 12 × LC年限)。
  * 回傳的 perUnit / totalsByLine 都是「科目代碼 -> 金額」的動態物件，
  * 落點不再限制成固定的 b5/b8/f3/f4 四個科目(見 applyDevAmortLines_ 如何套用到損益各段)。
+ *
+ * overrideRows 可選：開發總投頁面用來「先試算、還沒儲存」——使用者在畫面上調整金額/低減%時，
+ * 直接把還沒送出的列傳進來算，不必先存檔才看得到下面投資總額/單台攤提會變成多少。
+ * 不傳就照原本行為讀 Sheet 上已儲存的資料（損益計算/儀表板一律用這個，確保跟儲存的資料一致）。
  */
-function amortizeDevInvestmentPerUnit_(scenarioId) {
-  var devRows = getDevInvestment(scenarioId);
+function amortizeDevInvestmentPerUnit_(scenarioId, overrideRows) {
+  var devRows = overrideRows || getDevInvestment(scenarioId);
   var totalUnits = getLifeCycleUnits(scenarioId);
   var empty = { perUnit: {}, totalsByLine: {}, totalUnits: totalUnits };
   if (totalUnits <= 0) return empty;
@@ -417,15 +427,21 @@ function getSalesMixLifeCycleUnits(scenarioId) {
  * 開發總投頁面用：回傳低減後金額與單台攤提，讓使用者直接看到攤提結果。
  * 攤提落點(TargetLineCode)由使用者自己選，不再限制成固定的模具/設備/費用四種，
  * 也可以在頁面上新增新的攤提落點科目(見 getDevAmortTargetOptions / addDevAmortLineItem)。
+ *
+ * overrideRows 可選：見 amortizeDevInvestmentPerUnit_ 的說明，用來在還沒儲存前先試算
+ * 下面「投資總額(低減後)/單台攤提」表會變成多少（見 previewDevInvestmentSummary）。
+ * 這種情況下 rows 仍照 Sheet 上已儲存的資料回傳，不受 overrideRows 影響
+ * ——只影響 targets 那組彙總數字，画面上逐列的輸入框由前端自己管理，不需要後端回填。
  */
-function getDevInvestmentSummary(scenarioId) {
-  var perUnit = amortizeDevInvestmentPerUnit_(scenarioId);
+function getDevInvestmentSummary(scenarioId, overrideRows) {
+  var perUnit = amortizeDevInvestmentPerUnit_(scenarioId, overrideRows);
   var isBaseline = isBaselineScenario_(scenarioId);
   var lineNames = {};
   getPLLineItems().forEach(function (d) { lineNames[d.LineCode] = d.LineName; });
   var targetOptions = getDevAmortTargetOptions();
 
-  var rows = getDevInvestment(scenarioId).map(function (r) {
+  // 部門列的呈現順序使用者可以自己在畫面上調整(拖不動用上下移動鈕)，留白排最後、相對順序穩定
+  var rows = sortByOrder_(getDevInvestment(scenarioId), 'SortOrder').map(function (r) {
     var pctValue = isBaseline ? 0 : toNumber_(r.ChallengeReductionPct);
     var target = devAmortTargetOf_(r);
     return {
@@ -438,7 +454,8 @@ function getDevInvestmentSummary(scenarioId) {
       ReducedAmount: toNumber_(r.Amount) * (1 - pctValue / 100),
       // 這一列的錢會攤到哪個科目，直接寫在畫面上（只給名稱，代碼對選擇沒有幫助）
       TargetLineCode: target,
-      TargetLineName: target ? (lineNames[target] || target) : ''
+      TargetLineName: target ? (lineNames[target] || target) : '',
+      SortOrder: r.SortOrder === undefined || r.SortOrder === '' ? '' : r.SortOrder
     };
   });
   var scenario = getScenarios().filter(function (s) { return s.ScenarioID === scenarioId; })[0] || {};
@@ -460,6 +477,16 @@ function getDevInvestmentSummary(scenarioId) {
     currencies: getConfiguredCurrencies(scenarioId),
     perUnit: perUnit, isBaseline: isBaseline, rows: rows
   };
+}
+
+/**
+ * 開發總投頁面用：畫面上還沒按「儲存」的編輯內容，先試算一次下面的「投資總額(低減後)/單台攤提」表，
+ * 讓使用者調整金額或挑戰低減目標(或直接改低減後金額反推)時馬上看得到攤提結果會變成怎樣，
+ * 不必先存檔才知道。只回傳 targets 彙總表需要的部分，不寫入任何資料、不用鎖定。
+ */
+function previewDevInvestmentSummary(scenarioId, rows) {
+  var summary = getDevInvestmentSummary(scenarioId, rows || []);
+  return { targets: summary.targets, lifeCycleUnits: summary.lifeCycleUnits };
 }
 
 /** 某個父科目底下、可以手動輸入的明細科目代碼(排除自動計算科目) */

@@ -2,8 +2,18 @@
   body { font-family: 'Segoe UI', 'Microsoft JhengHei', sans-serif; margin: 0; background: #f5f6f8; color: #222; }
   header { background: #1f2d3d; color: #fff; padding: 12px 20px; display: flex; align-items: center; gap: 20px; }
   header h1 { font-size: 18px; margin: 0; }
-  nav { display: flex; gap: 4px; padding: 8px 20px; background: #fff; border-bottom: 1px solid #ddd; flex-wrap: wrap; }
-  nav button { border: none; background: transparent; padding: 8px 14px; cursor: pointer; font-size: 14px; border-radius: 4px; }
+  /* 導覽列分三個主軸：車型與情境 / 損益項目與計算 / 結果呈現。
+     每一組是「小標題 + 該組的分頁按鈕」，組與組之間用分隔線隔開，
+     讓使用者一眼看得出這個系統分成哪幾塊、現在站在哪一塊。 */
+  nav { display: flex; gap: 0; padding: 6px 20px 8px; background: #fff; border-bottom: 1px solid #ddd; flex-wrap: wrap; }
+  .nav-group { display: flex; flex-direction: column; gap: 3px; padding: 2px 16px; border-left: 1px solid #cbd5e0; }
+  .nav-group:first-child { padding-left: 0; border-left: none; }
+  .nav-group-label { font-size: 11px; font-weight: 600; color: #718096; letter-spacing: .08em; padding-left: 6px; }
+  .nav-group-tabs { display: flex; gap: 2px; align-items: center; flex-wrap: wrap; }
+  /* 同一組裡再細分「主要輸入」與「設定類」兩段，中間補一個淡分隔 */
+  .nav-sep { width: 1px; height: 16px; background: #edf2f7; margin: 0 4px; }
+  nav button { border: none; background: transparent; padding: 7px 13px; cursor: pointer; font-size: 14px; border-radius: 4px; white-space: nowrap; }
+  nav button:hover:not(.active) { background: #f0f2f5; }
   nav button.active { background: #1f2d3d; color: #fff; }
   /* 比較欄位一多就會超出 1200px，改成撐滿視窗、由表格自己橫向捲動 */
   main { padding: 20px; max-width: 1800px; margin: 0 auto; }
@@ -13,6 +23,8 @@
   select, input[type=text], input[type=number], input[type=date] {
     padding: 6px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px;
   }
+  /* 數字欄位的呈現要一致：不管在哪個頁面，數字一律靠右對齊（跟旁邊唯讀的計算欄位對得起來） */
+  input[type=number] { text-align: right; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; margin-top: 12px; }
   th, td { border: 1px solid #e0e0e0; padding: 6px 8px; text-align: right; }
   th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
@@ -39,6 +51,18 @@
   table.grid-table tfoot td { font-weight: 600; background: #edf2f7; }
   table.grid-table input[type=number] { width: 92px; text-align: right; padding: 4px 6px; }
   table.grid-table input[type=text] { width: 120px; padding: 4px 6px; }
+  /* 數字靠右、文字靠左。
+     儲存格預設靠右是為了讓數字對齊，但格子裡放的是文字輸入框或下拉選單時，
+     靠右會把整個輸入框推到格子右邊 —— 每一列的選單寬度不一樣時，左邊界就參差不齊。
+     這裡把「裝著文字輸入框/日期/下拉選單」的格子改成靠左，數字欄位維持靠右不受影響。
+     (:has() 在很舊的瀏覽器不支援，那種情況只會退回原本的靠右，不會壞掉) */
+  table.grid-table td:has(> input[type=text]),
+  table.grid-table td:has(> input[type=date]),
+  table.grid-table td:has(> select) { text-align: left; }
+  /* text-align 會從儲存格繼承進輸入框，所以框「裡面」的文字也要明確指定靠左 */
+  table.grid-table input[type=text],
+  table.grid-table input[type=date],
+  table.grid-table select { text-align: left; }
   table.grid-table input, table.grid-table select { border: 1px solid #cbd5e0; border-radius: 3px; font-size: 13px; }
   table.grid-table input:focus { outline: 2px solid #90cdf4; border-color: #2b6cb0; }
   .toolbar-sep { border-left: 1px solid #cbd5e0; height: 22px; }
@@ -55,6 +79,9 @@
   .cmp-chip .chip-move:hover:not(:disabled) { color: #2b6cb0; }
   .cmp-chip .chip-move:disabled { opacity: .3; cursor: not-allowed; }
   .cmp-chip .btn { padding: 2px 8px; font-size: 11px; border-radius: 0; margin: 0; }
+  .cmp-chip { cursor: grab; }
+  .cmp-chip.dragging { opacity: .4; }
+  .cmp-chip .chip-handle { display: flex; align-items: center; padding: 0 2px 0 8px; color: #a0aec0; font-size: 13px; cursor: grab; }
 
   /* ---- 儀表板：建構欄位卡片，選擇跟已加入的比較欄位放在同一張卡，不必分散找 ---- */
   .dash-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
@@ -98,6 +125,10 @@
   .toolbar-block .toolbar { margin-bottom: 6px; }
   table.entity-table td.calc { color: #4a5568; }
   table.entity-table tr.new-row td { background: #fffaf0; }
+  td.row-actions { white-space: nowrap; }
+  .row-move { padding: 3px 7px; font-size: 11px; line-height: 1; }
+  .col-move { display: flex; justify-content: center; gap: 2px; margin-bottom: 2px; }
+  .col-move .row-move { font-weight: 400; }
 
   /* ---- 損益表：版面比照實際損益試算表，小計整列反白、明細縮排 ---- */
   .pl-table thead th { text-align: center; white-space: nowrap; }
@@ -134,4 +165,17 @@
   .chip-picker label.chk { white-space: nowrap; }
   .check-box { background: #fffaf0; border: 1px solid #f6ad55; border-radius: 6px; padding: 8px 14px; font-size: 13px; color: #7b341e; }
   .check-box ul { margin: 6px 0 0; padding-left: 20px; }
+
+  /* ---- 情境差異卡片：使用者自選要比較的兩個欄位，一張卡看一組差異 ---- */
+  .diff-section { margin-bottom: 16px; }
+  .diff-cards-row { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; }
+  .diff-card { flex: 1 1 360px; min-width: 320px; background: #f9fafb; border: 1px solid #e2e8f0;
+    border-radius: 8px; padding: 12px 14px; }
+  .diff-card-title { font-size: 13px; font-weight: 600; color: #2d3748; margin-bottom: 8px; }
+  .diff-card-title .diff-arrow { color: #a0aec0; margin: 0 4px; }
+  .diff-table { margin-top: 0; font-size: 12.5px; }
+  .diff-table tr.subtotal { background: #fffbe6; font-weight: 600; }
+  .diff-table td.negative, .diff-table th.negative { color: #c53030; }
+  .diff-chart-box { margin-top: 10px; min-height: 220px; background: #fff; border: 1px solid #eee;
+    border-radius: 6px; padding: 6px; }
 </style>

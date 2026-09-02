@@ -127,6 +127,29 @@ function saveVehicleGrid(vehicleTypeId, rows) {
 }
 
 /**
+ * 車系順序：跟目標某一列交換排序值(SortOrder)，立即生效並回傳最新順序。
+ * 讓「銷貨成本」「營業費用」矩陣頁面也能直接調車系順序，不必特地切去「車系設定」頁。
+ * 交換前先把目前顯示順序整批依序編號，確保每一列都有明確的 SortOrder 可以交換
+ * （原本留白的舊資料靠 sortByOrder_ 排在最後、彼此順序不定，直接互換空白值沒有意義）。
+ */
+function reorderVehicle(vehicleTypeId, vehicleId, direction) {
+  return withLock_(function () {
+    var vehicles = getVehicles(vehicleTypeId);
+    var idx = -1;
+    vehicles.forEach(function (v, i) { if (v.VehicleID === vehicleId) idx = i; });
+    if (idx === -1) throw new Error('找不到車系：' + vehicleId);
+    var targetIdx = idx + (direction < 0 ? -1 : 1);
+    if (targetIdx < 0 || targetIdx >= vehicles.length) return vehicles;
+    vehicles.forEach(function (v, i) { v.SortOrder = i; });
+    var tmp = vehicles[idx].SortOrder;
+    vehicles[idx].SortOrder = vehicles[targetIdx].SortOrder;
+    vehicles[targetIdx].SortOrder = tmp;
+    vehicles.forEach(function (v) { upsertRow_(SHEETS.VEHICLES, 'VehicleID', v); });
+    return getVehicles(vehicleTypeId);
+  });
+}
+
+/**
  * 車系代號重新命名：新增一列新代號、把所有引用舊代號的資料(銷售構成、銷貨成本、營業費用、
  * 費率覆寫、損益快照)一併改成新代號，最後刪掉舊代號那一列。開發總投是情境層級，不記車系，
  * 不受影響。
@@ -501,9 +524,14 @@ function saveDevInvestmentRow(rowObj) {
 function deleteDevInvestmentRow(rowId) {
   return withLock_(function () { return deleteRow_(SHEETS.DEV_INVESTMENT, 'RowID', rowId); });
 }
-/** 開發總投整批儲存（表格一次送出）；空白列(沒部門也沒金額)會被刪除 */
+/**
+ * 開發總投整批儲存（表格一次送出）；空白列(沒部門也沒金額)會被刪除。
+ * 部門列的順序使用者可以在畫面上用上下移動鈕調整，這裡依送出時的陣列順序重新編號 SortOrder，
+ * 讓 getDevInvestmentSummary 下次讀出來的順序跟畫面上調整過的一致（不是 Sheet 裡原本的列順序）。
+ */
 function saveDevInvestmentGrid(scenarioId, rows) {
   return withLock_(function () {
+    var order = 0;
     (rows || []).forEach(function (r) {
       var isEmpty = !r.Department && (r.Amount === '' || r.Amount === null || r.Amount === undefined);
       if (isEmpty) {
@@ -515,6 +543,7 @@ function saveDevInvestmentGrid(scenarioId, rows) {
         throw new Error('「' + (r.Department || '未命名部門') + '」有金額但沒有選攤提落點，請選擇這筆投資要攤到哪個損益科目。');
       }
       r.ScenarioID = scenarioId;
+      r.SortOrder = order++;
       upsertRow_(SHEETS.DEV_INVESTMENT, 'RowID', r);
     });
     return getDevInvestmentSummary(scenarioId);
@@ -571,8 +600,16 @@ function copyScenarioData(sourceScenarioId, targetScenarioId, parts) {
         SCHEMA[sheetName].forEach(function (h) { copy[h] = r[h]; });
         copy[pk] = '';                       // 產生新的鍵值，不要蓋到來源列
         copy.ScenarioID = targetScenarioId;
-        // 低減目標屬於目標情境自己的假設，帶入後歸零讓使用者重新填
-        if (sheetName === SHEETS.DEV_INVESTMENT) copy.ChallengeReductionPct = '';
+        if (sheetName === SHEETS.DEV_INVESTMENT) {
+          // 低減目標屬於目標情境自己的假設，帶入後歸零讓使用者重新填
+          copy.ChallengeReductionPct = '';
+          // 舊資料只有 AssetType、沒有 TargetLineCode 的列，平常是靠畫面顯示時(devAmortTargetOf_)
+          // 即時解析成攤提落點，使用者存檔那一刻才會真的寫回 Sheet —— 但帶入是直接複製原始列，
+          // 不會經過那次存檔，複製過去的仍是「TargetLineCode 空白」的舊格式列。
+          // 這裡直接把解析結果寫實，帶過去的列一律是已正規化的 TargetLineCode，
+          // 不必等使用者手動按一次儲存才補上，也不會因為漏了這一步而在畫面上顯示「(請選擇)」。
+          copy.TargetLineCode = devAmortTargetOf_(r);
+        }
         upsertRow_(sheetName, pk, copy);
       });
       copied[part] = sourceRows.length;

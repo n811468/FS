@@ -36,7 +36,7 @@ var SCHEMA = {
   CostOfSales: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'Currency',
     'Notes', 'EffectiveDate'],
   DevInvestment: ['RowID', 'ScenarioID', 'Department', 'AssetType',
-    'Amount', 'Currency', 'ChallengeReductionPct', 'Notes', 'EffectiveDate', 'TargetLineCode'],
+    'Amount', 'Currency', 'ChallengeReductionPct', 'Notes', 'EffectiveDate', 'TargetLineCode', 'SortOrder'],
   OperatingExpense: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'Notes', 'EffectiveDate'],
   Parameters: ['ParamID', 'ScenarioID', 'VehicleID', 'ParamName', 'Currency', 'Value', 'EffectiveDate'],
   PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'SortOrder', 'AutoSource', 'CommodityTaxDeduct', 'DevAmortCategory'],
@@ -200,3 +200,22 @@ var DEV_INVESTMENT_BASE_FACTORY_DEPT = 'BASE廠開發費';
 // ChallengeReductionPct 同樣以百分比數值(0~100)輸入及儲存(如 15 代表 15%)。
 // 挑戰低減目標屬於情境層級的假設：同一個 GATE 下的「現況」與「目標」情境各自填自己的低減目標，
 // 因此不需要額外欄位標記，直接由該情境的 DevInvestment 列決定。
+
+/**
+ * 純文字欄位（代號/名稱/備註等）：寫入 Sheet 前一律強制成純文字格式('@')，
+ * 否則 Sheet 預設的「自動偵測格式」會把長得像數字的字串（如情境名稱「0901」）
+ * 自動轉成數字 901，前面的 0 就這樣不見了，而且是在存檔當下悄悄發生、不會有任何錯誤訊息。
+ * 純數字/比率/日期欄位不列在這裡，維持原本的數字格式。
+ */
+var TEXT_COLUMNS = {
+  VehicleTypes: ['VehicleTypeID', 'Notes'],
+  Vehicles: ['VehicleID', 'VehicleTypeID', 'VehicleCode', 'Notes'],
+  Scenarios: ['ScenarioID', 'Gate', 'ScenarioName', 'ScenarioType', 'VehicleTypeID', 'CreatedBy', 'Notes'],
+  SalesMix: ['RowID', 'ScenarioID', 'VehicleID', 'ScrapFeeTaxStatus', 'Notes'],
+  CostOfSales: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Currency', 'Notes'],
+  DevInvestment: ['RowID', 'ScenarioID', 'Department', 'AssetType', 'Currency', 'Notes', 'TargetLineCode'],
+  OperatingExpense: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Notes'],
+  Parameters: ['ParamID', 'ScenarioID', 'VehicleID', 'ParamName', 'Currency'],
+  PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'AutoSource', 'CommodityTaxDeduct', 'DevAmortCategory'],
+  PLResult: ['ResultID', 'ScenarioID', 'VehicleID', 'LineCode']
+};

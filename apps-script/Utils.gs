@@ -28,25 +28,54 @@ function normalizeCellValue_(v) {
 }
 
 /**
- * 單次執行內的分頁讀取快取。
- * 一次損益計算會重複讀同一張表很多次（光是科目表 PLLineItems，每算一個車系就會被讀 5 次以上），
- * 每次都是一趟 Sheet API 呼叫，是頁面變慢的主因。這裡在同一次執行中把結果記起來，
- * 任何寫入都會整個清掉，所以不會讀到過期資料。
+ * 分頁讀取快取，分兩層：
+ *   1. 單次執行內的記憶體快取(SHEET_CACHE_) —— 一次損益計算會重複讀同一張表很多次
+ *      （光是科目表 PLLineItems，每算一個車系就會被讀 5 次以上），這層省掉同一次執行內的重複讀取。
+ *   2. 跨執行的 CacheService 快取 —— 每一次 google.script.run 呼叫都是全新的執行，
+ *      第 1 層每次都會是空的，切分頁、開儀表板等於每次都重新把用到的表整個讀一遍，
+ *      這是介面感覺卡頓的主因之一。這層把讀到的結果多存一份到 CacheService，
+ *      有效期內(SHEET_CACHE_TTL_)其他次執行可以直接用，不必再打一次 Sheets API。
+ * 任何寫入都會兩層一起清掉，所以不會讀到過期資料；資料太大存不進 CacheService(單筆上限 100KB)
+ * 就直接跳過快取，退回每次都讀 Sheet，不影響正確性，只是那張表沒有快取效果。
  * 注意：繞過 upsertRow_/deleteRow_ 直接寫 Sheet 的地方(SetupSheets、writePLResult_)
  * 必須自己呼叫 invalidateSheetCache_()。
  */
 var SHEET_CACHE_ = {};
+var SHEET_CACHE_TTL_SECONDS_ = 300; // 5 分鐘；資料一有異動就會主動清掉，這個 TTL 只是保險
+
+function sheetCacheKey_(sheetName) { return 'sheet_' + sheetName; }
 
 function invalidateSheetCache_(sheetName) {
-  if (sheetName) delete SHEET_CACHE_[sheetName];
-  else SHEET_CACHE_ = {};
+  var names = sheetName ? [sheetName] : Object.keys(SCHEMA);
+  var cache = CacheService.getScriptCache();
+  names.forEach(function (name) {
+    delete SHEET_CACHE_[name];
+    cache.remove(sheetCacheKey_(name));
+  });
+  if (!sheetName) SHEET_CACHE_ = {};
 }
 
 /** 把整張表讀成 [{欄位:值,...}, ...]，第一列為標題 */
 function sheetToObjects_(sheetName) {
   if (SHEET_CACHE_[sheetName]) return SHEET_CACHE_[sheetName];
+
+  var cache = CacheService.getScriptCache();
+  var cached = cache.get(sheetCacheKey_(sheetName));
+  if (cached) {
+    var fromCache = JSON.parse(cached);
+    SHEET_CACHE_[sheetName] = fromCache;
+    return fromCache;
+  }
+
   var rows = readSheetObjects_(sheetName);
   SHEET_CACHE_[sheetName] = rows;
+  try {
+    var json = JSON.stringify(rows);
+    // CacheService 單筆快取上限 100KB，留點餘裕；超過就不快取這張表，讀 Sheet 的正確性不受影響
+    if (json.length < 90000) cache.put(sheetCacheKey_(sheetName), json, SHEET_CACHE_TTL_SECONDS_);
+  } catch (e) {
+    // 序列化失敗(理論上不會，資料都是純值)也不影響功能，只是這次沒快取到
+  }
   return rows;
 }
 
@@ -115,15 +144,31 @@ function upsertRow_(sheetName, pkField, rowObj) {
   }
 
   var rowArray = headers.map(function (h) { return rowObj[h] !== undefined ? rowObj[h] : ''; });
-
-  if (targetRow === -1) {
-    sheet.appendRow(rowArray);
-  } else {
-    sheet.getRange(targetRow, 1, 1, rowArray.length).setValues([rowArray]);
-  }
+  var writeRow = targetRow === -1 ? lastRow + 1 : targetRow;
+  var range = sheet.getRange(writeRow, 1, 1, rowArray.length);
+  applyTextColumnFormats_(range, headers, sheetName);
+  range.setValues([rowArray]);
   invalidateSheetCache_(sheetName);
   logAudit_(sheetName, rowObj[pkField], targetRow === -1 ? 'INSERT' : 'UPDATE', rowObj);
   return rowObj;
+}
+
+/**
+ * 在寫入前把純文字欄位(TEXT_COLUMNS)的儲存格格式設成純文字('@')，
+ * 避免 Sheet 把「0901」這種看起來像數字的字串自動轉成 901。
+ * 用 getNumberFormats() 先讀出目前格式，只覆蓋純文字欄位那幾格，其餘欄位(金額/比率)維持原狀，
+ * 且只在格式真的需要改變時才寫入，避免每次存檔都多一次 API 呼叫。
+ */
+function applyTextColumnFormats_(range, headers, sheetName) {
+  var textCols = TEXT_COLUMNS[sheetName];
+  if (!textCols || !textCols.length) return;
+  var current = range.getNumberFormats()[0];
+  var changed = false;
+  var next = headers.map(function (h, i) {
+    if (textCols.indexOf(h) !== -1 && current[i] !== '@') { changed = true; return '@'; }
+    return current[i];
+  });
+  if (changed) range.setNumberFormats([next]);
 }
 
 function deleteRow_(sheetName, pkField, pkValue) {

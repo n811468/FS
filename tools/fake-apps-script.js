@@ -9,14 +9,25 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
+// Sheets 的「自動偵測格式」：純數字字串(含前導零)在一般格式('general')的儲存格裡
+// 會被自動轉成 Number，前導零因此消失；格式設成 '@'(純文字)就不會被轉換。
+// 這裡只模擬這一種會咬掉前導零的情況，其餘型別維持字串/數字原樣，足以驗證 applyTextColumnFormats_ 有沒有生效。
+function autoDetectCellValue_(v, format) {
+  if (format === '@') return v;
+  if (typeof v === 'string' && /^0\d+$/.test(v)) return Number(v);
+  return v;
+}
+
 class FakeSheet {
-  constructor(name) { this.name = name; this.grid = []; }
+  constructor(name) { this.name = name; this.grid = []; this.formats = []; }
   getName() { return this.name; }
   setFrozenRows() { }
 
   _ensure(rows, cols) {
     while (this.grid.length < rows) this.grid.push([]);
+    while (this.formats.length < rows) this.formats.push([]);
     this.grid.forEach(row => { while (row.length < cols) row.push(''); });
+    this.formats.forEach(row => { while (row.length < cols) row.push('general'); });
   }
   _filled(v) { return v !== '' && v !== null && v !== undefined; }
 
@@ -55,7 +66,10 @@ class FakeSheet {
       setValues(values) {
         sheet._ensure(row + nr - 1, col + nc - 1);
         for (let i = 0; i < nr; i++) {
-          for (let j = 0; j < nc; j++) sheet.grid[row - 1 + i][col - 1 + j] = values[i][j];
+          for (let j = 0; j < nc; j++) {
+            const fmt = sheet.formats[row - 1 + i][col - 1 + j];
+            sheet.grid[row - 1 + i][col - 1 + j] = autoDetectCellValue_(values[i][j], fmt);
+          }
         }
       },
       clearContent() {
@@ -64,7 +78,22 @@ class FakeSheet {
         }
       },
       getValue() { return sheet.grid[row - 1][col - 1]; },
-      setValue(v) { sheet._ensure(row, col); sheet.grid[row - 1][col - 1] = v; }
+      setValue(v) { sheet._ensure(row, col); sheet.grid[row - 1][col - 1] = v; },
+      getNumberFormats() {
+        const out = [];
+        for (let i = 0; i < nr; i++) {
+          const line = [];
+          for (let j = 0; j < nc; j++) line.push(sheet.formats[row - 1 + i][col - 1 + j]);
+          out.push(line);
+        }
+        return out;
+      },
+      setNumberFormats(formats) {
+        sheet._ensure(row + nr - 1, col + nc - 1);
+        for (let i = 0; i < nr; i++) {
+          for (let j = 0; j < nc; j++) sheet.formats[row - 1 + i][col - 1 + j] = formats[i][j];
+        }
+      }
     };
   }
 }
@@ -75,6 +104,36 @@ class FakeSpreadsheet {
   insertSheet(name) { const s = new FakeSheet(name); this.sheets.push(s); return s; }
   getSheets() { return this.sheets.slice(); }
   deleteSheet(sheet) { this.sheets = this.sheets.filter(s => s !== sheet); }
+}
+
+/**
+ * 假的 PropertiesService／CacheService：純記憶體版，Firestore 用戶端測試用來放假的服務帳戶
+ * 設定值、假的 access token 快取，行為只求跟真的介面一致，不模擬過期時間等細節。
+ */
+class FakeProperties {
+  constructor() { this.map = {}; }
+  getProperty(key) { return this.map[key] !== undefined ? this.map[key] : null; }
+  setProperty(key, value) { this.map[key] = value; return this; }
+  deleteProperty(key) { delete this.map[key]; return this; }
+}
+class FakeCache {
+  constructor() { this.map = {}; }
+  get(key) { return this.map[key] !== undefined ? this.map[key] : null; }
+  put(key, value) { this.map[key] = value; }
+  remove(key) { delete this.map[key]; }
+}
+
+/**
+ * 假的 UrlFetchApp：預設直接丟錯（測資料庫/計算引擎的腳本本來就不該打真的網路)。
+ * 需要測 Firestore 用戶端的腳本，載入後把 context.UrlFetchApp.fetch 換成自己的假回應函式即可
+ * (見 tools/verify-firestore-client.js)，藉此攔截請求、檢查內容、回傳假資料，不必真的連線。
+ */
+function makeFakeUrlFetchApp_() {
+  return {
+    fetch(url, options) {
+      throw new Error('FakeUrlFetchApp.fetch 未提供假回應，呼叫了：' + url);
+    }
+  };
 }
 
 /** 載入 apps-script 的 .gs 檔並回傳可以直接呼叫其中函式的 context */
@@ -92,14 +151,30 @@ function loadAppsScript(files) {
     LockService: { getScriptLock: () => ({ waitLock() { }, releaseLock() { } }) },
     Utilities: {
       getUuid: () => 'uuid' + String(++uuidSeq).padStart(8, '0'),
-      formatDate: (d) => d.toISOString().slice(0, 10)
+      formatDate: (d) => d.toISOString().slice(0, 10),
+      newBlob: (str) => ({ getBytes: () => Buffer.from(str, 'utf8') }),
+      base64EncodeWebSafe: (bytes) => {
+        const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+        return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_');
+      },
+      // 真的 Apps Script 回傳 byte array；這裡用 Node crypto 簽 RSA-SHA256，回傳 Buffer(呼叫端當 byte array 用)
+      computeRsaSha256Signature: (input, privateKeyPem) => {
+        const crypto = require('crypto');
+        const signer = crypto.createSign('RSA-SHA256');
+        signer.update(input);
+        signer.end();
+        return signer.sign(privateKeyPem);
+      }
     },
     Session: {
       getScriptTimeZone: () => 'Asia/Taipei',
       getActiveUser: () => ({ getEmail: () => 'verify@local' })
     },
     Logger: { log: () => { } },
-    HtmlService: null
+    HtmlService: null,
+    PropertiesService: { getScriptProperties: () => (context.__scriptProperties || (context.__scriptProperties = new FakeProperties())) },
+    CacheService: { getScriptCache: () => (context.__scriptCache || (context.__scriptCache = new FakeCache())) },
+    UrlFetchApp: makeFakeUrlFetchApp_()
   };
   vm.createContext(context);
 
