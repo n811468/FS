@@ -115,15 +115,31 @@ function upsertRow_(sheetName, pkField, rowObj) {
   }
 
   var rowArray = headers.map(function (h) { return rowObj[h] !== undefined ? rowObj[h] : ''; });
-
-  if (targetRow === -1) {
-    sheet.appendRow(rowArray);
-  } else {
-    sheet.getRange(targetRow, 1, 1, rowArray.length).setValues([rowArray]);
-  }
+  var writeRow = targetRow === -1 ? lastRow + 1 : targetRow;
+  var range = sheet.getRange(writeRow, 1, 1, rowArray.length);
+  applyTextColumnFormats_(range, headers, sheetName);
+  range.setValues([rowArray]);
   invalidateSheetCache_(sheetName);
   logAudit_(sheetName, rowObj[pkField], targetRow === -1 ? 'INSERT' : 'UPDATE', rowObj);
   return rowObj;
+}
+
+/**
+ * 在寫入前把純文字欄位(TEXT_COLUMNS)的儲存格格式設成純文字('@')，
+ * 避免 Sheet 把「0901」這種看起來像數字的字串自動轉成 901。
+ * 用 getNumberFormats() 先讀出目前格式，只覆蓋純文字欄位那幾格，其餘欄位(金額/比率)維持原狀，
+ * 且只在格式真的需要改變時才寫入，避免每次存檔都多一次 API 呼叫。
+ */
+function applyTextColumnFormats_(range, headers, sheetName) {
+  var textCols = TEXT_COLUMNS[sheetName];
+  if (!textCols || !textCols.length) return;
+  var current = range.getNumberFormats()[0];
+  var changed = false;
+  var next = headers.map(function (h, i) {
+    if (textCols.indexOf(h) !== -1 && current[i] !== '@') { changed = true; return '@'; }
+    return current[i];
+  });
+  if (changed) range.setNumberFormats([next]);
 }
 
 function deleteRow_(sheetName, pkField, pkValue) {

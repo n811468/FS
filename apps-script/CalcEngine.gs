@@ -425,7 +425,8 @@ function getDevInvestmentSummary(scenarioId) {
   getPLLineItems().forEach(function (d) { lineNames[d.LineCode] = d.LineName; });
   var targetOptions = getDevAmortTargetOptions();
 
-  var rows = getDevInvestment(scenarioId).map(function (r) {
+  // 部門列的呈現順序使用者可以自己在畫面上調整(拖不動用上下移動鈕)，留白排最後、相對順序穩定
+  var rows = sortByOrder_(getDevInvestment(scenarioId), 'SortOrder').map(function (r) {
     var pctValue = isBaseline ? 0 : toNumber_(r.ChallengeReductionPct);
     var target = devAmortTargetOf_(r);
     return {
@@ -438,7 +439,8 @@ function getDevInvestmentSummary(scenarioId) {
       ReducedAmount: toNumber_(r.Amount) * (1 - pctValue / 100),
       // 這一列的錢會攤到哪個科目，直接寫在畫面上（只給名稱，代碼對選擇沒有幫助）
       TargetLineCode: target,
-      TargetLineName: target ? (lineNames[target] || target) : ''
+      TargetLineName: target ? (lineNames[target] || target) : '',
+      SortOrder: r.SortOrder === undefined || r.SortOrder === '' ? '' : r.SortOrder
     };
   });
   var scenario = getScenarios().filter(function (s) { return s.ScenarioID === scenarioId; })[0] || {};

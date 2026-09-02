@@ -303,7 +303,7 @@ function drawEntityGrid(key) {
   const body = rows.length
     ? rows.map((r, i) => `<tr${r.__existing ? '' : ' class="new-row"'}>
         ${cfg.columns.map(col => entityCellHtml(key, i, col, r)).join('')}
-        <td>${entityRowActionHtml(key, i, r)}</td>
+        <td class="row-actions">${entityRowActionHtml(key, i, r, rows.length)}</td>
       </tr>`).join('')
     : `<tr><td class="muted" colspan="${cfg.columns.length + 1}">尚無資料</td></tr>`;
 
@@ -314,6 +314,8 @@ function drawEntityGrid(key) {
         <tbody>${body}</tbody>
       </table>
     </div>`;
+
+  if (key === 'scenarios') autoFillNewScenarioName_();
 
   if (pendingStatus && pendingStatus.key === key) {
     setStatus(key, pendingStatus.text, pendingStatus.cls);
@@ -344,17 +346,49 @@ function entityCellHtml(key, i, col, row) {
     oninput="onEntityField('${key}', ${i}, '${col.name}', this.value)"></td>`;
 }
 
-function entityRowActionHtml(key, i, row) {
+function entityHasSortOrder(key) {
+  return ENTITIES[key].columns.some(c => c.name === 'SortOrder');
+}
+
+/** 有排序值(SortOrder)的表格才給上下移動鈕：直接跟前/後一列交換排序值，比自己打數字調順序直覺 */
+function moveButtonsHtml(key, i, total) {
+  if (!entityHasSortOrder(key)) return '';
+  return `<button type="button" class="btn secondary row-move" title="往上移" ${i === 0 ? 'disabled' : ''}
+      onclick="moveEntityRow('${key}', ${i}, -1)">▲</button>` +
+    `<button type="button" class="btn secondary row-move" title="往下移" ${i === total - 1 ? 'disabled' : ''}
+      onclick="moveEntityRow('${key}', ${i}, 1)">▼</button>`;
+}
+
+/**
+ * 上下移動：交換這一列跟相鄰列的排序值(SortOrder)與陣列位置，畫面馬上照新順序重排，
+ * 不必先按儲存才看得到效果；跟其他修改一樣，最後按「儲存」才會真的送出。
+ * 新增列(還沒存檔、沒有既有 SortOrder)只搬陣列位置，跟已存在列的排序值互換沒有意義。
+ */
+function moveEntityRow(key, i, dir) {
+  const rows = entityRows[key];
+  const j = i + dir;
+  if (j < 0 || j >= rows.length) return;
+  const a = rows[i], b = rows[j];
+  if (a.SortOrder !== '' && a.SortOrder !== undefined && a.SortOrder !== null &&
+      b.SortOrder !== '' && b.SortOrder !== undefined && b.SortOrder !== null) {
+    const tmp = a.SortOrder; a.SortOrder = b.SortOrder; b.SortOrder = tmp;
+  }
+  rows[i] = b; rows[j] = a;
+  drawEntityGrid(key);
+}
+
+function entityRowActionHtml(key, i, row, total) {
+  const move = moveButtonsHtml(key, i, total);
   if (!row.__existing) {
-    return `<button type="button" class="btn secondary" onclick="removeEntityRow('${key}', ${i})">移除</button>`;
+    return move + `<button type="button" class="btn secondary" onclick="removeEntityRow('${key}', ${i})">移除</button>`;
   }
   const cfg = ENTITIES[key];
   const renameBtn = cfg.renameFn
     ? `<button type="button" class="btn secondary" onclick="renameEntityRow('${key}', ${i})">重新命名</button>` : '';
   if (key === 'lineitems' && isFixedLineItem(row)) {
-    return renameBtn + '<span class="muted">不可刪除</span>';
+    return move + renameBtn + '<span class="muted">不可刪除</span>';
   }
-  return renameBtn + `<button type="button" class="btn danger" onclick="deleteEntityRow('${key}', ${i})">刪除</button>`;
+  return move + renameBtn + `<button type="button" class="btn danger" onclick="deleteEntityRow('${key}', ${i})">刪除</button>`;
 }
 
 /**
@@ -387,6 +421,32 @@ function renameEntityRow(key, i) {
 
 function onEntityField(key, i, field, value) {
   entityRows[key][i][field] = value;
+  if (key === 'scenarios' && (field === 'CreatedDate' || field === 'ScenarioType')) {
+    autoFillScenarioName_(i);
+  }
+}
+
+/** yyyy-MM-dd -> "MMDD"，用來組情境名稱的日期後綴 */
+function dateToMMDD_(dateStr) {
+  const m = String(dateStr || '').match(/^\d{4}-(\d{2})-(\d{2})/);
+  return m ? m[1] + m[2] : '';
+}
+
+/**
+ * 情境名稱自動帶入：選了建立日期(或改了情境性質)後，把名稱補成「情境性質+MMDD」(如「現況0901」)。
+ * 只在名稱是空白、或還是上一次自動帶入的值時才覆蓋 —— 使用者手動打過的名稱不會被蓋掉，
+ * 蓋掉之後再打的字仍算「手動」，之後就算又改日期也不會再被自動帶入的值覆蓋。
+ */
+function autoFillScenarioName_(i) {
+  const row = entityRows.scenarios[i];
+  const suffix = dateToMMDD_(row.CreatedDate);
+  if (!suffix) return;
+  const auto = (row.ScenarioType || '') + suffix;
+  if (!row.ScenarioName || row.ScenarioName === row.__scenarioNameAuto) {
+    row.ScenarioName = auto;
+    row.__scenarioNameAuto = auto;
+    drawEntityGrid('scenarios');
+  }
 }
 
 function addEntityRow(key) {
@@ -495,10 +555,10 @@ function scenarioToolbarHtml() {
           <select id="new-scenario-gate">${GATE_OPTIONS.map(g => `<option value="${g}">${g}</option>`).join('')}</select>
         </label>
         <label>情境名稱
-          <input id="new-scenario-name" type="text" style="width:170px;" placeholder="例：目標 26/8">
+          <input id="new-scenario-name" type="text" style="width:170px;" placeholder="例：現況0901">
         </label>
         <label>情境性質
-          <select id="new-scenario-type">${SCENARIO_TYPES.map(t => `<option value="${t}">${t}</option>`).join('')}</select>
+          <select id="new-scenario-type" onchange="autoFillNewScenarioName_()">${SCENARIO_TYPES.map(t => `<option value="${t}">${t}</option>`).join('')}</select>
         </label>
         <label>以既有情境為基礎
           <select id="new-scenario-source">
@@ -524,6 +584,19 @@ function selectedCopyParts() {
   return SCENARIO_COPY_PARTS
     .filter(p => { const el = document.getElementById('copy-part-' + p.key); return el && el.checked; })
     .map(p => p.key);
+}
+
+/** 「新增情境」表單：情境性質改變時，名稱欄位還是空白或還是上次自動帶入的值，就重新帶一次(性質+今天MMDD) */
+let newScenarioNameAuto_ = '';
+function autoFillNewScenarioName_() {
+  const nameEl = document.getElementById('new-scenario-name');
+  const typeEl = document.getElementById('new-scenario-type');
+  if (!nameEl || !typeEl) return;
+  const auto = (typeEl.value || '') + dateToMMDD_(today());
+  if (!nameEl.value || nameEl.value === newScenarioNameAuto_) {
+    nameEl.value = auto;
+    newScenarioNameAuto_ = auto;
+  }
 }
 
 function createScenario() {
@@ -814,7 +887,7 @@ function drawMatrix(key) {
       <tbody>
         ${data.lines.map(line => `
           <tr data-line="${esc(line.value)}">
-            <td class="row-head">${esc(line.label)}</td>
+            <td class="row-head">${esc(matrixLineName(line))}</td>
             ${currencyCell(line)}
             ${data.vehicles.map(v => {
               const cell = (data.values[line.value] || {})[v.VehicleID] || {};
@@ -828,7 +901,7 @@ function drawMatrix(key) {
           </tr>`).join('')}
         ${(data.autoLines || []).map(line => `
           <tr class="auto-line" data-line="${esc(line.value)}">
-            <td class="row-head" title="${esc(line.label)}">${esc(shortLineName(line.label))} <span class="auto-tag">自動</span></td>
+            <td class="row-head">${esc(matrixLineName(line))} <span class="auto-tag">自動</span></td>
             ${cfg.hasCurrency ? '<td></td>' : ''}
             ${data.vehicles.map(v => autoLineCellHtml(data, line.value, v.VehicleID)).join('')}
             <td class="calc muted">—</td><td colspan="2" class="muted">系統自動算出，不能編輯</td>
@@ -1025,7 +1098,7 @@ function drawDevGrid() {
     <div class="grid-scroll">
     <table class="grid-table">
       <thead><tr>
-        <th>部門</th><th>大類</th><th>攤提落點</th><th>金額</th><th>幣別</th>
+        <th></th><th>部門</th><th>大類</th><th>攤提落點</th><th>金額</th><th>幣別</th>
         ${isTarget ? '<th>挑戰低減目標%</th><th>低減後金額</th>' : ''}
         <th>備註</th><th></th>
       </tr></thead>
@@ -1035,6 +1108,12 @@ function drawDevGrid() {
           const targetOptions = (devSummary.targetOptions || []).filter(o => !category || o.category === category);
           return `
           <tr>
+            <td class="row-actions">
+              <button type="button" class="btn secondary row-move" title="往上移" ${i === 0 ? 'disabled' : ''}
+                onclick="moveDevRow(${i}, -1)">▲</button>
+              <button type="button" class="btn secondary row-move" title="往下移" ${i === devRows.length - 1 ? 'disabled' : ''}
+                onclick="moveDevRow(${i}, 1)">▼</button>
+            </td>
             <td><input type="text" list="dev-departments" value="${esc(r.Department)}" oninput="onDevField(${i}, 'Department', this.value)"></td>
             <td><select onchange="onDevCategoryChange(${i}, this.value)">
               <option value="">(請選擇)</option>
@@ -1050,8 +1129,8 @@ function drawDevGrid() {
               ${(devSummary.currencies || ['TWD']).map(c => `<option value="${c}"${(r.Currency || 'TWD') === c ? ' selected' : ''}>${c}</option>`).join('')}
             </select></td>
             ${isTarget ? `
-              <td><input type="number" step="any" value="${esc(r.ChallengeReductionPct)}" oninput="onDevField(${i}, 'ChallengeReductionPct', this.value)"></td>
-              <td class="calc" id="dev-reduced-${i}">${fmt(num(r.Amount) * (1 - num(r.ChallengeReductionPct) / 100))}</td>` : ''}
+              <td><input type="number" step="any" id="dev-pct-${i}" value="${esc(r.ChallengeReductionPct)}" oninput="onDevPctInput(${i}, this.value)"></td>
+              <td><input type="number" step="any" id="dev-reduced-${i}" value="${esc(devReducedAmount(r))}" oninput="onDevReducedInput(${i}, this.value)"></td>` : ''}
             <td><input type="text" value="${esc(r.Notes)}" oninput="onDevField(${i}, 'Notes', this.value)"></td>
             <td><button type="button" class="btn danger" onclick="removeDevRow(${i})">刪除</button></td>
           </tr>`;
@@ -1084,8 +1163,36 @@ function drawDevGrid() {
 
 function onDevField(i, field, value) {
   devRows[i][field] = value;
+  syncDevReduced_(i);
+}
+
+/** 低減後金額 = 金額 × (1 - 低減目標%/100)，四捨五入到整數方便對數字 */
+function devReducedAmount(r) {
+  return Math.round(num(r.Amount) * (1 - num(r.ChallengeReductionPct) / 100));
+}
+
+/** 金額或低減目標%改變時，重算低減後金額欄位(輸入框直接改值，不必整個重畫表格) */
+function syncDevReduced_(i) {
   const cell = document.getElementById('dev-reduced-' + i);
-  if (cell) cell.textContent = fmt(num(devRows[i].Amount) * (1 - num(devRows[i].ChallengeReductionPct) / 100));
+  if (cell) cell.value = devReducedAmount(devRows[i]);
+}
+
+/** 直接改低減目標%：正常方向，順著改低減後金額 */
+function onDevPctInput(i, value) {
+  devRows[i].ChallengeReductionPct = value;
+  syncDevReduced_(i);
+}
+
+/**
+ * 雙向試算：直接輸入「低減後金額」時反推低減目標%（金額固定不動），
+ * 這樣使用者不管是先想好目標低減成多少金額、還是先想好要砍幾%，都可以直接填那一欄。
+ */
+function onDevReducedInput(i, value) {
+  const amount = num(devRows[i].Amount);
+  const reduced = num(value);
+  devRows[i].ChallengeReductionPct = amount ? Math.round((1 - reduced / amount) * 10000) / 100 : 0;
+  const pctInput = document.getElementById('dev-pct-' + i);
+  if (pctInput) pctInput.value = devRows[i].ChallengeReductionPct;
 }
 function addDevRow() {
   devRows.push({ RowID: '', Department: '', TargetLineCode: '', Amount: '', Currency: 'TWD', ChallengeReductionPct: '', Notes: '' });
@@ -1130,6 +1237,13 @@ function saveAmortBasis() {
     }))
     .withFailureHandler(err => setStatus('devinvestment', '錯誤：' + err.message, 'err'))
     .saveAmortBasis(currentScenarioId, val('dev-amort-vol'), val('dev-amort-years'));
+}
+/** 上下移動部門列：只搬陣列順序，實際的 SortOrder 由後端在儲存時依送出順序重新編號 */
+function moveDevRow(i, dir) {
+  const j = i + dir;
+  if (j < 0 || j >= devRows.length) return;
+  const tmp = devRows[i]; devRows[i] = devRows[j]; devRows[j] = tmp;
+  drawDevGrid();
 }
 function removeDevRow(i) {
   // 清空欄位即可：儲存時後端會把空白列(含既有 RowID)刪掉
@@ -1412,7 +1526,8 @@ function moveComparisonColumn(idx, dir) {
 function renderComparisonColumns() {
   const box = document.getElementById('comparison-columns');
   if (!comparisonSelections.length) { box.innerHTML = '<p class="muted">尚未加入比較欄位。</p>'; return; }
-  box.innerHTML = '<div class="toolbar">' + comparisonSelections.map((sel, i) => {
+  box.innerHTML = `<p class="muted">拖曳卡片，或用左右箭頭調整比較欄位的順序：</p>` +
+    '<div class="toolbar cmp-chip-row" id="cmp-chip-row">' + comparisonSelections.map((sel, i) => {
     const type = comparisonOptions.find(t => t.scenarios.some(s => s.ScenarioID === sel.ScenarioID));
     const scenario = type && type.scenarios.find(s => s.ScenarioID === sel.ScenarioID);
     const vehicle = type && type.vehicles.find(v => v.VehicleID === sel.VehicleID);
@@ -1421,7 +1536,10 @@ function renderComparisonColumns() {
       scenario ? scenarioLabel(scenario) : sel.ScenarioID,
       sel.VehicleID ? ((vehicle && vehicle.VehicleCode) || sel.VehicleID) : '加權平均'
     ].filter(p => p).join(' / ');
-    return `<span class="cmp-chip">
+    return `<span class="cmp-chip" draggable="true" data-idx="${i}"
+        ondragstart="onChipDragStart(event, ${i})" ondragover="onChipDragOver(event)"
+        ondrop="onChipDrop(event, ${i})" ondragend="onChipDragEnd(event)">
+      <span class="chip-handle" title="拖曳調整順序">⠿</span>
       <button type="button" class="chip-move" title="往左移" ${i === 0 ? 'disabled' : ''}
         onclick="moveComparisonColumn(${i}, -1)">◀</button>
       <span class="chip-label">${esc(label)}</span>
@@ -1431,11 +1549,38 @@ function renderComparisonColumns() {
   }).join('') + `<button type="button" class="btn secondary" onclick="clearComparisonColumns()">全部清除</button></div>`;
 }
 
+/* ---- 比較欄位卡片可直接拖曳調整順序，比只能按左右箭頭一次一步更直覺 ---- */
+let dragChipFrom_ = null;
+function onChipDragStart(e, i) {
+  dragChipFrom_ = i;
+  e.dataTransfer.effectAllowed = 'move';
+  e.currentTarget.classList.add('dragging');
+}
+function onChipDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+}
+function onChipDrop(e, i) {
+  e.preventDefault();
+  if (dragChipFrom_ === null || dragChipFrom_ === i) return;
+  const [moved] = comparisonSelections.splice(dragChipFrom_, 1);
+  comparisonSelections.splice(i, 0, moved);
+  dragChipFrom_ = null;
+  renderComparisonColumns();
+  refreshDashboard();
+}
+function onChipDragEnd() {
+  dragChipFrom_ = null;
+  const row = document.getElementById('cmp-chip-row');
+  if (row) row.querySelectorAll('.cmp-chip.dragging').forEach(el => el.classList.remove('dragging'));
+}
+
 /* ---- 儀表板顯示選項（切換時只重畫，不重算） ---- */
 let pctBase = 'exfactory';            // 'exfactory' = 對廠價(未稅) / 'revenue' = 對收入A / 'none' = 不顯示
 let showPriceStructure = true;        // 是否顯示 P1~P9 售價結構
 let chartLineCodes = ['A', 'K'];      // 圖表要畫哪幾個科目
 let collapsedGroups = new Set();      // 目前收合中的大項(B/E/G/I)，切換 % 基準等重畫時要保留住
+let showDiffCards = false;            // 是否顯示「情境差異卡片」(相鄰比較欄位兩兩相減)
 
 function refreshDashboard() {
   const content = document.getElementById('dashboard-content');
@@ -1461,6 +1606,7 @@ function renderDashboard(result) {
     ${dashboardToolbarHtml()}
     ${subtotalCheckHtml(cols)}
     <div id="csv-output" style="display:none;"></div>
+    ${diffCardsHtml(cols, lines)}
     ${chartSectionHtml(cols, lines)}
     <div class="grid-scroll">${plTableHtml(cols, lines)}</div>
   `;
@@ -1482,10 +1628,54 @@ function dashboardToolbarHtml() {
         <input type="checkbox"${showPriceStructure ? ' checked' : ''} onchange="setShowPriceStructure(this.checked)">
         顯示售價結構(P1~P9)
       </label>
+      <label class="chk">
+        <input type="checkbox"${showDiffCards ? ' checked' : ''} onchange="setShowDiffCards(this.checked)">
+        顯示情境差異卡片
+      </label>
       <button type="button" class="btn secondary" onclick="toggleAllGroups()">全部收合/展開大項</button>
       <span class="toolbar-sep"></span>
       <button type="button" class="btn secondary" onclick="showComparisonCsv()">匯出 CSV</button>
     </div>`;
+}
+function setShowDiffCards(v) { showDiffCards = v; renderDashboard(lastComparison); }
+
+/**
+ * 情境差異卡片：把目前依序排好的比較欄位，相鄰兩兩相減（上一欄 → 下一欄），
+ * 只挑小計/毛利/淨利等關鍵科目，避免每個明細都列出來反而看不出重點。
+ * 順序是使用者自己在比較欄位卡片上排的（見 renderComparisonColumns 的拖曳/左右移），
+ * 想比「現況 vs 目標」或「不同時間點的現況」，把兩欄排在一起即可。
+ */
+function diffCardsHtml(cols, lines) {
+  if (!showDiffCards) return '';
+  if (cols.length < 2) {
+    return '<p class="muted">情境差異卡片至少要有兩個比較欄位，且順序上要相鄰(如現況緊接著目標)才會拿來相減。</p>';
+  }
+  const keyLines = lines.filter(l => !l.isPriceStructure && (l.isSubtotal || l.LineCode === 'A'));
+  const cards = [];
+  for (let i = 1; i < cols.length; i++) {
+    const a = cols[i - 1], b = cols[i];
+    const rows = keyLines.map(l => {
+      const va = a.amounts[l.LineCode], vb = b.amounts[l.LineCode];
+      if (va === undefined || va === null || vb === undefined || vb === null) return '';
+      const delta = vb - va;
+      const pct = va ? (delta / Math.abs(va) * 100) : null;
+      const cls = delta < 0 ? ' negative' : '';
+      return `<tr class="${l.isSubtotal ? 'subtotal' : ''}">
+        <td class="row-head">${esc(shortLineName(l.LineName))}</td>
+        <td>${fmt(va)}</td><td>${fmt(vb)}</td>
+        <td class="${cls}">${delta >= 0 ? '+' : ''}${fmt(delta)}</td>
+        <td class="${cls}">${pct === null ? '—' : (pct >= 0 ? '+' : '') + pct.toFixed(1) + '%'}</td>
+      </tr>`;
+    }).join('');
+    cards.push(`<div class="diff-card">
+      <div class="diff-card-title">${esc(a.label)} <span class="diff-arrow">→</span> ${esc(b.label)}</div>
+      <table class="grid-table diff-table">
+        <thead><tr><th>項目</th><th>${esc(a.vehicleLabel || a.label)}</th><th>${esc(b.vehicleLabel || b.label)}</th><th>差異</th><th>差異%</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`);
+  }
+  return `<div class="diff-cards-row">${cards.join('')}</div>`;
 }
 
 /**
@@ -1495,21 +1685,17 @@ function dashboardToolbarHtml() {
  */
 function chartSectionHtml(cols, lines) {
   const chartable = lines.filter(l => !l.isPriceStructure);
-  const refCol = cols[0];
   return `
     <div class="charts-row">
       <div class="chart-picker-box">
-        <div class="toolbar-block-title">柱狀圖科目（可複選，即時重畫）</div>
-        ${refCol ? `<div class="legend-source-hint">金額參考：${esc(refCol.label)}</div>` : ''}
+        <div class="toolbar-block-title">柱狀圖科目</div>
         <div class="legend-list" id="chart-lines">
           ${chartable.map(l => {
             const on = chartLineCodes.indexOf(l.LineCode) !== -1;
-            const val = refCol ? refCol.amounts[l.LineCode] : undefined;
             return `<label class="legend-item${on ? ' on' : ''}">
               <input type="checkbox" value="${esc(l.LineCode)}"${on ? ' checked' : ''}
                 onchange="onChartLineToggle(this.value, this.checked, this)">
               <span class="legend-name">${esc(shortLineName(l.LineName))}</span>
-              ${val !== undefined && val !== null ? `<span class="legend-val">${fmt(val)}</span>` : ''}
             </label>`;
           }).join('')}
         </div>
@@ -1526,6 +1712,18 @@ function shortLineName(name) {
   const s = String(name || '');
   const cut = s.indexOf('(');
   return cut > 1 ? s.slice(0, cut) : s;
+}
+
+/**
+ * 銷貨成本/營業費用矩陣的項目名稱：後端下拉選單的 label 是「代碼 名稱」(如「b1 材料成本-LP」)，
+ * 方便在選單裡找科目，但列在表格最左欄時不需要再看到代碼 —— 跟畫面上其他地方一樣只顯示名稱，
+ * 不要一半有代碼一半沒有（也不要靠 title/hover 才看得到代碼，看不懂代碼是什麼意思）。
+ */
+function matrixLineName(line) {
+  const label = String(line.label || '');
+  const code = String(line.value || '');
+  const withoutCode = code && label.indexOf(code + ' ') === 0 ? label.slice(code.length + 1) : label;
+  return shortLineName(withoutCode);
 }
 
 function onChartLineToggle(code, checked, el) {

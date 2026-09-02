@@ -9,14 +9,25 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
+// Sheets 的「自動偵測格式」：純數字字串(含前導零)在一般格式('general')的儲存格裡
+// 會被自動轉成 Number，前導零因此消失；格式設成 '@'(純文字)就不會被轉換。
+// 這裡只模擬這一種會咬掉前導零的情況，其餘型別維持字串/數字原樣，足以驗證 applyTextColumnFormats_ 有沒有生效。
+function autoDetectCellValue_(v, format) {
+  if (format === '@') return v;
+  if (typeof v === 'string' && /^0\d+$/.test(v)) return Number(v);
+  return v;
+}
+
 class FakeSheet {
-  constructor(name) { this.name = name; this.grid = []; }
+  constructor(name) { this.name = name; this.grid = []; this.formats = []; }
   getName() { return this.name; }
   setFrozenRows() { }
 
   _ensure(rows, cols) {
     while (this.grid.length < rows) this.grid.push([]);
+    while (this.formats.length < rows) this.formats.push([]);
     this.grid.forEach(row => { while (row.length < cols) row.push(''); });
+    this.formats.forEach(row => { while (row.length < cols) row.push('general'); });
   }
   _filled(v) { return v !== '' && v !== null && v !== undefined; }
 
@@ -55,7 +66,10 @@ class FakeSheet {
       setValues(values) {
         sheet._ensure(row + nr - 1, col + nc - 1);
         for (let i = 0; i < nr; i++) {
-          for (let j = 0; j < nc; j++) sheet.grid[row - 1 + i][col - 1 + j] = values[i][j];
+          for (let j = 0; j < nc; j++) {
+            const fmt = sheet.formats[row - 1 + i][col - 1 + j];
+            sheet.grid[row - 1 + i][col - 1 + j] = autoDetectCellValue_(values[i][j], fmt);
+          }
         }
       },
       clearContent() {
@@ -64,7 +78,22 @@ class FakeSheet {
         }
       },
       getValue() { return sheet.grid[row - 1][col - 1]; },
-      setValue(v) { sheet._ensure(row, col); sheet.grid[row - 1][col - 1] = v; }
+      setValue(v) { sheet._ensure(row, col); sheet.grid[row - 1][col - 1] = v; },
+      getNumberFormats() {
+        const out = [];
+        for (let i = 0; i < nr; i++) {
+          const line = [];
+          for (let j = 0; j < nc; j++) line.push(sheet.formats[row - 1 + i][col - 1 + j]);
+          out.push(line);
+        }
+        return out;
+      },
+      setNumberFormats(formats) {
+        sheet._ensure(row + nr - 1, col + nc - 1);
+        for (let i = 0; i < nr; i++) {
+          for (let j = 0; j < nc; j++) sheet.formats[row - 1 + i][col - 1 + j] = formats[i][j];
+        }
+      }
     };
   }
 }

@@ -501,9 +501,14 @@ function saveDevInvestmentRow(rowObj) {
 function deleteDevInvestmentRow(rowId) {
   return withLock_(function () { return deleteRow_(SHEETS.DEV_INVESTMENT, 'RowID', rowId); });
 }
-/** 開發總投整批儲存（表格一次送出）；空白列(沒部門也沒金額)會被刪除 */
+/**
+ * 開發總投整批儲存（表格一次送出）；空白列(沒部門也沒金額)會被刪除。
+ * 部門列的順序使用者可以在畫面上用上下移動鈕調整，這裡依送出時的陣列順序重新編號 SortOrder，
+ * 讓 getDevInvestmentSummary 下次讀出來的順序跟畫面上調整過的一致（不是 Sheet 裡原本的列順序）。
+ */
 function saveDevInvestmentGrid(scenarioId, rows) {
   return withLock_(function () {
+    var order = 0;
     (rows || []).forEach(function (r) {
       var isEmpty = !r.Department && (r.Amount === '' || r.Amount === null || r.Amount === undefined);
       if (isEmpty) {
@@ -515,6 +520,7 @@ function saveDevInvestmentGrid(scenarioId, rows) {
         throw new Error('「' + (r.Department || '未命名部門') + '」有金額但沒有選攤提落點，請選擇這筆投資要攤到哪個損益科目。');
       }
       r.ScenarioID = scenarioId;
+      r.SortOrder = order++;
       upsertRow_(SHEETS.DEV_INVESTMENT, 'RowID', r);
     });
     return getDevInvestmentSummary(scenarioId);
