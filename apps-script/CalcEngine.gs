@@ -38,14 +38,21 @@ function fxRateFor_(params, currency, vehicleId) {
  * 除以 (1+貨物稅率) 換算成完稅價格，最後乘貨物稅率。
  *   貨物稅 = (廠價 - 水平配件外移調降 - Σ(可扣除的d科目)) × 完稅價格計算率 ÷ (1+貨物稅率) × 貨物稅率
  * 哪些 d 科目可以扣除，由 PLLineItems 的 CommodityTaxDeduct 欄位決定(預設為廣宣/促銷/批標售/季Margin)。
+ * 回傳完整的計算過程(不只是稅額)，讓「銷貨成本」頁可以把每一步都攤開顯示，
+ * 使用者才看得到「廠價調整」實際上就是這些 d 科目扣除的加總，不是憑空跑出來的數字。
  */
-function commodityTax_(exFactoryPrice, horizontalPartsAdj, dLines, taxRate, calcRate) {
+function commodityTaxBreakdown_(exFactoryPrice, horizontalPartsAdj, dLines, taxRate, calcRate) {
   var deductCodes = commodityTaxDeductCodes_();
   var deduct = Object.keys(dLines).reduce(function (sum, code) {
     return sum + (deductCodes.indexOf(code) !== -1 ? dLines[code] : 0);
   }, 0);
-  var base = (exFactoryPrice - toNumber_(horizontalPartsAdj) - deduct) * (calcRate || 1);
-  return base / (1 + taxRate) * taxRate;
+  var adj = toNumber_(horizontalPartsAdj);
+  var dutiableBase = (exFactoryPrice - adj - deduct) * (calcRate || 1);
+  var tax = dutiableBase / (1 + taxRate) * taxRate;
+  return {
+    exFactoryPrice: exFactoryPrice, horizontalPartsAdj: adj, deductTotal: deduct,
+    calcRate: calcRate || 1, taxRate: taxRate, dutiableBase: dutiableBase, tax: tax
+  };
 }
 
 function commodityTaxDeductCodes_() {
@@ -110,13 +117,10 @@ function calculatePL(scenarioId, vehicleId) {
     bLines[code] = (bLines[code] || 0) + toNumber_(r.Amount) * fxRateFor_(params, r.Currency, vehicleId);
   });
   applyDevAmortLines_(bLines, 'B', devPerUnit, lineDefsAll);
-  // 貨物稅可直接填「自訂金額」覆蓋公式結果(廠價有時會為了完稅價格刻意增減，公式不一定適用所有情境)；
-  // 留空才照公式：(廠價 - 水平配件外移調降(可正可負) - 可扣除的d科目) × 完稅價格計算率 ÷ (1+稅率) × 稅率
-  var commodityTaxOverride = salesMixRow.CommodityTaxOverride;
-  bLines.b13 = (commodityTaxOverride === undefined || commodityTaxOverride === '' || commodityTaxOverride === null)
-    ? commodityTax_(exFactoryPrice, toNumber_(salesMixRow.HorizontalPartsPriceAdj),
-        dLines, commodityTaxRate, pct_(lookupParam_(params, '貨物稅完稅價格計算率', vehicleId)))
-    : toNumber_(commodityTaxOverride);
+  // 貨物稅完稅價格 = (廠價 - 水平配件外移調降 - 可扣除的d科目(廣宣/促銷/批標售/季Margin)) × 完稅價格計算率
+  var commodityTaxBreakdown = commodityTaxBreakdown_(exFactoryPrice, toNumber_(salesMixRow.HorizontalPartsPriceAdj),
+    dLines, commodityTaxRate, pct_(lookupParam_(params, '貨物稅完稅價格計算率', vehicleId)));
+  bLines.b13 = commodityTaxBreakdown.tax;
 
   var totalB = sumValues_(bLines);
   var grossProfitC = revenueA - totalB;     // C 生產毛利
@@ -162,6 +166,7 @@ function calculatePL(scenarioId, vehicleId) {
     calculatedAt: timestamp.toISOString(), // 巢狀 Date 物件會讓 google.script.run 整包回傳變 null，一律轉字串
     revenue: revenueA,
     exFactoryPrice: exFactoryPrice,
+    commodityTaxDetail: commodityTaxBreakdown,
     lines: buildResultLines_(lineValues, revenueA, exFactoryPrice)
   };
 }
@@ -511,6 +516,46 @@ function buildResultLines_(lineValues, revenue, exFactoryPrice) {
         PctOfExFactory: exFactoryPrice ? amount / exFactoryPrice : 0
       };
     });
+}
+
+/**
+ * 「銷貨成本」「營業費用」矩陣頁面用：把自動計算科目(開發總投攤提、貨物稅、季Margin等)
+ * 依車系算出實際金額，讓這兩頁能把完整的損益明細攤開顯示，不必再跑去儀表板才看得到。
+ * 只算「這個情境底下、已經有銷售構成資料」的車系，還沒建立銷售構成的車系無法計算，直接略過。
+ */
+function buildAutoLines_(scenarioId, vehicles, parentLines) {
+  var autoLineDefs = getPLLineItems().filter(function (d) {
+    return parentLines.indexOf(d.ParentLine) !== -1 && !!d.AutoSource;
+  });
+  var result = { lines: autoLineDefs.map(function (d) { return { value: d.LineCode, label: d.LineName }; }), values: {} };
+  if (!autoLineDefs.length) return result;
+  autoLineDefs.forEach(function (d) { result.values[d.LineCode] = {}; });
+
+  var salesMixIds = {};
+  getSalesMix(scenarioId).forEach(function (r) { salesMixIds[r.VehicleID] = true; });
+
+  vehicles.forEach(function (v) {
+    if (!salesMixIds[v.VehicleID]) return;
+    var pl;
+    try { pl = calculatePL(scenarioId, v.VehicleID); } catch (e) { return; }
+    pl.lines.forEach(function (l) {
+      if (result.values[l.LineCode]) result.values[l.LineCode][v.VehicleID] = l.Amount;
+    });
+    if (parentLines.indexOf('B') !== -1) {
+      result.commodityTaxDetail = result.commodityTaxDetail || {};
+      result.commodityTaxDetail[v.VehicleID] = pl.commodityTaxDetail;
+    }
+  });
+  return result;
+}
+
+/** 銷貨成本頁用：B 底下的自動計算科目(b5/b8/b13...)，含貨物稅的完整計算過程 */
+function getCostOfSalesAutoLines(scenarioId, vehicles) {
+  return buildAutoLines_(scenarioId, vehicles, ['B']);
+}
+/** 營業費用頁用：E/G/I 底下的自動計算科目(季Margin、開發總投攤提費用類...) */
+function getOperatingExpenseAutoLines(scenarioId, vehicles) {
+  return buildAutoLines_(scenarioId, vehicles, ['E', 'G', 'I']);
 }
 
 function getPLResult(scenarioId, vehicleId) {

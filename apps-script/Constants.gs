@@ -32,7 +32,7 @@ var SCHEMA = {
     'AmortMonthlyVolume', 'AmortLifeCycleYears', 'CreatedBy', 'CreatedDate', 'Notes'],
   SalesMix: ['RowID', 'ScenarioID', 'VehicleID', 'SalesMixPct', 'MonthlyVolume', 'LifeCycleYears',
     'ListPriceTaxIncl', 'MandatoryAccessoryPrice', 'ScrapFee', 'ScrapFeeTaxStatus',
-    'HorizontalPartsPriceAdj', 'EffectiveDate', 'Notes', 'CommodityTaxOverride'],
+    'HorizontalPartsPriceAdj', 'EffectiveDate', 'Notes'],
   CostOfSales: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'Currency',
     'Notes', 'EffectiveDate'],
   DevInvestment: ['RowID', 'ScenarioID', 'Department', 'AssetType',

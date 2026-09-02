@@ -62,6 +62,39 @@ function saveVehicleTypeGrid(rows) {
   });
 }
 
+/**
+ * 車型代號重新命名：新增一列新代號、把所有引用舊代號的資料(車系、情境)一併改成新代號，
+ * 最後刪掉舊代號那一列。車型代號是車系/情境的外鍵，只改主檔那一列會讓底下的車系跟情境
+ * 全部找不到自己屬於哪個車型(等於資料還在、畫面上卻消失)，所以一定要連動更新。
+ */
+function renameVehicleType(oldId, newId) {
+  return withLock_(function () {
+    newId = String(newId || '').trim();
+    if (!oldId || !newId) throw new Error('車型代號不能為空');
+    if (oldId === newId) return getVehicleTypes();
+    var existing = getVehicleTypes();
+    var row = existing.filter(function (t) { return t.VehicleTypeID === oldId; })[0];
+    if (!row) throw new Error('找不到車型：' + oldId);
+    if (existing.some(function (t) { return t.VehicleTypeID === newId; })) {
+      throw new Error('車型代號「' + newId + '」已經存在');
+    }
+
+    row.VehicleTypeID = newId;
+    upsertRow_(SHEETS.VEHICLE_TYPES, 'VehicleTypeID', row);
+    deleteRow_(SHEETS.VEHICLE_TYPES, 'VehicleTypeID', oldId);
+
+    [[SHEETS.VEHICLES, 'VehicleID'], [SHEETS.SCENARIOS, 'ScenarioID']].forEach(function (pair) {
+      var sheetName = pair[0], pk = pair[1];
+      (sheetToObjects_(sheetName) || []).forEach(function (r) {
+        if (r.VehicleTypeID !== oldId) return;
+        r.VehicleTypeID = newId;
+        upsertRow_(sheetName, pk, r);
+      });
+    });
+    return getVehicleTypes();
+  });
+}
+
 // ---- Vehicles（車系，如 3人貨車/9人客貨車，隸屬某個 VehicleType） ----
 function getVehicles(vehicleTypeId) {
   var rows = sheetToObjects_(SHEETS.VEHICLES) || [];
@@ -80,6 +113,41 @@ function saveVehicleGrid(vehicleTypeId, rows) {
       if (!r.VehicleID) return;
       r.VehicleTypeID = vehicleTypeId;
       upsertRowMerge_(SHEETS.VEHICLES, 'VehicleID', r);
+    });
+    return getVehicles(vehicleTypeId);
+  });
+}
+
+/**
+ * 車系代號重新命名：新增一列新代號、把所有引用舊代號的資料(銷售構成、銷貨成本、營業費用、
+ * 費率覆寫、損益快照)一併改成新代號，最後刪掉舊代號那一列。開發總投是情境層級，不記車系，
+ * 不受影響。
+ */
+function renameVehicle(vehicleTypeId, oldId, newId) {
+  return withLock_(function () {
+    newId = String(newId || '').trim();
+    if (!oldId || !newId) throw new Error('車系代號不能為空');
+    if (oldId === newId) return getVehicles(vehicleTypeId);
+    var existing = getVehicles();
+    var row = existing.filter(function (v) { return v.VehicleID === oldId; })[0];
+    if (!row) throw new Error('找不到車系：' + oldId);
+    if (existing.some(function (v) { return v.VehicleID === newId; })) {
+      throw new Error('車系代號「' + newId + '」已經存在');
+    }
+
+    row.VehicleID = newId;
+    upsertRow_(SHEETS.VEHICLES, 'VehicleID', row);
+    deleteRow_(SHEETS.VEHICLES, 'VehicleID', oldId);
+
+    [[SHEETS.SALES_MIX, 'RowID'], [SHEETS.COST_OF_SALES, 'RowID'],
+      [SHEETS.OPERATING_EXPENSE, 'RowID'], [SHEETS.PARAMETERS, 'ParamID'],
+      [SHEETS.PL_RESULT, 'ResultID']].forEach(function (pair) {
+      var sheetName = pair[0], pk = pair[1];
+      (sheetToObjects_(sheetName) || []).forEach(function (r) {
+        if (r.VehicleID !== oldId) return;
+        r.VehicleID = newId;
+        upsertRow_(sheetName, pk, r);
+      });
     });
     return getVehicles(vehicleTypeId);
   });
@@ -164,7 +232,6 @@ function getSalesMixGrid(scenarioId, vehicleTypeId) {
       ScrapFee: row.ScrapFee === undefined || row.ScrapFee === '' ? '' : toNumber_(row.ScrapFee),
       ScrapFeeTaxStatus: row.ScrapFeeTaxStatus || '含稅',
       HorizontalPartsPriceAdj: row.HorizontalPartsPriceAdj === undefined || row.HorizontalPartsPriceAdj === '' ? '' : toNumber_(row.HorizontalPartsPriceAdj),
-      CommodityTaxOverride: row.CommodityTaxOverride === undefined || row.CommodityTaxOverride === '' ? '' : toNumber_(row.CommodityTaxOverride),
       Notes: row.Notes || ''
     };
   });
@@ -273,19 +340,31 @@ function saveAmountMatrix_(sheetName, scenarioId, cells) {
   });
 }
 
-/** 銷貨成本矩陣：列 = 成本項目、欄 = 車系 */
+/**
+ * 銷貨成本矩陣：列 = 成本項目、欄 = 車系。
+ * autoLines 是唯讀的自動計算科目(b5/b8/b13...)，讓這頁能看到 B 銷貨成本的全貌，
+ * 不必再跑去儀表板才看得到模具/設備攤提與貨物稅算出多少。
+ */
 function getCostOfSalesMatrix(scenarioId, vehicleTypeId) {
   var matrix = buildAmountMatrix_(SHEETS.COST_OF_SALES, scenarioId, vehicleTypeId, getCostOfSalesLineOptions());
   matrix.currencies = getConfiguredCurrencies(scenarioId);
+  var auto = getCostOfSalesAutoLines(scenarioId, matrix.vehicles);
+  matrix.autoLines = auto.lines;
+  matrix.autoValues = auto.values;
+  matrix.commodityTaxDetail = auto.commodityTaxDetail || {};
   return matrix;
 }
 function saveCostOfSalesMatrix(scenarioId, cells) {
   return saveAmountMatrix_(SHEETS.COST_OF_SALES, scenarioId, cells);
 }
 
-/** 營業費用矩陣：列 = 科目、欄 = 車系 */
+/** 營業費用矩陣：列 = 科目、欄 = 車系。autoLines 同上，含季Margin、開發總投攤提的費用類科目 */
 function getOperatingExpenseMatrix(scenarioId, vehicleTypeId) {
-  return buildAmountMatrix_(SHEETS.OPERATING_EXPENSE, scenarioId, vehicleTypeId, getOperatingExpenseLineOptions());
+  var matrix = buildAmountMatrix_(SHEETS.OPERATING_EXPENSE, scenarioId, vehicleTypeId, getOperatingExpenseLineOptions());
+  var auto = getOperatingExpenseAutoLines(scenarioId, matrix.vehicles);
+  matrix.autoLines = auto.lines;
+  matrix.autoValues = auto.values;
+  return matrix;
 }
 function saveOperatingExpenseMatrix(scenarioId, cells) {
   return saveAmountMatrix_(SHEETS.OPERATING_EXPENSE, scenarioId, cells);

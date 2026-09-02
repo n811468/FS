@@ -254,6 +254,41 @@ check('舊的「費用」資料仍照原本的規則攤提，並自動轉成新�
   gs.saveDevInvestmentGrid(sid, summary.rows);
 });
 
+check('銷貨成本頁看得到自動計算科目與貨物稅計算過程', () => {
+  const matrix = gs.getCostOfSalesMatrix(base.ScenarioID, 'DA');
+  const autoCodes = matrix.autoLines.map(l => l.value);
+  assert(autoCodes.indexOf('b13') !== -1, '貨物稅(b13)應該出現在自動計算科目');
+  assert(autoCodes.indexOf('b5') !== -1, '模具費用(b5)應該出現在自動計算科目');
+  assert(matrix.autoValues.b13.V1 > 0, 'V1 的貨物稅應該算得出數字');
+  const detail = matrix.commodityTaxDetail.V1;
+  assert(detail && detail.tax === matrix.autoValues.b13.V1, '貨物稅計算過程的 tax 應該跟 autoValues 的金額一致');
+  assert(detail.deductTotal > 0, '完稅價格的扣除項(廣宣/促銷/批標售/季Margin)應該有值');
+});
+
+check('車型代號重新命名會連動更新車系與情境', () => {
+  gs.saveVehicleType({ VehicleTypeID: 'RENAME_SRC' });
+  gs.saveVehicle({ VehicleID: 'RN_V1', VehicleTypeID: 'RENAME_SRC', VehicleCode: '測試車系' });
+  const sc = gs.createScenarioFrom({
+    ScenarioID: '', Gate: 'GATE Z', ScenarioName: '改名測試', ScenarioType: '現況', VehicleTypeID: 'RENAME_SRC'
+  }, '', []);
+  gs.renameVehicleType('RENAME_SRC', 'RENAME_DST');
+  assert(!gs.getVehicleTypes().some(t => t.VehicleTypeID === 'RENAME_SRC'), '舊車型代號應該消失');
+  assert(gs.getVehicleTypes().some(t => t.VehicleTypeID === 'RENAME_DST'), '新車型代號應該存在');
+  assertEqual(gs.getVehicles('RENAME_DST').length, 1, '車系應該跟著新代號查得到');
+  assertEqual(gs.getScenarios('RENAME_DST').length, 1, '情境應該跟著新代號查得到');
+  assert(!gs.getVehicles('RENAME_SRC').length, '舊代號底下不應該再查得到車系');
+});
+
+check('車系代號重新命名會連動更新銷售構成等資料', () => {
+  gs.saveVehicle({ VehicleID: 'RN_V2', VehicleTypeID: 'DA', VehicleCode: '改名前車系' });
+  gs.saveSalesMixRow({ RowID: '', ScenarioID: base.ScenarioID, VehicleID: 'RN_V2', SalesMixPct: 0, MonthlyVolume: 0, LifeCycleYears: 5 });
+  gs.renameVehicle('DA', 'RN_V2', 'RN_V2_NEW');
+  assert(!gs.getVehicles('DA').some(v => v.VehicleID === 'RN_V2'), '舊車系代號應該消失');
+  assert(gs.getVehicles('DA').some(v => v.VehicleID === 'RN_V2_NEW'), '新車系代號應該存在');
+  assert(!gs.getSalesMix(base.ScenarioID).some(r => r.VehicleID === 'RN_V2'), '銷售構成的舊車系代號應該消失');
+  assert(gs.getSalesMix(base.ScenarioID).some(r => r.VehicleID === 'RN_V2_NEW'), '銷售構成應該跟著改成新車系代號');
+});
+
 const failed = results.filter(r => !r.ok);
 results.forEach(r => console.log((r.ok ? '  ✓ ' : '  ✗ ') + r.name + (r.ok ? '' : ' — ' + r.message)));
 console.log('');

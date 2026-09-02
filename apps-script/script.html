@@ -29,8 +29,7 @@ const ENTITIES = {
   vehicletypes: {
     label: '車型主檔', pk: 'VehicleTypeID',
     getFn: 'getVehicleTypes', saveGridFn: 'saveVehicleTypeGrid', deleteFn: 'deleteVehicleType',
-    scopedBy: null,
-    note: '車型代號建立後不能再改。',
+    renameFn: 'renameVehicleType', scopedBy: null,
     columns: [
       { name: 'VehicleTypeID', label: '車型代號', lockAfterCreate: true, width: 140 },
       { name: 'Notes', label: '備註', width: 360 }
@@ -39,8 +38,7 @@ const ENTITIES = {
   vehicles: {
     label: '車系設定', pk: 'VehicleID',
     getFn: 'getVehicles', saveGridFn: 'saveVehicleGrid', deleteFn: 'deleteVehicle',
-    scopedBy: 'vehicleType',
-    note: '車系代號建立後不能再改。',
+    renameFn: 'renameVehicle', scopedBy: 'vehicleType',
     columns: [
       { name: 'VehicleID', label: '車系代號', lockAfterCreate: true, width: 140 },
       { name: 'VehicleCode', label: '車系名稱', width: 220 },
@@ -51,7 +49,6 @@ const ENTITIES = {
     label: '情境設定', pk: 'ScenarioID',
     getFn: 'getScenarios', saveGridFn: 'saveScenarioGrid', deleteFn: 'deleteScenario',
     scopedBy: 'vehicleType', createUi: 'scenario',
-    note: '新情境可選「以既有情境為基礎」整批帶入資料，再改幾個數字就好。',
     columns: [
       { name: 'Gate', label: 'GATE 別', type: 'select', options: GATE_OPTIONS, width: 110 },
       { name: 'ScenarioName', label: '情境名稱', width: 200 },
@@ -64,8 +61,6 @@ const ENTITIES = {
     label: '科目設定', pk: 'LineCode',
     getFn: 'getPLLineItems', saveGridFn: 'savePLLineItemGrid', deleteFn: 'deletePLLineItem',
     scopedBy: null,
-    note: '科目代碼自動編號，不需要自己填。結構科目與自動計算科目不開放修改也不可刪除。'
-      + ' 成本項目與費用科目也可以直接在「銷貨成本」「營業費用」頁面新增/刪除。',
     restorable: true,
     columns: [
       { name: 'LineCode', label: '科目代碼', auto: true, width: 80 },
@@ -149,11 +144,10 @@ function setStatus(key, text, cls) {
   const el = document.getElementById('status-' + key);
   if (el) { el.textContent = text; el.className = 'status-msg' + (cls ? ' ' + cls : ''); }
 }
-/** 表格編輯頁的共用外框：標題 + 說明 + 工具列 + 狀態 + 內容 */
-function gridShell(key, title, note) {
+/** 表格編輯頁的共用外框：標題 + 工具列 + 狀態 + 內容 */
+function gridShell(key, title) {
   return `
     <h3>${title}</h3>
-    ${note ? `<p class="muted">${note}</p>` : ''}
     <div id="toolbar-${key}" class="toolbar"></div>
     <div id="status-${key}" class="status-msg"></div>
     <div id="grid-${key}"></div>
@@ -275,7 +269,7 @@ function renderEntityPanel(key) {
     panel.innerHTML = '<p class="muted">請先在上方選擇車型</p>';
     return;
   }
-  panel.innerHTML = gridShell(key, cfg.label, cfg.note);
+  panel.innerHTML = gridShell(key, cfg.label);
   loadEntityData(key);
 }
 
@@ -300,7 +294,6 @@ function drawEntityGrid(key) {
     ${cfg.createUi === 'scenario' ? '' :
       `<button type="button" class="btn secondary" onclick="addEntityRow('${key}')">新增一列</button>`}
     ${cfg.restorable ? '<button type="button" class="btn secondary" onclick="restoreBuiltInLines()">恢復內建科目預設值</button>' : ''}
-    <span class="muted">直接在格子裡修改，改完按「儲存」。</span>
   ` + (cfg.createUi === 'scenario' ? scenarioToolbarHtml() : '');
 
   const body = rows.length
@@ -351,10 +344,41 @@ function entityRowActionHtml(key, i, row) {
   if (!row.__existing) {
     return `<button type="button" class="btn secondary" onclick="removeEntityRow('${key}', ${i})">移除</button>`;
   }
+  const cfg = ENTITIES[key];
+  const renameBtn = cfg.renameFn
+    ? `<button type="button" class="btn secondary" onclick="renameEntityRow('${key}', ${i})">重新命名</button>` : '';
   if (key === 'lineitems' && isFixedLineItem(row)) {
-    return '<span class="muted">不可刪除</span>';
+    return renameBtn + '<span class="muted">不可刪除</span>';
   }
-  return `<button type="button" class="btn danger" onclick="deleteEntityRow('${key}', ${i})">刪除</button>`;
+  return renameBtn + `<button type="button" class="btn danger" onclick="deleteEntityRow('${key}', ${i})">刪除</button>`;
+}
+
+/**
+ * 車型/車系代號重新命名：不能直接在格子裡改代號 —— 代號是其他表格的外鍵(車系記著車型代號、
+ * 銷售構成/成本記著車系代號)，直接改字串只會讓那些資料的鍵值對不到，變成孤兒資料。
+ * 改用後端的 rename 函式，一次把所有引用該代號的地方都更新過去。
+ */
+function renameEntityRow(key, i) {
+  const cfg = ENTITIES[key];
+  const row = entityRows[key][i];
+  const oldId = row[cfg.pk];
+  const newId = (prompt('新的代號：', oldId) || '').trim();
+  if (!newId || newId === oldId) return;
+  const args = key === 'vehicles' ? [currentVehicleTypeId, oldId, newId] : [oldId, newId];
+  setStatus(key, '重新命名中...');
+  google.script.run
+    .withSuccessHandler(safeHandler(() => {
+      // 改名會牽動其他表格裡引用這個代號的資料(銷售構成/成本/費用...)，這些頁面的快取一併清掉，
+      // 不然切分頁時會先看到還記得舊代號的畫面。
+      Object.keys(panelDataCache_).forEach(k => delete panelDataCache_[k]);
+      // 目前選取的車型代號如果剛好是被改名的那個，選單跟後續呼叫都要跟著改用新代號
+      if (key === 'vehicletypes' && currentVehicleTypeId === oldId) currentVehicleTypeId = newId;
+      pendingStatus = { key: key, text: `已將「${oldId}」改名為「${newId}」`, cls: 'ok' };
+      loadEntityData(key);
+      afterEntityChange(key);
+    }))
+    .withFailureHandler(err => setStatus(key, '錯誤：' + err.message, 'err'))
+    [cfg.renameFn](...args);
 }
 
 function onEntityField(key, i, field, value) {
@@ -555,8 +579,7 @@ let salesMixRows = [];
 function renderSalesMixPanel() {
   if (!requireScope('salesmix', true)) return;
   const panel = document.getElementById('panel-salesmix');
-  panel.innerHTML = gridShell('salesmix', '銷售構成與售價',
-    '輸入車型月總台數後填構成比，台數自動算出；改台數則構成比自動回算，兩者永遠一致。');
+  panel.innerHTML = gridShell('salesmix', '銷售構成與售價');
   const cacheKey = panelCacheKey_('salesmix');
   if (panelDataCache_[cacheKey]) { salesMixRows = panelDataCache_[cacheKey].rows || []; drawSalesMixGrid(); }
   google.script.run
@@ -593,8 +616,7 @@ function drawSalesMixGrid() {
       <thead><tr>
         <th>車系</th><th>構成比%</th><th>月台數</th><th>LC年限</th><th>LC總台數</th>
         <th>建議零售價<br>(含稅)</th><th>強配件<br>售價</th><th>廢車<br>處理費</th><th>稅別</th>
-        <th title="計算貨物稅完稅價格時，從廠價加減這個金額；可正可負">廠價調整<br>(貨物稅用)</th>
-        <th title="留空則照公式自動計算；填了就直接取代 b13 貨物稅的計算結果">貨物稅金額<br>(留空=自動)</th>
+        <th title="計算貨物稅完稅價格時，從廠價扣除這個金額">水平配件外移<br>調降廠價</th>
         <th>備註</th>
       </tr></thead>
       <tbody>
@@ -612,7 +634,6 @@ function drawSalesMixGrid() {
               ${['含稅', '未稅'].map(o => `<option value="${o}"${r.ScrapFeeTaxStatus === o ? ' selected' : ''}>${o}</option>`).join('')}
             </select></td>
             <td><input type="number" step="any" value="${esc(r.HorizontalPartsPriceAdj)}" oninput="onSalesMixField(${i}, 'HorizontalPartsPriceAdj', this.value)"></td>
-            <td><input type="number" step="any" value="${esc(r.CommodityTaxOverride)}" oninput="onSalesMixField(${i}, 'CommodityTaxOverride', this.value)"></td>
             <td><input type="text" class="note-input" value="${esc(r.Notes)}" oninput="onSalesMixField(${i}, 'Notes', this.value)"></td>
           </tr>`).join('')}
       </tbody>
@@ -621,7 +642,7 @@ function drawSalesMixGrid() {
         <td id="sm-sum-pct" class="calc"></td>
         <td id="sm-sum-units" class="calc"></td>
         <td></td><td id="sm-sum-lc" class="calc"></td>
-        <td colspan="7"></td>
+        <td colspan="6"></td>
       </tr></tfoot>
     </table>
     </div>`;
@@ -714,13 +735,11 @@ function saveSalesMixGrid() {
 const MATRIX_CONFIG = {
   costofsales: {
     title: '銷貨成本',
-    note: '一列 = 一個成本項目，一欄 = 一個車系。開發總投攤提的科目與貨物稅由系統自動算出，不在這裡輸入。',
     getFn: 'getCostOfSalesMatrix', saveFn: 'saveCostOfSalesMatrix',
     parentLine: 'B', hasCurrency: true, totalLabel: '該車系合計(手動輸入部分)'
   },
   operatingexpense: {
     title: '營業費用',
-    note: '一列 = 一個費用科目，一欄 = 一個車系。季Margin 與開發總投攤提的科目由系統自動算出，不在這裡輸入。',
     getFn: 'getOperatingExpenseMatrix', saveFn: 'saveOperatingExpenseMatrix',
     parentLine: 'E', hasCurrency: false, totalLabel: '該車系合計(手動輸入部分)',
     parentOptions: [['E', '銷售費用(銷貨毛利前)'], ['G', '產品貢獻前費用'], ['I', '固定營業費用']]
@@ -735,7 +754,7 @@ function renderOperatingExpensePanel() { renderMatrixPanel('operatingexpense'); 
 function renderMatrixPanel(key) {
   if (!requireScope(key, true)) return;
   const cfg = MATRIX_CONFIG[key];
-  document.getElementById('panel-' + key).innerHTML = gridShell(key, cfg.title, cfg.note);
+  document.getElementById('panel-' + key).innerHTML = gridShell(key, cfg.title);
   const cacheKey = panelCacheKey_(key);
   if (panelDataCache_[cacheKey]) { matrixData[key] = panelDataCache_[cacheKey]; drawMatrix(key); }
   google.script.run
@@ -803,17 +822,51 @@ function drawMatrix(key) {
             <td><input type="text" id="${key}-note-${esc(line.value)}" value="${esc(firstCellProp(data, line.value, 'Notes'))}"></td>
             <td><button type="button" class="btn danger" onclick="deleteMatrixLine('${key}', '${esc(line.value)}')">刪除</button></td>
           </tr>`).join('')}
+        ${(data.autoLines || []).map(line => `
+          <tr class="auto-line" data-line="${esc(line.value)}">
+            <td class="row-head" title="${esc(line.label)}">${esc(shortLineName(line.label))} <span class="auto-tag">自動</span></td>
+            ${cfg.hasCurrency ? '<td></td>' : ''}
+            ${data.vehicles.map(v => autoLineCellHtml(data, line.value, v.VehicleID)).join('')}
+            <td class="calc muted">—</td><td colspan="2" class="muted">系統自動算出，不能編輯</td>
+          </tr>`).join('')}
       </tbody>
       <tfoot><tr>
         <td class="row-head">${esc(cfg.totalLabel)}</td>
         ${cfg.hasCurrency ? '<td></td>' : ''}
         ${data.vehicles.map(v => `<td class="calc" id="${key}-colsum-${esc(v.VehicleID)}"></td>`).join('')}
         <td class="calc" id="${key}-grandsum"></td><td colspan="2"></td>
-      </tr></tfoot>
+      </tr>
+      ${(data.autoLines || []).length ? `<tr>
+        <td class="row-head">合計(含自動科目)</td>
+        ${cfg.hasCurrency ? '<td></td>' : ''}
+        ${data.vehicles.map(v => `<td class="calc" id="${key}-colsum-withauto-${esc(v.VehicleID)}"></td>`).join('')}
+        <td colspan="3"></td>
+      </tr>` : ''}</tfoot>
     </table>
     </div>
     <p class="muted">加權平均 = 依各車系銷售構成比加權，跟儀表板同口徑。</p>`;
   updateMatrixTotals(key);
+}
+
+/** 自動計算科目的格子：唯讀，貨物稅(b13)滑鼠移過去可以看到完整計算過程 */
+function autoLineCellHtml(data, lineCode, vehicleId) {
+  const amt = (data.autoValues[lineCode] || {})[vehicleId];
+  if (amt === undefined) return '<td class="calc muted">—</td>';
+  const detail = data.commodityTaxDetail && data.commodityTaxDetail[vehicleId];
+  const title = (lineCode === 'b13' && detail) ? ` title="${esc(commodityTaxDetailText(detail))}"` : '';
+  return `<td class="calc"${title}>${fmt(amt)}</td>`;
+}
+/** 把貨物稅的計算過程攤開成文字，滑鼠移到金額上就看得到每一步是怎麼來的 */
+function commodityTaxDetailText(d) {
+  const pct = n => (n * 100).toFixed(1) + '%';
+  return [
+    `廠價(未稅) ${fmt(d.exFactoryPrice)}`,
+    `− 水平配件外移調降廠價 ${fmt(d.horizontalPartsAdj)}`,
+    `− 廣宣+促銷+批標售+季Margin ${fmt(d.deductTotal)}`,
+    `= 完稅價格基礎 ${fmt(d.dutiableBase / (d.calcRate || 1))}`,
+    `× 完稅價格計算率 ${pct(d.calcRate)} = ${fmt(d.dutiableBase)}`,
+    `÷ (1+貨物稅率${pct(d.taxRate)}) × 貨物稅率 = 貨物稅 ${fmt(d.tax)}`
+  ].join('\n');
 }
 
 /** 同一列(科目)的幣別/備註是列層級設定，讀取時取該列第一個有值的格子 */
@@ -849,9 +902,19 @@ function updateMatrixTotals(key) {
     if (cell) cell.textContent = mixTotal ? fmt(weighted) : '—';
   });
 
+  const autoSum = {};
+  (data.autoLines || []).forEach(line => {
+    data.vehicles.forEach(v => {
+      const amt = (data.autoValues[line.value] || {})[v.VehicleID];
+      if (amt !== undefined) autoSum[v.VehicleID] = (autoSum[v.VehicleID] || 0) + amt;
+    });
+  });
+
   data.vehicles.forEach(v => {
     const cell = document.getElementById(`${key}-colsum-${v.VehicleID}`);
     if (cell) cell.textContent = fmt(colSum[v.VehicleID] || 0);
+    const withAutoCell = document.getElementById(`${key}-colsum-withauto-${v.VehicleID}`);
+    if (withAutoCell) withAutoCell.textContent = fmt((colSum[v.VehicleID] || 0) + (autoSum[v.VehicleID] || 0));
   });
   const g = document.getElementById(`${key}-grandsum`);
   if (g) g.textContent = mixTotal ? fmt(weightedGrand) : '—';
@@ -907,13 +970,7 @@ let devSummary = null;
 
 function renderDevInvestmentPanel() {
   if (!requireScope('devinvestment', true)) return;
-  const isTarget = currentScenario && currentScenario.ScenarioType === '目標';
-  document.getElementById('panel-devinvestment').innerHTML = gridShell('devinvestment', '開發總投',
-    '每一列選「攤提落點」決定這筆投資要攤到哪個損益科目，沒有想要的科目可以在下方「新增攤提科目」建立。'
-    + (isTarget
-      ? ' 目標情境：可從其他情境整批帶入資料後，再逐列填挑戰低減目標%。'
-      : ' 現況情境不需要填挑戰低減目標。'));
-  // 攤提基準台數可與銷售構成的預估台數不同（如銷售估 365 台/月，開發投資以 300 台/月 × 12 年攤提）
+  document.getElementById('panel-devinvestment').innerHTML = gridShell('devinvestment', '開發總投');
 
   const cacheKey = panelCacheKey_('devinvestment');
   if (panelDataCache_[cacheKey]) {
@@ -975,7 +1032,7 @@ function drawDevGrid() {
             <td><select onchange="onDevField(${i}, 'TargetLineCode', this.value)">
               <option value="">(請選擇)</option>
               ${(devSummary.targetOptions || []).map(o =>
-                `<option value="${esc(o.value)}"${r.TargetLineCode === o.value ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}
+                `<option value="${esc(o.value)}"${r.TargetLineCode === o.value ? ' selected' : ''}>${esc(shortLineName(o.label))}</option>`).join('')}
             </select></td>
             <td><input type="number" step="any" value="${esc(r.Amount)}" oninput="onDevField(${i}, 'Amount', this.value)"></td>
             <td><select onchange="onDevField(${i}, 'Currency', this.value)">
@@ -998,15 +1055,14 @@ function drawDevGrid() {
     <table class="grid-table" style="max-width:640px;">
       <thead><tr><th>攤提落點</th><th>投資總額(低減後)</th><th>單台攤提</th></tr></thead>
       <tbody>
-        ${(devSummary.targets || []).map(t => `
+        ${(devSummary.targets || []).filter(t => t.Total).map(t => `
           <tr>
-            <td class="row-head">${esc(t.LineName)}</td>
+            <td class="row-head">${esc(shortLineName(t.LineName))}</td>
             <td class="calc">${fmt(t.Total)}</td>
             <td class="calc">${fmt(t.PerUnit)}</td>
           </tr>`).join('')}
       </tbody>
-    </table>
-    <p class="muted">「單台攤提」= 投資總額 ÷ LIFE CYCLE 總台數，就是損益表上那個科目的金額。</p>`;
+    </table>`;
 
   google.script.run.withSuccessHandler(safeHandler(list => {
     const dl = document.getElementById('dev-departments');
@@ -1089,8 +1145,7 @@ let rateData = null;
 
 function renderRatePanel() {
   if (!requireScope('paramrates', true)) return;
-  document.getElementById('panel-paramrates').innerHTML = gridShell('paramrates', '稅務費用比率',
-    '填「全車系適用」即可；某個車系不同才填該欄，留白沿用全車系值。比率請輸入 0~100 的百分比數值。');
+  document.getElementById('panel-paramrates').innerHTML = gridShell('paramrates', '稅務費用比率');
   const cacheKey = panelCacheKey_('paramrates');
   if (panelDataCache_[cacheKey]) { rateData = panelDataCache_[cacheKey]; drawRateGrid(); }
   google.script.run
@@ -1157,8 +1212,7 @@ let fxData = null;
 
 function renderFxPanel() {
   if (!requireScope('paramfx', true)) return;
-  document.getElementById('panel-paramfx').innerHTML = gridShell('paramfx', '匯率設定',
-    '以幣別管理匯率，1 外幣 = ? 台幣。設定過匯率的幣別才會出現在銷貨成本與開發總投的幣別選單中。');
+  document.getElementById('panel-paramfx').innerHTML = gridShell('paramfx', '匯率設定');
   const cacheKey = panelCacheKey_('paramfx');
   if (panelDataCache_[cacheKey]) { fxData = panelDataCache_[cacheKey]; drawFxGrid(); }
   google.script.run
