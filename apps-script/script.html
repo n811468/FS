@@ -42,6 +42,7 @@ const ENTITIES = {
     columns: [
       { name: 'VehicleID', label: '車系代號', lockAfterCreate: true, width: 140 },
       { name: 'VehicleCode', label: '車系名稱', width: 220 },
+      { name: 'SortOrder', label: '排序', type: 'number', width: 70 },
       { name: 'Notes', label: '備註', width: 320 }
     ]
   },
@@ -1368,7 +1369,12 @@ function clearComparisonColumns() {
   refreshDashboard();
 }
 
-/** 比較欄位排序可自訂：只調整陣列順序後直接重畫，不必重新跟後端要資料 */
+/**
+ * 比較欄位排序可自訂：交換陣列順序後一律重新跟後端要一次資料再重畫。
+ * 這裡原本想省一次來回、直接在前端把 lastComparison.columns 也同步交換掉，
+ * 但那份資料同時也是圖表(drawCharts)在用的物件，两邊一旦有任何時序或參照沒對齊，
+ * 畫面就會停在舊順序、卻看不出哪裡錯 —— 寧可少一點小聰明、每次都用同一條乾淨路徑重算。
+ */
 function moveComparisonColumn(idx, dir) {
   const target = idx + dir;
   if (target < 0 || target >= comparisonSelections.length) return;
@@ -1376,13 +1382,7 @@ function moveComparisonColumn(idx, dir) {
   comparisonSelections[idx] = comparisonSelections[target];
   comparisonSelections[target] = tmp;
   renderComparisonColumns();
-  if (lastComparison && lastComparison.columns) {
-    const c = lastComparison.columns;
-    const tmpCol = c[idx]; c[idx] = c[target]; c[target] = tmpCol;
-    renderDashboard(lastComparison);
-  } else {
-    refreshDashboard();
-  }
+  refreshDashboard();
 }
 
 function renderComparisonColumns() {

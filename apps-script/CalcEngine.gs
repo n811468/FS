@@ -61,7 +61,29 @@ function commodityTaxDeductCodes_() {
     .map(function (d) { return d.LineCode; });
 }
 
+/**
+ * 算損益並把結果寫回 PLResult 快照（快照給「損益儀表板」讀取用）。
+ * 純計算(不寫入)請用 calculatePLCore_ —— 「銷貨成本」「營業費用」頁面只是想順便看一下
+ * 自動計算科目算出多少，每次開頁就對每個車系都寫一次快照太浪費，之前也因此拖慢過整個
+ * Script 的鎖定(LockService)，讓其他正在存檔的操作跟著逾時。
+ */
 function calculatePL(scenarioId, vehicleId) {
+  var result = calculatePLCore_(scenarioId, vehicleId);
+  var timestamp = new Date();
+  writePLResult_(scenarioId, vehicleId, result.lineValues, result.revenue, result.exFactoryPrice, timestamp);
+  return {
+    scenarioId: result.scenarioId,
+    vehicleId: result.vehicleId,
+    calculatedAt: timestamp.toISOString(), // 巢狀 Date 物件會讓 google.script.run 整包回傳變 null，一律轉字串
+    revenue: result.revenue,
+    exFactoryPrice: result.exFactoryPrice,
+    commodityTaxDetail: result.commodityTaxDetail,
+    lines: result.lines
+  };
+}
+
+/** 純計算損益：不寫入 PLResult，只回傳算出來的結果。calculatePL() 在這之上加寫入快照。 */
+function calculatePLCore_(scenarioId, vehicleId) {
   var salesMixRow = getSalesMix(scenarioId).filter(function (r) { return r.VehicleID === vehicleId; })[0];
   if (!salesMixRow) throw new Error('找不到 SalesMix 資料：' + scenarioId + ' / ' + vehicleId);
 
@@ -157,16 +179,13 @@ function calculatePL(scenarioId, vehicleId) {
     { I: operatingProfitI, J: j, K: operatingProfitK }
   );
 
-  var timestamp = new Date();
-  writePLResult_(scenarioId, vehicleId, lineValues, revenueA, exFactoryPrice, timestamp);
-
   return {
     scenarioId: scenarioId,
     vehicleId: vehicleId,
-    calculatedAt: timestamp.toISOString(), // 巢狀 Date 物件會讓 google.script.run 整包回傳變 null，一律轉字串
     revenue: revenueA,
     exFactoryPrice: exFactoryPrice,
     commodityTaxDetail: commodityTaxBreakdown,
+    lineValues: lineValues,
     lines: buildResultLines_(lineValues, revenueA, exFactoryPrice)
   };
 }
@@ -540,7 +559,10 @@ function buildAutoLines_(scenarioId, vehicles, parentLines) {
   vehicles.forEach(function (v) {
     if (!salesMixIds[v.VehicleID]) return;
     var pl;
-    try { pl = calculatePL(scenarioId, v.VehicleID); } catch (e) { return; }
+    // 用不寫入 PLResult 的純計算版本 —— 這裡只是想顯示自動計算科目算出多少，
+    // 每次開頁就對每個車系都重算一次還寫一次快照(calculatePL())太浪費，
+    // 之前也因此讓存檔用的鎖定(LockService)排隊排很久甚至逾時。
+    try { pl = calculatePLCore_(scenarioId, v.VehicleID); } catch (e) { return; }
     pl.lines.forEach(function (l) {
       if (result.values[l.LineCode]) result.values[l.LineCode][v.VehicleID] = l.Amount;
     });

@@ -9,7 +9,9 @@ var LOCK_DEPTH_ = 0;
 
 function withLock_(fn) {
   var lock = LockService.getScriptLock();
-  if (LOCK_DEPTH_ === 0) lock.waitLock(10000);
+  // 30 秒：车型/车系重新命名要连带改好几张表，资料多的时候比一般存档慢，
+  // 10 秒常常等不到就先丢「鎖定逾時」，改成比照 Apps Script 常见值调宽松一点。
+  if (LOCK_DEPTH_ === 0) lock.waitLock(30000);
   LOCK_DEPTH_++;
   try {
     return fn();
@@ -96,9 +98,15 @@ function renameVehicleType(oldId, newId) {
 }
 
 // ---- Vehicles（車系，如 3人貨車/9人客貨車，隸屬某個 VehicleType） ----
+/**
+ * 車系清單依 SortOrder 排序：這個順序會帶到所有用車系排欄位的地方
+ * （銷貨成本/營業費用矩陣的欄位、儀表板的車系選單...），車系設定頁可以直接改「排序」欄位調整。
+ * 沒填排序值的車系排在最後面(用 Infinity)，相對順序仍照 Sheet 上的原始順序(穩定排序)。
+ */
 function getVehicles(vehicleTypeId) {
   var rows = sheetToObjects_(SHEETS.VEHICLES) || [];
-  return vehicleTypeId ? rows.filter(function (r) { return r.VehicleTypeID === vehicleTypeId; }) : rows;
+  rows = vehicleTypeId ? rows.filter(function (r) { return r.VehicleTypeID === vehicleTypeId; }) : rows;
+  return sortByOrder_(rows, 'SortOrder');
 }
 function saveVehicle(rowObj) {
   return withLock_(function () { return upsertRowMerge_(SHEETS.VEHICLES, 'VehicleID', rowObj); });

@@ -265,6 +265,31 @@ check('銷貨成本頁看得到自動計算科目與貨物稅計算過程', () =
   assert(detail.deductTotal > 0, '完稅價格的扣除項(廣宣/促銷/批標售/季Margin)應該有值');
 });
 
+check('車系可以自訂排列順序，影響銷貨成本矩陣等所有用車系排欄位的地方', () => {
+  const sid = gs.createScenarioFrom({
+    ScenarioID: '', Gate: 'GATE C', ScenarioName: '排序測試', ScenarioType: '現況', VehicleTypeID: 'DA'
+  }, '', []).ScenarioID;
+  gs.saveVehicle({ VehicleID: 'V1', VehicleTypeID: 'DA', VehicleCode: '3人貨車', SortOrder: 2 });
+  gs.saveVehicle({ VehicleID: 'V2', VehicleTypeID: 'DA', VehicleCode: '9人客貨車', SortOrder: 1 });
+  const order1 = gs.getVehicles('DA').map(v => v.VehicleID);
+  assertEqual(order1.indexOf('V2') < order1.indexOf('V1'), true, 'SortOrder 較小的車系應該排在前面');
+  const matrixVehicles = gs.getCostOfSalesMatrix(sid, 'DA').vehicles.map(v => v.VehicleID);
+  assertEqual(matrixVehicles.join(','), order1.join(','), '銷貨成本矩陣的欄位順序應該跟車系排序一致');
+
+  // 調整排序後，順序要跟著變
+  gs.saveVehicle({ VehicleID: 'V1', VehicleTypeID: 'DA', VehicleCode: '3人貨車', SortOrder: 0 });
+  const order2 = gs.getVehicles('DA').map(v => v.VehicleID);
+  assertEqual(order2.indexOf('V1') < order2.indexOf('V2'), true, '改小排序值後應該排到前面');
+});
+
+check('銷貨成本頁顯示自動計算科目不應該寫入 PLResult 快照(避免拖慢鎖定)', () => {
+  const before = gs.getPLResult(base.ScenarioID, 'V1').length;
+  gs.getCostOfSalesMatrix(base.ScenarioID, 'DA');
+  gs.getOperatingExpenseMatrix(base.ScenarioID, 'DA');
+  const after = gs.getPLResult(base.ScenarioID, 'V1').length;
+  assertEqual(after, before, '單純顯示自動計算科目不應該多寫 PLResult 快照');
+});
+
 check('車型代號重新命名會連動更新車系與情境', () => {
   gs.saveVehicleType({ VehicleTypeID: 'RENAME_SRC' });
   gs.saveVehicle({ VehicleID: 'RN_V1', VehicleTypeID: 'RENAME_SRC', VehicleCode: '測試車系' });

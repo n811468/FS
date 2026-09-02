@@ -27,7 +27,7 @@ var SHEETS = {
 // 需先在「車型主檔」選擇/建立車型，才能在「車系設定」底下新增車系。
 var SCHEMA = {
   VehicleTypes: ['VehicleTypeID', 'Notes'],
-  Vehicles: ['VehicleID', 'VehicleTypeID', 'VehicleCode', 'Notes'],
+  Vehicles: ['VehicleID', 'VehicleTypeID', 'VehicleCode', 'Notes', 'SortOrder'],
   Scenarios: ['ScenarioID', 'Gate', 'ScenarioName', 'ScenarioType', 'VehicleTypeID',
     'AmortMonthlyVolume', 'AmortLifeCycleYears', 'CreatedBy', 'CreatedDate', 'Notes'],
   SalesMix: ['RowID', 'ScenarioID', 'VehicleID', 'SalesMixPct', 'MonthlyVolume', 'LifeCycleYears',

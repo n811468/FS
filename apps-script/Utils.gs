@@ -165,6 +165,17 @@ function toNumber_(v) {
   return isNaN(n) ? 0 : n;
 }
 
+/** 依某個排序欄位排序，留白視為排在最後面；相對順序穩定，不會因為排序值相同就跳來跳去 */
+function sortByOrder_(rows, field) {
+  var withIndex = rows.map(function (r, i) { return { row: r, i: i }; });
+  withIndex.sort(function (a, b) {
+    var av = a.row[field] === '' || a.row[field] === undefined || a.row[field] === null ? Infinity : toNumber_(a.row[field]);
+    var bv = b.row[field] === '' || b.row[field] === undefined || b.row[field] === null ? Infinity : toNumber_(b.row[field]);
+    return av !== bv ? av - bv : a.i - b.i;
+  });
+  return withIndex.map(function (x) { return x.row; });
+}
+
 function include(filename) {
   return HtmlService.createHtmlOutputFromFile(filename).getContent();
 }
