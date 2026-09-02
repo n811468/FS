@@ -2,8 +2,18 @@
   body { font-family: 'Segoe UI', 'Microsoft JhengHei', sans-serif; margin: 0; background: #f5f6f8; color: #222; }
   header { background: #1f2d3d; color: #fff; padding: 12px 20px; display: flex; align-items: center; gap: 20px; }
   header h1 { font-size: 18px; margin: 0; }
-  nav { display: flex; gap: 4px; padding: 8px 20px; background: #fff; border-bottom: 1px solid #ddd; flex-wrap: wrap; }
-  nav button { border: none; background: transparent; padding: 8px 14px; cursor: pointer; font-size: 14px; border-radius: 4px; }
+  /* 導覽列分三個主軸：車型與情境 / 損益項目與計算 / 結果呈現。
+     每一組是「小標題 + 該組的分頁按鈕」，組與組之間用分隔線隔開，
+     讓使用者一眼看得出這個系統分成哪幾塊、現在站在哪一塊。 */
+  nav { display: flex; gap: 0; padding: 6px 20px 8px; background: #fff; border-bottom: 1px solid #ddd; flex-wrap: wrap; }
+  .nav-group { display: flex; flex-direction: column; gap: 3px; padding: 2px 16px; border-left: 1px solid #cbd5e0; }
+  .nav-group:first-child { padding-left: 0; border-left: none; }
+  .nav-group-label { font-size: 11px; font-weight: 600; color: #718096; letter-spacing: .08em; padding-left: 6px; }
+  .nav-group-tabs { display: flex; gap: 2px; align-items: center; flex-wrap: wrap; }
+  /* 同一組裡再細分「主要輸入」與「設定類」兩段，中間補一個淡分隔 */
+  .nav-sep { width: 1px; height: 16px; background: #edf2f7; margin: 0 4px; }
+  nav button { border: none; background: transparent; padding: 7px 13px; cursor: pointer; font-size: 14px; border-radius: 4px; white-space: nowrap; }
+  nav button:hover:not(.active) { background: #f0f2f5; }
   nav button.active { background: #1f2d3d; color: #fff; }
   /* 比較欄位一多就會超出 1200px，改成撐滿視窗、由表格自己橫向捲動 */
   main { padding: 20px; max-width: 1800px; margin: 0 auto; }
