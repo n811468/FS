@@ -344,9 +344,13 @@ function getComparisonOptions() {
  * 分母為該情境的 LIFE CYCLE 總台數 = Σ(月銷量 × 12 × LC年限)。
  * 回傳的 perUnit / totalsByLine 都是「科目代碼 -> 金額」的動態物件，
  * 落點不再限制成固定的 b5/b8/f3/f4 四個科目(見 applyDevAmortLines_ 如何套用到損益各段)。
+ *
+ * overrideRows 可選：開發總投頁面用來「先試算、還沒儲存」——使用者在畫面上調整金額/低減%時，
+ * 直接把還沒送出的列傳進來算，不必先存檔才看得到下面投資總額/單台攤提會變成多少。
+ * 不傳就照原本行為讀 Sheet 上已儲存的資料（損益計算/儀表板一律用這個，確保跟儲存的資料一致）。
  */
-function amortizeDevInvestmentPerUnit_(scenarioId) {
-  var devRows = getDevInvestment(scenarioId);
+function amortizeDevInvestmentPerUnit_(scenarioId, overrideRows) {
+  var devRows = overrideRows || getDevInvestment(scenarioId);
   var totalUnits = getLifeCycleUnits(scenarioId);
   var empty = { perUnit: {}, totalsByLine: {}, totalUnits: totalUnits };
   if (totalUnits <= 0) return empty;
@@ -417,9 +421,14 @@ function getSalesMixLifeCycleUnits(scenarioId) {
  * 開發總投頁面用：回傳低減後金額與單台攤提，讓使用者直接看到攤提結果。
  * 攤提落點(TargetLineCode)由使用者自己選，不再限制成固定的模具/設備/費用四種，
  * 也可以在頁面上新增新的攤提落點科目(見 getDevAmortTargetOptions / addDevAmortLineItem)。
+ *
+ * overrideRows 可選：見 amortizeDevInvestmentPerUnit_ 的說明，用來在還沒儲存前先試算
+ * 下面「投資總額(低減後)/單台攤提」表會變成多少（見 previewDevInvestmentSummary）。
+ * 這種情況下 rows 仍照 Sheet 上已儲存的資料回傳，不受 overrideRows 影響
+ * ——只影響 targets 那組彙總數字，画面上逐列的輸入框由前端自己管理，不需要後端回填。
  */
-function getDevInvestmentSummary(scenarioId) {
-  var perUnit = amortizeDevInvestmentPerUnit_(scenarioId);
+function getDevInvestmentSummary(scenarioId, overrideRows) {
+  var perUnit = amortizeDevInvestmentPerUnit_(scenarioId, overrideRows);
   var isBaseline = isBaselineScenario_(scenarioId);
   var lineNames = {};
   getPLLineItems().forEach(function (d) { lineNames[d.LineCode] = d.LineName; });
@@ -462,6 +471,16 @@ function getDevInvestmentSummary(scenarioId) {
     currencies: getConfiguredCurrencies(scenarioId),
     perUnit: perUnit, isBaseline: isBaseline, rows: rows
   };
+}
+
+/**
+ * 開發總投頁面用：畫面上還沒按「儲存」的編輯內容，先試算一次下面的「投資總額(低減後)/單台攤提」表，
+ * 讓使用者調整金額或挑戰低減目標(或直接改低減後金額反推)時馬上看得到攤提結果會變成怎樣，
+ * 不必先存檔才知道。只回傳 targets 彙總表需要的部分，不寫入任何資料、不用鎖定。
+ */
+function previewDevInvestmentSummary(scenarioId, rows) {
+  var summary = getDevInvestmentSummary(scenarioId, rows || []);
+  return { targets: summary.targets, lifeCycleUnits: summary.lifeCycleUnits };
 }
 
 /** 某個父科目底下、可以手動輸入的明細科目代碼(排除自動計算科目) */

@@ -1143,6 +1143,18 @@ function drawDevGrid() {
       <div><span class="muted">攤提用 LIFE CYCLE 總台數</span><strong>${fmt(devSummary.lifeCycleUnits)}</strong></div>
       <div><span class="muted">銷售構成推算台數</span><strong>${fmt(devSummary.salesMixLifeCycleUnits)}</strong></div>
     </div>
+    <p class="muted">下表隨畫面上的金額/低減%即時試算（含尚未儲存的變更）；損益表與儀表板要按上方「儲存」後才會套用新數字。</p>
+    <div id="dev-targets-box">${devTargetsTableHtml()}</div>`;
+
+  google.script.run.withSuccessHandler(safeHandler(list => {
+    const dl = document.getElementById('dev-departments');
+    if (dl) dl.innerHTML = (list || []).map(v => `<option value="${esc(v)}">`).join('');
+  })).getKnownDepartments();
+}
+
+/** 「攤提落點 → 投資總額(低減後)/單台攤提」彙總表，抽成獨立函式方便即時試算時單獨重畫這一小塊 */
+function devTargetsTableHtml() {
+  return `
     <table class="grid-table" style="max-width:640px;">
       <thead><tr><th>攤提落點</th><th>投資總額(低減後)</th><th>單台攤提</th></tr></thead>
       <tbody>
@@ -1154,16 +1166,36 @@ function drawDevGrid() {
           </tr>`).join('')}
       </tbody>
     </table>`;
+}
 
-  google.script.run.withSuccessHandler(safeHandler(list => {
-    const dl = document.getElementById('dev-departments');
-    if (dl) dl.innerHTML = (list || []).map(v => `<option value="${esc(v)}">`).join('');
-  })).getKnownDepartments();
+/**
+ * 金額/低減%/攤提落點改變時，不必等按「儲存」才知道下面的彙總表會變成怎樣：
+ * debounce 一下(避免每打一個字元就打一次伺服器)，拿目前畫面上(含未存檔)的 devRows 直接試算。
+ * 這是唯讀試算(previewDevInvestmentSummary 不寫入任何資料)，失敗也不用打擾使用者，
+ * 反正真正的錯誤檢查在按「儲存」時後端還是會擋下來。
+ */
+let devPreviewTimer_ = null;
+function scheduleDevTargetsPreview_() {
+  if (!currentScenarioId || !devSummary) return;
+  if (devPreviewTimer_) clearTimeout(devPreviewTimer_);
+  devPreviewTimer_ = setTimeout(() => {
+    google.script.run
+      .withSuccessHandler(preview => {
+        if (!devSummary) return;
+        devSummary.targets = preview.targets;
+        devSummary.lifeCycleUnits = preview.lifeCycleUnits;
+        const box = document.getElementById('dev-targets-box');
+        if (box) box.innerHTML = devTargetsTableHtml();
+      })
+      .withFailureHandler(() => {})
+      .previewDevInvestmentSummary(currentScenarioId, devRows);
+  }, 400);
 }
 
 function onDevField(i, field, value) {
   devRows[i][field] = value;
   syncDevReduced_(i);
+  scheduleDevTargetsPreview_();
 }
 
 /** 低減後金額 = 金額 × (1 - 低減目標%/100)，四捨五入到整數方便對數字 */
@@ -1181,6 +1213,7 @@ function syncDevReduced_(i) {
 function onDevPctInput(i, value) {
   devRows[i].ChallengeReductionPct = value;
   syncDevReduced_(i);
+  scheduleDevTargetsPreview_();
 }
 
 /**
@@ -1193,6 +1226,7 @@ function onDevReducedInput(i, value) {
   devRows[i].ChallengeReductionPct = amount ? Math.round((1 - reduced / amount) * 10000) / 100 : 0;
   const pctInput = document.getElementById('dev-pct-' + i);
   if (pctInput) pctInput.value = devRows[i].ChallengeReductionPct;
+  scheduleDevTargetsPreview_();
 }
 function addDevRow() {
   devRows.push({ RowID: '', Department: '', TargetLineCode: '', Amount: '', Currency: 'TWD', ChallengeReductionPct: '', Notes: '' });
@@ -1210,6 +1244,7 @@ function onDevCategoryChange(i, category) {
   const target = devTargetCategoryOf(devRows[i].TargetLineCode);
   if (target !== category) devRows[i].TargetLineCode = '';
   drawDevGrid();
+  scheduleDevTargetsPreview_();
 }
 
 /** 在開發總投頁面直接新增攤提落點科目，之後就會出現在「攤提落點」下拉選單裡 */
@@ -1249,6 +1284,7 @@ function removeDevRow(i) {
   // 清空欄位即可：儲存時後端會把空白列(含既有 RowID)刪掉
   devRows[i] = { RowID: devRows[i].RowID, Department: '', TargetLineCode: '', Amount: '', Currency: 'TWD', ChallengeReductionPct: '', Notes: '' };
   drawDevGrid();
+  scheduleDevTargetsPreview_();
 }
 
 function saveDevGrid() {
