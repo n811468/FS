@@ -51,6 +51,18 @@
   table.grid-table tfoot td { font-weight: 600; background: #edf2f7; }
   table.grid-table input[type=number] { width: 92px; text-align: right; padding: 4px 6px; }
   table.grid-table input[type=text] { width: 120px; padding: 4px 6px; }
+  /* 數字靠右、文字靠左。
+     儲存格預設靠右是為了讓數字對齊，但格子裡放的是文字輸入框或下拉選單時，
+     靠右會把整個輸入框推到格子右邊 —— 每一列的選單寬度不一樣時，左邊界就參差不齊。
+     這裡把「裝著文字輸入框/日期/下拉選單」的格子改成靠左，數字欄位維持靠右不受影響。
+     (:has() 在很舊的瀏覽器不支援，那種情況只會退回原本的靠右，不會壞掉) */
+  table.grid-table td:has(> input[type=text]),
+  table.grid-table td:has(> input[type=date]),
+  table.grid-table td:has(> select) { text-align: left; }
+  /* text-align 會從儲存格繼承進輸入框，所以框「裡面」的文字也要明確指定靠左 */
+  table.grid-table input[type=text],
+  table.grid-table input[type=date],
+  table.grid-table select { text-align: left; }
   table.grid-table input, table.grid-table select { border: 1px solid #cbd5e0; border-radius: 3px; font-size: 13px; }
   table.grid-table input:focus { outline: 2px solid #90cdf4; border-color: #2b6cb0; }
   .toolbar-sep { border-left: 1px solid #cbd5e0; height: 22px; }
