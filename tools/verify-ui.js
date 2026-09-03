@@ -501,6 +501,85 @@ gs.deleteDevInvestmentRow(devRow.RowID);
 gs.deletePLLineItem(usedCode);   // 移除引用後應該可以刪除，不該丟例外
 assert(!gs.getPLLineItems().some(l => l.LineCode === usedCode), '移除引用後應該可以刪除');
 
+/* ---- 15. 這次 code review 抓到的問題：不要再犯 ---- */
+// 車系代號含單引號時，星星按鈕不能把它直接寫進 onclick 的 JS 字串裡(HTML 實體會先被解碼，esc() 擋不住)
+gs.saveVehicle({ VehicleID: "Q'1", VehicleTypeID: 'DA', VehicleCode: "Driver's Van" });
+gs.saveSalesMixGrid(sc.ScenarioID, 'DA', [
+  { RowID: '', VehicleID: 'V1', SalesMixPct: 40, MonthlyVolume: 40, LifeCycleYears: 10, ListPriceTaxIncl: 1000000, MandatoryAccessoryPrice: 10574, ScrapFee: 3990, ScrapFeeTaxStatus: '含稅' },
+  { RowID: '', VehicleID: 'V2', SalesMixPct: 40, MonthlyVolume: 40, LifeCycleYears: 10, ListPriceTaxIncl: 1200000, ScrapFee: 3990, ScrapFeeTaxStatus: '含稅' },
+  { RowID: '', VehicleID: "Q'1", SalesMixPct: 20, MonthlyVolume: 20, LifeCycleYears: 10, ListPriceTaxIncl: 1100000, ScrapFee: 3990, ScrapFeeTaxStatus: '含稅' }
+]);
+const quoted = gs.calculateComparison([{ ScenarioID: sc.ScenarioID, VehicleID: "Q'1" }]);
+ctx.__in.quoted = quoted;
+api('lastComparison = __in.quoted');
+const quotedTable = api('plTableHtml')(quoted.columns, quoted.lines);
+const quotedKpi = api('kpiStripHtml')(quoted.columns, quoted.lines);
+[['損益表', quotedTable], ['重點指標卡片', quotedKpi]].forEach(([what, html]) => {
+  assert(html.indexOf("setBaselineColumn('") === -1, `${what}：星星按鈕不該把欄位鍵值直接寫進 onclick 的字串`);
+  assert(/onclick="setBaselineColumnAt\(\d+\)"/.test(html), `${what}：星星按鈕應該改用欄位索引`);
+});
+// 索引真的能對回正確的欄位
+api('lastComparison = __in.comparison');
+api("baselineKey = ''");
+api('setBaselineColumnAt(1)');
+assert(api('baselineKey') === colKeyOf_(cols[1]), '用索引設定比較基準應該對到第 2 欄');
+api('setBaselineColumnAt(99)');   // 超出範圍不該爆掉，也不該亂改
+assert(api('baselineKey') === colKeyOf_(cols[1]), '索引超出範圍時不該改動比較基準');
+api("baselineKey = ''");
+
+// 基準欄的台數是 0 時，年度/LC 總額的 vs 基準百分比不可以變成 ∞%
+ctx.__in.zeroVol = {
+  columns: [
+    Object.assign({}, cols[0], { volume: { monthlyVolume: 0, units: 0, mix: [] } }),
+    Object.assign({}, cols[1], { volume: { monthlyVolume: 100, units: 12000, mix: [] } })
+  ],
+  lines: lines
+};
+api('lastComparison = __in.zeroVol');
+api("baselineKey = __in.zeroVol.columns[0].scenarioId + '|' + __in.zeroVol.columns[0].vehicleId");
+api("volumeBasis = 'year'");
+const zeroVolKpi = api('kpiStripHtml')(api('lastComparison').columns, lines);
+assert(zeroVolKpi.indexOf('Infinity') === -1 && zeroVolKpi.indexOf('∞') === -1 && zeroVolKpi.indexOf('NaN') === -1,
+  '基準欄台數為 0 時，vs 基準的百分比不該印出 Infinity/NaN');
+api("volumeBasis = 'unit'"); api("baselineKey = ''"); api('lastComparison = __in.comparison');
+
+// 損益瀑布圖：扣除項本身是負數時不該印出 −-5,000
+ctx.__in.negDeduct = {
+  columns: [Object.assign({}, cols[0], { amounts: Object.assign({}, cols[0].amounts, { J: -5000 }) })],
+  lines: lines
+};
+api("chartType = 'waterfall'");
+const negWaterfall = api('waterfallChartsHtml_')(api('__in.negDeduct').columns, lines);
+assert(negWaterfall.indexOf('−-') === -1 && negWaterfall.indexOf('−−') === -1,
+  '扣除項是負數時，瀑布圖不該印出兩個負號');
+assert(negWaterfall.indexOf('+5,000') !== -1 || negWaterfall.indexOf('+5000') !== -1,
+  '扣除項是負數等於加回來，應該標成正號');
+api("chartType = 'byLine'");
+
+// 計算失敗/計算中只換內容區，不可以把子頁籤列(含「重新計算」)一起洗掉
+const subnav = api('dashSubNavHtml')(cols);
+assert(subnav.indexOf('id="dash-status"') !== -1 && subnav.indexOf('refreshDashboard(true)') !== -1,
+  '子頁籤列應該含狀態文字與「重新計算」按鈕');
+let dashHtml = '';
+ctx.document.getElementById = id => (id === 'dash-view' ? null : {
+  style: {}, set innerHTML(v) { dashHtml = v; }, get innerHTML() { return dashHtml; },
+  querySelector: () => noopEl, querySelectorAll: () => [], addEventListener: () => { }
+});
+api('setDashViewHtml_')('<p class="status-msg err">計算失敗：測試</p>');
+assert(dashHtml.indexOf('dash-subnav') !== -1 && dashHtml.indexOf('id="dash-view"') !== -1,
+  '外框還沒畫過時，setDashViewHtml_ 應該連子頁籤列一起補畫，而不是只留下錯誤訊息');
+assert(dashHtml.indexOf('計算失敗：測試') !== -1, '錯誤訊息應該出現在內容區');
+ctx.document.getElementById = id => elFor_(id);
+
+// 加權平均欄換算總額時，構成比與台數比例不一致要主動提醒
+assert(api('weightedTotalCaveat_')({ isWeighted: false, volume: { mix: [] } }) === '', '單一車系欄位不需要這個提醒');
+assert(api('weightedTotalCaveat_')({
+  isWeighted: true, volume: { mix: [{ pct: 50, monthlyVolume: 50 }, { pct: 50, monthlyVolume: 50 }] }
+}) === '', '構成比與台數比例一致時不該多嘴');
+assert(api('weightedTotalCaveat_')({
+  isWeighted: true, volume: { mix: [{ pct: 80, monthlyVolume: 20 }, { pct: 20, monthlyVolume: 80 }] }
+}).indexOf('⚠') === 0, '構成比與台數比例差很多時應該提醒總額兜不攏');
+
 if (failures.length) {
   console.log(`前端驗證失敗：${failures.length} 項`);
   failures.forEach(f => console.log('  ✗ ' + f));

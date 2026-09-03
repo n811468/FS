@@ -226,7 +226,7 @@ function loadVehicleTypeSelector(preferredId, preferredScenarioId) {
       silent = false;
       renderTab(currentTab);
     }))
-    .withFailureHandler(err => { silent = false; showGlobalError(err); })
+    .withFailureHandler(err => { silent = false; showGlobalError(err); renderTab(currentTab); })
     .getBootstrap(preferredId || currentVehicleTypeId);
 }
 
@@ -1818,6 +1818,17 @@ function setBaselineColumn(key) {
 function colKey_(col) {
   return (col.scenarioId || '') + '|' + (col.vehicleId || '');
 }
+/**
+ * 星星按鈕改用「第幾欄」而不是把 colKey_ 直接寫進 onclick 的字串裡。
+ * 車系代號是使用者自己輸入的，裡面只要有一個單引號(如 Driver's Van)就會把
+ * onclick="setBaselineColumn('...')" 的 JS 字串截斷 —— 而且 esc() 也救不了：
+ * HTML 屬性裡的實體(&#39;)會先被解碼、才輪到 JS 解析，等於原封不動把引號送進去。
+ * 索引是程式自己產生的數字，沒有這個問題。
+ */
+function setBaselineColumnAt(i) {
+  const col = lastComparison && (lastComparison.columns || [])[i];
+  if (col) setBaselineColumn(colKey_(col));
+}
 function selKey_(sel) {
   return (sel.ScenarioID || '') + '|' + (sel.VehicleID || '');
 }
@@ -1831,7 +1842,6 @@ function selKey_(sel) {
  */
 let dashRequestSeq_ = 0;
 function refreshDashboard(force) {
-  const content = document.getElementById('dashboard-content');
   if (!comparisonOptions.length) { loadComparisonPicker(); return; }
   saveDashPrefs_();
   if (!comparisonSelections.length) {
@@ -1848,25 +1858,41 @@ function refreshDashboard(force) {
     return;
   }
   const seq = ++dashRequestSeq_;
-  if (force || !lastComparison) content.innerHTML = '<p class="muted">計算中...</p>';
+  if (force || !lastComparison) setDashViewHtml_('<p class="muted">計算中...</p>');
   setDashStatus_(force ? '計算中…' : `計算新增的 ${missing.length} 個欄位…`);
   google.script.run
     .withSuccessHandler(safeHandler(result => {
-      if (seq !== dashRequestSeq_ && force) return;   // 已經有更新的整份重算在路上，舊的整份結果不要蓋回去
+      // 比這次更晚送出的請求已經在路上了，舊的結果一律丟掉(不分整份重算或只算新增欄位)：
+      // 較新的那次請求的 missing 是照「目前手上已經有哪幾欄」算出來的，一定涵蓋舊請求要算的欄位，
+      // 丟掉不會少算，反而是讓晚回來的舊結果蓋回去才會把新資料改回舊數字。
+      if (seq !== dashRequestSeq_) return;
       setDashStatus_('');
       lastComparison = force ? result : mergeComparison_(lastComparison, result);
       lastComparison = reorderComparison_(lastComparison, comparisonSelections);
       renderDashboard(lastComparison);
     }))
     .withFailureHandler(err => {
+      if (seq !== dashRequestSeq_) return;
       setDashStatus_('');
-      content.innerHTML = '<p class="status-msg err">計算失敗：' + esc(err.message) + '</p>';
+      // 只換子頁籤的內容，不能把整個 dashboard-content 洗掉 —— 子頁籤列跟「重新計算」都在裡面，
+      // 洗掉之後使用者就沒有任何入口可以去「比較欄位」把算不出來的那一欄移除了
+      // (比較欄位記在 localStorage，重新整理也還在，等於整個儀表板從此打不開)。
+      setDashViewHtml_('<p class="status-msg err">計算失敗：' + esc(err && err.message ? err.message : err) +
+        '</p><p class="muted">請切到「比較欄位」把算不出來的那一欄移除或改選（例如該車系在這個情境沒有銷售構成資料）。</p>');
     })
     .calculateComparison(force ? comparisonSelections : missing);
 }
 function setDashStatus_(text) {
   const el = document.getElementById('dash-status');
   if (el) el.textContent = text || '';
+}
+
+/** 只換子頁籤的內容區；外框(子頁籤列)還沒畫過就先補畫一次，之後一律只動內容 */
+function setDashViewHtml_(html) {
+  const view = document.getElementById('dash-view');
+  if (view) { view.innerHTML = html; return; }
+  const content = document.getElementById('dashboard-content');
+  if (content) content.innerHTML = `${dashSubNavHtml((lastComparison && lastComparison.columns) || [])}<div id="dash-view">${html}</div>`;
 }
 
 /** 把後端新算回來的欄位併進手上的結果：同鍵值的欄位以新的為準，科目取聯集後照 SortOrder 排 */
@@ -2117,9 +2143,12 @@ function kpiStripHtml(cols, lines) {
     }).join('');
     let vsBase = '';
     if (base && !isBase && k !== undefined && k !== null && base.amounts.K !== undefined && base.amounts.K !== null) {
-      const delta = displayAmount_(k, c) - displayAmount_(base.amounts.K, base);
+      const baseShown = displayAmount_(base.amounts.K, base);
+      const delta = displayAmount_(k, c) - baseShown;
       const tone = deltaTone_(kLine, delta);
-      vsBase = `<div class="kpi-vs ${tone}">vs 基準 ${signed_(delta)}${base.amounts.K ? `（${signed_(delta / Math.abs(displayAmount_(base.amounts.K, base)) * 100, 1)}%）` : ''}</div>`;
+      // 百分比的分母要用畫面上實際顯示的基準金額：基準欄的月銷量/總台數是 0 時，
+      // 單台金額不是 0、但年度/LC 總額會是 0，用原始單台金額當判斷就會除以 0 印出 ∞%
+      vsBase = `<div class="kpi-vs ${tone}">vs 基準 ${signed_(delta)}${baseShown ? `（${signed_(delta / Math.abs(baseShown) * 100, 1)}%）` : ''}</div>`;
     } else if (isBase) {
       vsBase = '<div class="kpi-vs muted">比較基準</div>';
     }
@@ -2128,7 +2157,7 @@ function kpiStripHtml(cols, lines) {
       <div class="kpi-title"><span class="kpi-type">${esc([c.vehicleTypeLabel, c.scenarioLabel].filter(p => p).join(' / '))}</span>
         <span class="kpi-vehicle">${esc(c.vehicleLabel)}</span>
         <button type="button" class="star${isBase ? ' on' : ''}" data-tip="${isBase ? '目前的比較基準（再點一次取消）' : '設為比較基準'}"
-          onclick="setBaselineColumn('${esc(colKey_(c))}')">★</button></div>
+          onclick="setBaselineColumnAt(${i})">★</button></div>
       <div class="kpi-main"><span class="kpi-main-label">${esc(nameOf('K'))}</span>
         <span class="kpi-main-num${k < 0 ? ' negative' : ''}">${k === undefined || k === null ? '—' : fmt(displayAmount_(k, c))}</span>
         <span class="kpi-main-pct${kPct < 0 ? ' negative' : ''}">${kPct.toFixed(1)}%</span></div>
@@ -2558,8 +2587,12 @@ function waterfallChartsHtml_(cols, lines) {
           tip: `${c.label}\n${name}\n${fmt(displayAmount_(raw, c))} ${unitLabel_()}（${basisLabel_()}）\n對收入 ${pctText_(raw, c.revenue)}　對廠價 ${pctText_(raw, c.exFactoryPrice)}` });
         running = v;
       } else {
-        bars.push({ g, s: 0, y0: running, y1: running - v, color: '#f56565', label: v ? '−' + fmtV(v) : fmtV(0),
-          tip: `${c.label}\n扣除 ${name}\n−${fmt(displayAmount_(raw, c))} ${unitLabel_()}（${basisLabel_()}）\n對收入 ${pctText_(raw, c.revenue)}　對廠價 ${pctText_(raw, c.exFactoryPrice)}` });
+        // 扣除項本身可能是負數(如索賠取回、負的前瞻費用)，那一步其實是「加回來」——
+        // 一律硬加一個減號會變成 −-5,000，改成照這一步對小計的實際影響(-v)標示正負
+        const deductLabel = v >= 0 ? '−' + fmtV(v) : '+' + fmtV(-v);
+        const deductAmount = (v >= 0 ? '−' : '+') + fmt(Math.abs(displayAmount_(raw, c)));
+        bars.push({ g, s: 0, y0: running, y1: running - v, color: '#f56565', label: v ? deductLabel : fmtV(0),
+          tip: `${c.label}\n扣除 ${name}\n${deductAmount} ${unitLabel_()}（${basisLabel_()}）\n對收入 ${pctText_(raw, c.revenue)}　對廠價 ${pctText_(raw, c.exFactoryPrice)}` });
         running -= v;
       }
     });
@@ -2795,7 +2828,7 @@ function plTableHtml(cols, lines) {
             <div>${esc([c.vehicleTypeLabel, c.scenarioLabel].filter(p => p).join(' / '))}</div>
             <div class="th-sub">${esc(c.vehicleLabel)}
               <button type="button" class="star${isBase ? ' on' : ''}" data-tip="${isBase ? '目前的比較基準（再點一次取消）' : '設為比較基準（表格「與基準差異」與重點指標的 vs 基準都以此欄為準）'}"
-                onclick="setBaselineColumn('${esc(colKey_(c))}')">★</button></div>
+                onclick="setBaselineColumnAt(${ci})">★</button></div>
           </th>`;
           }).join('')}
         </tr>
@@ -2916,8 +2949,34 @@ function colTipText_(el) {
   }
   parts.push(`廠價(未稅) ${fmt(col.exFactoryPrice)}　收入 ${fmt(col.revenue)}`);
   if (col.amounts.K !== undefined && col.amounts.K !== null) parts.push(`營業淨利 ${fmt(col.amounts.K)}（對廠價 ${pctText_(col.amounts.K, col.exFactoryPrice)}）`);
-  if (volumeBasis !== 'unit') parts.push(`表上金額 = ${basisFormula_(col)}`);
+  if (volumeBasis !== 'unit') {
+    parts.push(`表上金額 = ${basisFormula_(col)}`);
+    const warn = weightedTotalCaveat_(col);
+    if (warn) parts.push(warn);
+  }
   return parts.join('\n');
+}
+
+/**
+ * 加權平均欄位換算成年度/LC 總額時的提醒。
+ * 加權平均的單台金額是用「銷售構成比(SalesMixPct)」加權出來的，總額卻是乘上各車系台數的總和；
+ * 只有在構成比跟台數比例一致時，這個總額才會等於各車系欄位總額相加。
+ * 「銷售構成」頁面在畫面上編輯時會自動讓兩者同步，所以正常情況不會差；但直接在 Sheet 上改數字、
+ * 或從別的情境帶入後只調了其中一邊，就可能對不起來 —— 這裡直接講出來，
+ * 而不是讓使用者自己拿計算機加完才發現兜不攏。
+ */
+function weightedTotalCaveat_(col) {
+  if (!col.isWeighted) return '';
+  const mix = ((col.volume || {}).mix || []).filter(m => m.pct || m.monthlyVolume);
+  const totalPct = mix.reduce((s, m) => s + (Number(m.pct) || 0), 0);
+  const totalVol = mix.reduce((s, m) => s + (Number(m.monthlyVolume) || 0), 0);
+  if (mix.length < 2 || !totalPct || !totalVol) return '';
+  const maxGap = Math.max.apply(null, mix.map(m =>
+    Math.abs((Number(m.pct) || 0) / totalPct - (Number(m.monthlyVolume) || 0) / totalVol) * 100));
+  if (maxGap < 1) return '';
+  return `⚠ 構成比與台數比例相差最多 ${maxGap.toFixed(1)} 個百分點，` +
+    '這一欄的總額(加權單台 × 總台數)不會等於各車系欄位的總額相加；' +
+    '要對得起來請到「銷售構成」重新輸入一次台數(輸入時構成比會自動跟著重算)。';
 }
 /** 科目名稱：公式、自動計算來源、屬於哪一段 */
 function lineTipText_(el) {
@@ -3104,6 +3163,13 @@ function installTooltipEngine_() {
 window.addEventListener('DOMContentLoaded', () => {
   installTooltipEngine_();
   const saved = loadAppState_();
+  // 先把上次的車型/情境放回全域變數，再切分頁：switchTab() 會順手 saveAppState_()，
+  // 這時後端資料還沒回來，全域若還是空字串就會把記住的選擇覆寫掉
+  // （getBootstrap 失敗、或使用者在資料回來前就關掉分頁，記住的選擇就永久不見了）。
+  currentVehicleTypeId = saved.vehicleTypeId || '';
+  currentScenarioId = saved.scenarioId || '';
+  // 開場先靜音：switchTab 只切畫面不渲染，等 getBootstrap 回來再渲染一次，避免同一個分頁畫兩遍
+  silent = true;
   switchTab(saved.tab && document.getElementById('panel-' + saved.tab) ? saved.tab : 'vehicletypes');
   loadVehicleTypeSelector(saved.vehicleTypeId, saved.scenarioId);
 });
