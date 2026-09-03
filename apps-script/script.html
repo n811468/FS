@@ -79,9 +79,18 @@ const ENTITIES = {
   }
 };
 
-/** 結構科目或自動計算科目：父科目固定、不可刪除 */
+/** 結構科目或自動計算科目：父科目固定、名稱不可改 */
 function isFixedLineItem(row) {
   return PROTECTED_LINE_CODES.indexOf(row.LineCode) !== -1 || !!row.AutoSource;
+}
+/**
+ * DEV_AMORT 是使用者自己在「開發總投」頁面新增的攤提落點，跟其他內建的自動計算科目
+ * (售價結構、貨物稅、季Margin、模具/設備/CMC/BASE廠開發費攤提)不一樣：那些是程式定義、
+ * 名稱代表固定公式；DEV_AMORT 是使用者自訂的科目，理當跟其他手動科目一樣可以刪除
+ * （後端 deletePLLineItem 仍會擋住「還有開發總投資料指到這裡」的情況，不會憑空弄丟資料）。
+ */
+function isDeletableAutoLineItem(row) {
+  return row.AutoSource === 'DEV_AMORT';
 }
 
 // 表格編輯頁：key -> 渲染函式名稱
@@ -172,7 +181,31 @@ function switchTab(key) {
   currentTab = key;
   document.querySelectorAll('nav button').forEach(b => b.classList.toggle('active', b.dataset.tab === key));
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + key));
+  saveAppState_();
   renderTab(key);
+}
+
+/**
+ * 記住「目前在哪一頁、選了哪個車型/情境」，讓整頁重新載入後能回到原本的位置。
+ * Apps Script 的 HtmlService 網頁跑久了偶爾會自己整頁重新整理(Google 內部的工作階段/驗證更新機制，
+ * 前端程式碼管不到、也無法阻止)，沒有這層記憶的話，使用者只是放著不動，畫面卻突然跳回「車型主檔」
+ * 分頁、車型/情境選單也重設成第一筆，看起來就像「莫名其妙重新載入」。存最基本的三個狀態就好，
+ * 表格編輯頁裡「還沒存檔的修改」本來就無法安全地跨頁面重新載入還原，不在這裡處理。
+ */
+const APP_STATE_KEY_ = 'plApp.state.v1';
+function saveAppState_() {
+  try {
+    localStorage.setItem(APP_STATE_KEY_, JSON.stringify({
+      tab: currentTab, vehicleTypeId: currentVehicleTypeId, scenarioId: currentScenarioId
+    }));
+  } catch (e) { /* 無痕模式等情況存不了就算了，不影響功能 */ }
+}
+function loadAppState_() {
+  try {
+    const s = JSON.parse(localStorage.getItem(APP_STATE_KEY_) || 'null');
+    if (s && typeof s === 'object') return s;
+  } catch (e) { /* 壞掉的資料當作沒有 */ }
+  return {};
 }
 
 function renderTab(key) {
@@ -183,13 +216,13 @@ function renderTab(key) {
 }
 
 /** 開場：車型 + 情境一次取回，期間不重繪，最後只渲染一次目前分頁 */
-function loadVehicleTypeSelector(preferredId) {
+function loadVehicleTypeSelector(preferredId, preferredScenarioId) {
   silent = true;
   google.script.run
     .withSuccessHandler(safeHandler(data => {
       renderVehicleTypeOptions(data.vehicleTypes || [], data.vehicleTypeId);
       currentVehicleTypeId = data.vehicleTypeId || '';
-      renderScenarioOptions(data.scenarios || []);
+      renderScenarioOptions(data.scenarios || [], preferredScenarioId);
       silent = false;
       renderTab(currentTab);
     }))
@@ -227,12 +260,14 @@ function setCurrentScenario(value) {
     badge.textContent = currentScenario ? (currentScenario.ScenarioType || '現況') : '';
     badge.style.display = currentScenario ? 'inline-block' : 'none';
   }
+  saveAppState_();
 }
 
 function onVehicleTypeChange(value) {
   currentVehicleTypeId = value;
   currentScenarioId = '';
   currentScenario = null;
+  saveAppState_();
   // 車型換了之後情境清單也要換，換完才渲染一次，避免同一個分頁畫兩遍
   loadScenarioSelector();
 }
@@ -385,7 +420,7 @@ function entityRowActionHtml(key, i, row, total) {
   const cfg = ENTITIES[key];
   const renameBtn = cfg.renameFn
     ? `<button type="button" class="btn secondary" onclick="renameEntityRow('${key}', ${i})">重新命名</button>` : '';
-  if (key === 'lineitems' && isFixedLineItem(row)) {
+  if (key === 'lineitems' && isFixedLineItem(row) && !isDeletableAutoLineItem(row)) {
     return move + renameBtn + '<span class="muted">不可刪除</span>';
   }
   return move + renameBtn + `<button type="button" class="btn danger" onclick="deleteEntityRow('${key}', ${i})">刪除</button>`;
@@ -1483,6 +1518,9 @@ let comparisonOptions = [];
 let comparisonSelections = [];
 let lastComparison = null;
 let dashPrefsLoaded_ = false;
+let dashView = 'table';               // 目前顯示哪個子頁：'columns' 比較欄位 / 'table' 損益表 / 'chart' 圖表 / 'diff' 差異比較
+// 新增比較欄位那一列還沒送出的草稿(車型/情境/車系)，跟已經加入的 comparisonSelections 分開放
+let builderDraft_ = { vehicleTypeId: '', scenarioId: '', vehicleId: '' };
 
 function loadComparisonPicker() {
   google.script.run
@@ -1492,7 +1530,6 @@ function loadComparisonPicker() {
       // 不必每次打開都重新加一遍欄位；已被刪掉的情境/車系會被濾掉。
       if (!dashPrefsLoaded_) { loadDashPrefs_(); dashPrefsLoaded_ = true; }
       comparisonSelections = comparisonSelections.filter(selectionExists_);
-      renderComparisonPicker();
       // 上方選了哪個情境，儀表板就該看得到那個情境 —— 不管是第一次進來(還沒加任何比較欄位)，
       // 還是已經加過其他欄位、中途把上方情境切到別的(如切去改「目標」的開發總投再回來看儀表板)，
       // 只要目前選的情境還沒被加進來，就補一欄「加權平均」；只新增不刪除，不會把使用者原本
@@ -1500,7 +1537,7 @@ function loadComparisonPicker() {
       if (currentScenarioId && !comparisonSelections.some(s => s.ScenarioID === currentScenarioId)) {
         comparisonSelections.push({ ScenarioID: currentScenarioId, VehicleID: '' });
       }
-      renderComparisonColumns();
+      if (!comparisonSelections.length) dashView = 'columns';   // 還沒有任何比較欄位時，直接停在「比較欄位」頁面
       // 進儀表板一律重新跟後端要一次：其他分頁可能剛改過成本/費用，快取在手上的舊結果不能信
       refreshDashboard(true);
     }))
@@ -1515,57 +1552,134 @@ function selectionExists_(sel) {
     (!sel.VehicleID || t.vehicles.some(v => v.VehicleID === sel.VehicleID)));
 }
 
-function renderComparisonPicker() {
-  const picker = document.getElementById('comparison-picker');
-  if (!comparisonOptions.length) {
-    picker.innerHTML = '<p class="muted">尚無車型資料，請先在「車型主檔」建立車型。</p>';
-    return;
+/**
+ * 建構比較欄位：整張表都是下拉選單，改哪一列就直接換那一欄要比的資料 ——
+ * 跟系統其他頁面「表格式編輯」的慣例一致，不再另外用一組獨立的挑選器 + 卡片列表。
+ * 最後一列永遠是「新增」列，選好車型/情境/車系後按「加入」才會變成一個真正的比較欄位。
+ */
+function comparisonBuilderHtml_() {
+  if (!comparisonOptions.length) return '<p class="muted">尚無車型資料，請先在「車型主檔」建立車型。</p>';
+  if (!builderDraft_.vehicleTypeId || !comparisonOptions.some(t => t.VehicleTypeID === builderDraft_.vehicleTypeId)) {
+    builderDraft_.vehicleTypeId = comparisonOptions[0].VehicleTypeID;
+    builderDraft_.scenarioId = ''; builderDraft_.vehicleId = '';
   }
-  picker.innerHTML = `
-    <label style="display:flex;align-items:center;gap:6px;">車型：
-      <select id="cmp-vehicletype" onchange="onComparisonTypeChange()">
-        ${comparisonOptions.map(t => `<option value="${esc(t.VehicleTypeID)}">${esc(t.VehicleTypeID)}</option>`).join('')}
-      </select>
-    </label>
-    <label style="display:flex;align-items:center;gap:6px;">情境：<select id="cmp-scenario"></select></label>
-    <label style="display:flex;align-items:center;gap:6px;">車系：<select id="cmp-vehicle"></select></label>
-    <button type="button" class="btn" onclick="addComparisonColumn()">加入比較欄位</button>
-    <button type="button" class="btn secondary" onclick="addAllVehiclesOfScenario()">加入該情境全部車系</button>
+  const draftType = comparisonOptions.find(t => t.VehicleTypeID === builderDraft_.vehicleTypeId);
+  if (!draftType.scenarios.some(s => s.ScenarioID === builderDraft_.scenarioId)) {
+    builderDraft_.scenarioId = (draftType.scenarios[0] && draftType.scenarios[0].ScenarioID) || '';
+  }
+  if (builderDraft_.vehicleId && !draftType.vehicles.some(v => v.VehicleID === builderDraft_.vehicleId)) {
+    builderDraft_.vehicleId = '';
+  }
+
+  const rows = comparisonSelections.map((sel, i) => builderRowHtml_(sel, i)).join('');
+  return `
+    <p class="muted">每一列是一個比較欄位（車型 × 情境 × 車系）。改下拉選單直接換這一欄要比的資料，
+      用箭頭或拖曳調整順序；最後一列選好之後按「加入」新增一欄。</p>
+    <div class="grid-scroll"><table class="grid-table builder-table">
+      <thead><tr><th></th><th>車型</th><th>情境</th><th>車系</th><th></th></tr></thead>
+      <tbody id="builder-rows">
+        ${rows}
+        ${builderNewRowHtml_(draftType)}
+      </tbody>
+    </table></div>
+    ${comparisonSelections.length ? `<div class="toolbar"><button type="button" class="btn secondary" onclick="clearComparisonColumns()">全部清除</button></div>` : ''}
   `;
-  onComparisonTypeChange();
 }
 
-function onComparisonTypeChange() {
-  const typeId = val('cmp-vehicletype');
-  const type = comparisonOptions.find(t => t.VehicleTypeID === typeId);
-  const scenarioSel = document.getElementById('cmp-scenario');
-  const vehicleSel = document.getElementById('cmp-vehicle');
-  if (!type) { scenarioSel.innerHTML = ''; vehicleSel.innerHTML = ''; return; }
+function builderRowHtml_(sel, i) {
+  const type = comparisonOptions.find(t => t.scenarios.some(s => s.ScenarioID === sel.ScenarioID));
+  const typeId = type ? type.VehicleTypeID : '';
+  const scenarios = type ? type.scenarios : [];
+  const vehicles = type ? type.vehicles : [];
+  return `<tr draggable="true" data-idx="${i}"
+      ondragstart="onRowDragStart_(event, ${i})" ondragover="onRowDragOver_(event)"
+      ondrop="onRowDrop_(event, ${i})" ondragend="onRowDragEnd_(event)">
+    <td class="row-actions">
+      <span class="chip-handle" data-tip="拖曳調整順序">⠿</span>
+      <button type="button" class="row-move" data-tip="往上移" ${i === 0 ? 'disabled' : ''}
+        onclick="moveComparisonColumn(${i}, -1)">▲</button>
+      <button type="button" class="row-move" data-tip="往下移" ${i === comparisonSelections.length - 1 ? 'disabled' : ''}
+        onclick="moveComparisonColumn(${i}, 1)">▼</button>
+    </td>
+    <td><select onchange="onBuilderRowTypeChange_(${i}, this.value)">
+      ${comparisonOptions.map(t => `<option value="${esc(t.VehicleTypeID)}"${t.VehicleTypeID === typeId ? ' selected' : ''}>${esc(t.VehicleTypeID)}</option>`).join('')}
+    </select></td>
+    <td><select onchange="onBuilderRowScenarioChange_(${i}, this.value)">
+      ${scenarios.map(s => `<option value="${esc(s.ScenarioID)}"${s.ScenarioID === sel.ScenarioID ? ' selected' : ''}>${esc(scenarioLabel(s))}</option>`).join('')}
+    </select></td>
+    <td><select onchange="onBuilderRowVehicleChange_(${i}, this.value)">
+      <option value=""${!sel.VehicleID ? ' selected' : ''}>加權平均</option>
+      ${vehicles.map(v => `<option value="${esc(v.VehicleID)}"${v.VehicleID === sel.VehicleID ? ' selected' : ''}>${esc(v.VehicleCode || v.VehicleID)}</option>`).join('')}
+    </select></td>
+    <td class="row-actions"><button type="button" class="btn danger" onclick="removeComparisonColumn(${i})">✕</button></td>
+  </tr>`;
+}
 
-  scenarioSel.innerHTML = type.scenarios.length
-    ? type.scenarios.map(s => `<option value="${esc(s.ScenarioID)}">${esc(scenarioLabel(s))}</option>`).join('')
-    : '<option value="">(此車型尚無情境)</option>';
-  vehicleSel.innerHTML = '<option value="">加權平均</option>' +
-    type.vehicles.map(v => `<option value="${esc(v.VehicleID)}">${esc(v.VehicleCode || v.VehicleID)}</option>`).join('');
+function builderNewRowHtml_(draftType) {
+  const scenarios = draftType ? draftType.scenarios : [];
+  const vehicles = draftType ? draftType.vehicles : [];
+  return `<tr class="builder-new-row">
+    <td class="row-actions muted">+</td>
+    <td><select onchange="onBuilderDraftChange_('vehicleTypeId', this.value)">
+      ${comparisonOptions.map(t => `<option value="${esc(t.VehicleTypeID)}"${t.VehicleTypeID === builderDraft_.vehicleTypeId ? ' selected' : ''}>${esc(t.VehicleTypeID)}</option>`).join('')}
+    </select></td>
+    <td>${scenarios.length ? `<select onchange="onBuilderDraftChange_('scenarioId', this.value)">
+      ${scenarios.map(s => `<option value="${esc(s.ScenarioID)}"${s.ScenarioID === builderDraft_.scenarioId ? ' selected' : ''}>${esc(scenarioLabel(s))}</option>`).join('')}
+    </select>` : '<span class="muted">(此車型尚無情境)</span>'}</td>
+    <td><select onchange="onBuilderDraftChange_('vehicleId', this.value)">
+      <option value=""${!builderDraft_.vehicleId ? ' selected' : ''}>加權平均</option>
+      ${vehicles.map(v => `<option value="${esc(v.VehicleID)}"${v.VehicleID === builderDraft_.vehicleId ? ' selected' : ''}>${esc(v.VehicleCode || v.VehicleID)}</option>`).join('')}
+    </select></td>
+    <td class="row-actions">
+      <button type="button" class="btn" ${scenarios.length ? '' : 'disabled'} onclick="addComparisonColumn()" data-tip="把這一欄加入比較">加入</button>
+      <button type="button" class="btn secondary" ${scenarios.length ? '' : 'disabled'}
+        onclick="addAllVehiclesOfScenario()" data-tip="把這個情境底下所有車系(含加權平均)都加入">全部車系</button>
+    </td>
+  </tr>`;
+}
+
+function onBuilderDraftChange_(field, value) {
+  builderDraft_[field] = value;
+  if (field === 'vehicleTypeId') { builderDraft_.scenarioId = ''; builderDraft_.vehicleId = ''; }
+  if (field === 'scenarioId') { builderDraft_.vehicleId = ''; }
+  rerenderCurrentView_();
+}
+
+/** 編輯已加入的比較欄位：換車型等於整欄換掉，情境/車系跟著重選第一個 */
+function onBuilderRowTypeChange_(i, typeId) {
+  const type = comparisonOptions.find(t => t.VehicleTypeID === typeId);
+  const scenarioId = (type && type.scenarios[0] && type.scenarios[0].ScenarioID) || '';
+  applyBuilderEdit_(i, { ScenarioID: scenarioId, VehicleID: '' });
+}
+function onBuilderRowScenarioChange_(i, scenarioId) {
+  applyBuilderEdit_(i, { ScenarioID: scenarioId, VehicleID: comparisonSelections[i].VehicleID });
+}
+function onBuilderRowVehicleChange_(i, vehicleId) {
+  applyBuilderEdit_(i, { ScenarioID: comparisonSelections[i].ScenarioID, VehicleID: vehicleId });
+}
+/** 套用一列的編輯結果；如果改完會跟另一欄重複，就擋下來、把選單復原成原本的值 */
+function applyBuilderEdit_(i, next) {
+  if (comparisonSelections.some((s, j) => j !== i && s.ScenarioID === next.ScenarioID && s.VehicleID === next.VehicleID)) {
+    showGlobalError('這個比較欄位已經加入過了。');
+    rerenderCurrentView_();
+    return;
+  }
+  comparisonSelections[i] = next;
+  refreshDashboard();
 }
 
 function addComparisonColumn() {
-  const scenarioId = val('cmp-scenario');
-  const vehicleId = val('cmp-vehicle');
-  if (!scenarioId) { showGlobalError('此車型尚無情境，請先在「情境設定」建立情境。'); return; }
-  pushSelection(scenarioId, vehicleId);
-  renderComparisonColumns();
+  if (!builderDraft_.scenarioId) { showGlobalError('此車型尚無情境，請先在「情境設定」建立情境。'); return; }
+  pushSelection(builderDraft_.scenarioId, builderDraft_.vehicleId);
   refreshDashboard();
 }
 
 /** 一次把某情境底下所有車系都加進來比較（常用：看單一情境各車系的差異） */
 function addAllVehiclesOfScenario() {
-  const scenarioId = val('cmp-scenario');
-  const type = comparisonOptions.find(t => t.VehicleTypeID === val('cmp-vehicletype'));
-  if (!scenarioId || !type) return;
-  type.vehicles.forEach(v => pushSelection(scenarioId, v.VehicleID));
-  pushSelection(scenarioId, '');
-  renderComparisonColumns();
+  const type = comparisonOptions.find(t => t.VehicleTypeID === builderDraft_.vehicleTypeId);
+  if (!builderDraft_.scenarioId || !type) return;
+  type.vehicles.forEach(v => pushSelection(builderDraft_.scenarioId, v.VehicleID));
+  pushSelection(builderDraft_.scenarioId, '');
   refreshDashboard();
 }
 
@@ -1576,12 +1690,10 @@ function pushSelection(scenarioId, vehicleId) {
 
 function removeComparisonColumn(idx) {
   comparisonSelections.splice(idx, 1);
-  renderComparisonColumns();
   refreshDashboard();
 }
 function clearComparisonColumns() {
   comparisonSelections = [];
-  renderComparisonColumns();
   refreshDashboard();
 }
 
@@ -1596,60 +1708,32 @@ function moveComparisonColumn(idx, dir) {
   const tmp = comparisonSelections[idx];
   comparisonSelections[idx] = comparisonSelections[target];
   comparisonSelections[target] = tmp;
-  renderComparisonColumns();
   refreshDashboard();
 }
 
-function renderComparisonColumns() {
-  const box = document.getElementById('comparison-columns');
-  if (!comparisonSelections.length) { box.innerHTML = '<p class="muted">尚未加入比較欄位。</p>'; return; }
-  box.innerHTML = `<p class="muted">拖曳卡片，或用左右箭頭調整比較欄位的順序：</p>` +
-    '<div class="toolbar cmp-chip-row" id="cmp-chip-row">' + comparisonSelections.map((sel, i) => {
-    const type = comparisonOptions.find(t => t.scenarios.some(s => s.ScenarioID === sel.ScenarioID));
-    const scenario = type && type.scenarios.find(s => s.ScenarioID === sel.ScenarioID);
-    const vehicle = type && type.vehicles.find(v => v.VehicleID === sel.VehicleID);
-    const label = [
-      type ? type.VehicleTypeID : '',
-      scenario ? scenarioLabel(scenario) : sel.ScenarioID,
-      sel.VehicleID ? ((vehicle && vehicle.VehicleCode) || sel.VehicleID) : '加權平均'
-    ].filter(p => p).join(' / ');
-    return `<span class="cmp-chip" draggable="true" data-idx="${i}"
-        ondragstart="onChipDragStart(event, ${i})" ondragover="onChipDragOver(event)"
-        ondrop="onChipDrop(event, ${i})" ondragend="onChipDragEnd(event)">
-      <span class="chip-handle" data-tip="拖曳調整順序">⠿</span>
-      <button type="button" class="chip-move" data-tip="往左移" ${i === 0 ? 'disabled' : ''}
-        onclick="moveComparisonColumn(${i}, -1)">◀</button>
-      <span class="chip-label">${esc(label)}</span>
-      <button type="button" class="chip-move" data-tip="往右移" ${i === comparisonSelections.length - 1 ? 'disabled' : ''}
-        onclick="moveComparisonColumn(${i}, 1)">▶</button>
-      <button type="button" class="btn danger" onclick="removeComparisonColumn(${i})">✕</button></span>`;
-  }).join('') + `<button type="button" class="btn secondary" onclick="clearComparisonColumns()">全部清除</button></div>`;
-}
-
-/* ---- 比較欄位卡片可直接拖曳調整順序，比只能按左右箭頭一次一步更直覺 ---- */
-let dragChipFrom_ = null;
-function onChipDragStart(e, i) {
-  dragChipFrom_ = i;
+/* ---- 比較欄位可直接拖曳整列調整順序，比只能按上下箭頭一次一步更直覺 ---- */
+let dragRowFrom_ = null;
+function onRowDragStart_(e, i) {
+  dragRowFrom_ = i;
   e.dataTransfer.effectAllowed = 'move';
   e.currentTarget.classList.add('dragging');
 }
-function onChipDragOver(e) {
+function onRowDragOver_(e) {
   e.preventDefault();
   e.dataTransfer.dropEffect = 'move';
 }
-function onChipDrop(e, i) {
+function onRowDrop_(e, i) {
   e.preventDefault();
-  if (dragChipFrom_ === null || dragChipFrom_ === i) return;
-  const [moved] = comparisonSelections.splice(dragChipFrom_, 1);
+  if (dragRowFrom_ === null || dragRowFrom_ === i) return;
+  const [moved] = comparisonSelections.splice(dragRowFrom_, 1);
   comparisonSelections.splice(i, 0, moved);
-  dragChipFrom_ = null;
-  renderComparisonColumns();
+  dragRowFrom_ = null;
   refreshDashboard();
 }
-function onChipDragEnd() {
-  dragChipFrom_ = null;
-  const row = document.getElementById('cmp-chip-row');
-  if (row) row.querySelectorAll('.cmp-chip.dragging').forEach(el => el.classList.remove('dragging'));
+function onRowDragEnd_() {
+  dragRowFrom_ = null;
+  const box = document.getElementById('builder-rows');
+  if (box) box.querySelectorAll('tr.dragging').forEach(el => el.classList.remove('dragging'));
 }
 
 /* ---- 儀表板顯示選項（切換時只重畫，不重算；全部記在瀏覽器裡，下次打開還在） ---- */
@@ -1657,9 +1741,8 @@ let pctBase = 'exfactory';            // 第二小欄：'exfactory' 對廠價% /
 let showPriceStructure = true;        // 是否顯示 P1~P9 售價結構
 let chartLineCodes = ['A', 'K'];      // 「科目比較」圖要畫哪幾個科目
 let collapsedGroups = new Set();      // 目前收合中的大項(B/E/G/I)，切換 % 基準等重畫時要保留住
-let showDiffCards = false;            // 是否顯示「情境差異卡片」
 let diffPairs = [];                   // 使用者自己選的差異比較組合 [{aKey, bKey}]，key 見 colKey_()
-let baselineKey = '';                 // 比較基準欄位(colKey_)；空字串 = 第一欄
+let baselineKey = '';                 // 比較基準欄位(colKey_)；空字串 = 不設定比較基準
 let amountUnit = 1;                   // 金額單位：1 = 元、1000 = 千元
 let volumeBasis = 'unit';             // 金額基礎：'unit' 單台 / 'year' 年度總額(×月銷量×12) / 'lc' LC 總額(×LC 總台數)
 let highlightBest = false;            // 每一列標示最佳/最差的欄位
@@ -1671,9 +1754,9 @@ let chartLabels = true;               // 圖上顯示數值標籤
 const DASH_PREFS_KEY_ = 'plDashboard.prefs.v1';
 function dashPrefsSnapshot_() {
   return {
-    selections: comparisonSelections, diffPairs, pctBase, showPriceStructure, chartLineCodes, showDiffCards,
+    selections: comparisonSelections, diffPairs, pctBase, showPriceStructure, chartLineCodes,
     baselineKey, amountUnit, volumeBasis, highlightBest, showKpi, chartType, chartValue, chartLabels,
-    collapsed: Array.from(collapsedGroups)
+    dashView, collapsed: Array.from(collapsedGroups)
   };
 }
 function saveDashPrefs_() {
@@ -1688,7 +1771,6 @@ function loadDashPrefs_() {
   if (['exfactory', 'revenue', 'diff', 'diffpct', 'none'].indexOf(p.pctBase) !== -1) pctBase = p.pctBase;
   if (typeof p.showPriceStructure === 'boolean') showPriceStructure = p.showPriceStructure;
   if (Array.isArray(p.chartLineCodes) && p.chartLineCodes.length) chartLineCodes = p.chartLineCodes.map(String);
-  if (typeof p.showDiffCards === 'boolean') showDiffCards = p.showDiffCards;
   if (typeof p.baselineKey === 'string') baselineKey = p.baselineKey;
   if (p.amountUnit === 1 || p.amountUnit === 1000) amountUnit = p.amountUnit;
   if (['unit', 'year', 'lc'].indexOf(p.volumeBasis) !== -1) volumeBasis = p.volumeBasis;
@@ -1697,6 +1779,7 @@ function loadDashPrefs_() {
   if (['byLine', 'byColumn', 'structure', 'waterfall'].indexOf(p.chartType) !== -1) chartType = p.chartType;
   if (p.chartValue === 'amount' || p.chartValue === 'pct') chartValue = p.chartValue;
   if (typeof p.chartLabels === 'boolean') chartLabels = p.chartLabels;
+  if (['columns', 'table', 'chart', 'diff'].indexOf(p.dashView) !== -1) dashView = p.dashView;
   if (Array.isArray(p.collapsed)) collapsedGroups = new Set(p.collapsed.map(String));
 }
 
@@ -1705,7 +1788,6 @@ function setDashOption(name, value) {
   switch (name) {
     case 'pctBase': pctBase = value; break;
     case 'showPriceStructure': showPriceStructure = !!value; break;
-    case 'showDiffCards': showDiffCards = !!value; break;
     case 'amountUnit': amountUnit = Number(value) === 1000 ? 1000 : 1; break;
     case 'volumeBasis': volumeBasis = value; break;
     case 'highlightBest': highlightBest = !!value; break;
@@ -1720,13 +1802,16 @@ function setDashOption(name, value) {
 }
 function setPctBase(v) { setDashOption('pctBase', v); }
 function setShowPriceStructure(v) { setDashOption('showPriceStructure', v); }
-function setShowDiffCards(v) { setDashOption('showDiffCards', v); }
 
-/** 設定比較基準欄位（表格第二小欄的「與基準差異」、重點指標卡片的 vs 基準都以它為準） */
+/**
+ * 設定比較基準欄位（表格第二小欄的「與基準差異」、重點指標卡片的 vs 基準都以它為準）。
+ * 比較基準不是必要的 —— 沒設定就是沒有，不會偷偷預設成第一欄；再點一次目前的基準會取消設定。
+ */
 function setBaselineColumn(key) {
-  baselineKey = key || '';
+  key = key || '';
+  baselineKey = (key && key === baselineKey) ? '' : key;
   saveDashPrefs_();
-  if (lastComparison) renderDashboard(lastComparison);
+  rerenderCurrentView_();
 }
 
 /** 比較欄位的唯一鍵值：情境+車系（跟 comparisonSelections 是同一組資料，只是換一種查法） */
@@ -1750,9 +1835,9 @@ function refreshDashboard(force) {
   if (!comparisonOptions.length) { loadComparisonPicker(); return; }
   saveDashPrefs_();
   if (!comparisonSelections.length) {
-    lastComparison = null;
+    lastComparison = { columns: [], lines: [] };
     setDashStatus_('');
-    content.innerHTML = '<p class="muted">請先加入至少一個比較欄位。</p>';
+    renderDashboard(lastComparison);
     return;
   }
   const known = (!force && lastComparison) ? (lastComparison.columns || []) : [];
@@ -1806,37 +1891,81 @@ function reorderComparison_(result, selections) {
   return Object.assign({}, result, { columns: cols, lines: lines });
 }
 
+/**
+ * 儀表板拆成四個子頁籤，一次只專心看一件事，不再把建構欄位/損益表/圖表/差異比較全部疊在同一頁：
+ *   比較欄位 — 加入/調整要比較的車型×情境×車系
+ *   損益表   — 主表格 + 重點指標卡片 + 小計驗算
+ *   圖表     — 四種柱狀圖
+ *   差異比較 — 使用者自選兩欄的差異卡片
+ * 子頁籤本身也記在瀏覽器裡，下次打開還在同一頁。
+ */
 function renderDashboard(result) {
   const content = document.getElementById('dashboard-content');
   const cols = (result && result.columns) || [];
   const lines = (result && result.lines) || [];
-  if (!cols.length) { content.innerHTML = '<p class="muted">請先加入至少一個比較欄位。</p>'; return; }
 
-  // 重畫會把整個表格換掉：正在顯示的提示要收掉、表格的橫向捲動位置要留住
+  // 重畫會把整個內容換掉：正在顯示的提示要收掉、表格的橫向捲動位置要留住
   hideTooltip_();
   const oldScroller = content.querySelector('.grid-scroll');
   const scrollLeft = oldScroller && oldScroller.scrollLeft ? oldScroller.scrollLeft : 0;
 
-  content.innerHTML = `
-    ${dashboardToolbarHtml(cols)}
-    ${subtotalCheckHtml(cols)}
-    ${kpiStripHtml(cols, lines)}
-    <div id="csv-output" style="display:none;"></div>
-    ${diffCardsHtml(cols, lines)}
-    ${chartSectionHtml(cols, lines)}
-    <div class="table-meta">${tableMetaText_(cols)}</div>
-    <div class="grid-scroll" id="pl-table-wrap">${plTableHtml(cols, lines)}</div>
-  `;
+  content.innerHTML = `${dashSubNavHtml(cols)}<div id="dash-view">${dashViewHtml_(cols, lines)}</div>`;
   const scroller = content.querySelector('.grid-scroll');
   if (scroller && scrollLeft) scroller.scrollLeft = scrollLeft;
   installTableCrosshair_(content);
 }
 
-/** 只重畫損益表本體（收合大項用）：圖表、卡片不動，表格的捲動位置也不動 */
+/** 沒有 lastComparison(還沒算過、或選過又清空)時也能安全重畫目前這一頁 */
+function rerenderCurrentView_() {
+  renderDashboard(lastComparison || { columns: [], lines: [] });
+}
+
+function dashSubNavHtml(cols) {
+  const tabs = [
+    ['columns', '比較欄位' + (cols.length ? `（${cols.length}）` : '')],
+    ['table', '損益表'],
+    ['chart', '圖表'],
+    ['diff', '差異比較']
+  ];
+  return `
+    <div class="dash-subnav">
+      ${tabs.map(([key, label]) => `<button type="button" class="dash-subnav-btn${dashView === key ? ' active' : ''}"
+          onclick="setDashView('${key}')">${esc(label)}</button>`).join('')}
+      <span class="dash-subnav-status" id="dash-status"></span>
+      <button type="button" class="btn secondary dash-subnav-refresh" onclick="refreshDashboard(true)"
+        data-tip="整份重新跟後端計算（平常加入欄位只算新加的那幾欄）">重新計算</button>
+    </div>`;
+}
+function setDashView(key) {
+  dashView = key;
+  saveDashPrefs_();
+  rerenderCurrentView_();
+}
+
+function dashViewHtml_(cols, lines) {
+  if (dashView === 'columns') return comparisonBuilderHtml_();
+  if (!cols.length) return '<p class="muted">請先切到「比較欄位」加入至少一個比較欄位。</p>';
+  if (dashView === 'chart') return chartSectionHtml(cols, lines);
+  if (dashView === 'diff') return diffSectionHtml_(cols, lines);
+  return tableViewHtml_(cols, lines);
+}
+
+function tableViewHtml_(cols, lines) {
+  return `
+    ${dashboardToolbarHtml(cols)}
+    ${subtotalCheckHtml(cols)}
+    ${kpiStripHtml(cols, lines)}
+    <div id="csv-output" style="display:none;"></div>
+    <div class="table-meta">${tableMetaText_(cols)}</div>
+    <div class="grid-scroll" id="pl-table-wrap">${plTableHtml(cols, lines)}</div>
+  `;
+}
+
+/** 只重畫損益表本體（收合大項用）：卡片不動，表格的捲動位置也不動 */
 function rerenderTable_() {
   if (!lastComparison) return;
   const wrap = document.getElementById('pl-table-wrap');
-  if (!wrap) { renderDashboard(lastComparison); return; }
+  if (!wrap) { rerenderCurrentView_(); return; }
   hideTooltip_();
   wrap.innerHTML = plTableHtml(lastComparison.columns || [], lastComparison.lines || []);
 }
@@ -1868,17 +1997,28 @@ function pctBaseOf_(col) {
 function pctBaseName_() {
   return pctBase === 'revenue' ? '對收入' : '對廠價';
 }
-/** 帶正負號的差異顯示：+1,234 / -1,234 */
+/**
+ * 帶正負號的差異顯示：+1,234 / -1,234。
+ * 四捨五入到指定小數位後如果變成 0、但其實不是真的 0(常見於「千元」單位下差幾百元)，
+ * 就多留幾位小數，最多到 3 位 —— 不然使用者會看到一排「vs 基準 +0」，
+ * 以為這個功能沒作用，其實只是差異被四捨五入蓋掉了。
+ */
 function signed_(v, digits) {
   const n = Number(v) || 0;
-  return (n > 0 ? '+' : '') + fmt(n, digits);
+  if (n === 0) return '0';
+  let d = digits === undefined ? 0 : digits;
+  const maxD = d + 3;
+  while (d < maxD && Number(n.toFixed(d)) === 0) d++;
+  return (n > 0 ? '+' : '') + fmt(n, d);
 }
 function tableMetaText_(cols) {
   const parts = [`金額單位：${unitLabel_()}`, `基礎：${basisLabel_()}`];
   if (pctBase === 'exfactory' || pctBase === 'revenue') parts.push(`第二欄：${pctBaseName_()}%`);
   if (pctBase === 'diff' || pctBase === 'diffpct') {
     const b = baselineCol_(cols);
-    parts.push(`第二欄：與基準（${b ? b.label : '第一欄'}）的${pctBase === 'diffpct' ? '差異%' : '差異'}`);
+    parts.push(b
+      ? `第二欄：與基準（${b.label}）的${pctBase === 'diffpct' ? '差異%' : '差異'}`
+      : '尚未設定比較基準，第二欄先顯示「—」（用上面的「比較基準」下拉選單或欄位標題的 ☆ 設定）');
   }
   if (highlightBest && cols.length > 1) parts.push('▲ 該列最佳　▼ 該列最差');
   return parts.map(esc).join('　・　');
@@ -1902,8 +2042,10 @@ function deltaTone_(line, delta) {
   return (delta > 0) === (better === 'high') ? 'good' : 'bad';
 }
 
+/** 目前的比較基準欄位；不一定要設，沒設定就回傳 null(不會偷偷預設成第一欄) */
 function baselineCol_(cols) {
-  return cols.find(c => colKey_(c) === baselineKey) || cols[0] || null;
+  if (!baselineKey) return null;
+  return (cols || []).find(c => colKey_(c) === baselineKey) || null;
 }
 
 function dashboardToolbarHtml(cols) {
@@ -1923,6 +2065,12 @@ function dashboardToolbarHtml(cols) {
           ${opt('none', '不顯示', pctBase)}
         </select>
       </label>
+      <label data-tip="哪一欄要當作比較的基準；不設定也可以，只是就看不到「與基準的差異」跟卡片的 vs 基準。&#10;也可以直接點欄位標題或重點指標卡片上的 ☆。">比較基準
+        <select onchange="setBaselineColumn(this.value)">
+          <option value=""${!baselineKey ? ' selected' : ''}>(不設定)</option>
+          ${cols.map(c => `<option value="${esc(colKey_(c))}"${colKey_(c) === baselineKey ? ' selected' : ''}>${esc(c.label)}</option>`).join('')}
+        </select>
+      </label>
       <label>金額單位
         <select onchange="setDashOption('amountUnit', this.value)">
           ${opt('1', '元', String(amountUnit))}
@@ -1940,7 +2088,6 @@ function dashboardToolbarHtml(cols) {
       ${chk('showKpi', showKpi, '重點指標')}
       ${chk('showPriceStructure', showPriceStructure, '售價結構(P1~P9)')}
       ${chk('highlightBest', highlightBest, '標示最佳/最差', '每一列把數字最好的欄位標 ▲、最差的標 ▼：收入/毛利/淨利越高越好，成本/費用越低越好')}
-      ${chk('showDiffCards', showDiffCards, '情境差異卡片')}
       <span class="toolbar-sep"></span>
       <button type="button" class="btn secondary" onclick="toggleAllGroups()">全部收合/展開大項</button>
       <button type="button" class="btn secondary" onclick="showComparisonCsv()">匯出 CSV</button>
@@ -1980,7 +2127,7 @@ function kpiStripHtml(cols, lines) {
     return `<div class="kpi-card${isBase ? ' baseline' : ''}" data-c="${i}" data-tipfn="col">
       <div class="kpi-title"><span class="kpi-type">${esc([c.vehicleTypeLabel, c.scenarioLabel].filter(p => p).join(' / '))}</span>
         <span class="kpi-vehicle">${esc(c.vehicleLabel)}</span>
-        <button type="button" class="star${isBase ? ' on' : ''}" data-tip="${isBase ? '目前的比較基準' : '設為比較基準'}"
+        <button type="button" class="star${isBase ? ' on' : ''}" data-tip="${isBase ? '目前的比較基準（再點一次取消）' : '設為比較基準'}"
           onclick="setBaselineColumn('${esc(colKey_(c))}')">★</button></div>
       <div class="kpi-main"><span class="kpi-main-label">${esc(nameOf('K'))}</span>
         <span class="kpi-main-num${k < 0 ? ' negative' : ''}">${k === undefined || k === null ? '—' : fmt(displayAmount_(k, c))}</span>
@@ -2053,8 +2200,7 @@ function keyLines_(lines) {
  * 避免每個明細都列出來反而看不出重點。每張卡下面附一個差異柱狀圖，
  * 綠色 = 往好的方向變(成本降、利潤升)、紅色 = 往壞的方向變。
  */
-function diffCardsHtml(cols, lines) {
-  if (!showDiffCards) return '';
+function diffSectionHtml_(cols, lines) {
   const picker = diffPairPickerHtml(cols);
   if (!diffPairs.length) {
     return `<div class="diff-section">${picker}
@@ -2648,7 +2794,7 @@ function plTableHtml(cols, lines) {
             return `<th colspan="${showSecond ? 2 : 1}" class="col-head${isBase ? ' baseline' : ''}" data-c="${ci}" data-tipfn="col">
             <div>${esc([c.vehicleTypeLabel, c.scenarioLabel].filter(p => p).join(' / '))}</div>
             <div class="th-sub">${esc(c.vehicleLabel)}
-              <button type="button" class="star${isBase ? ' on' : ''}" data-tip="${isBase ? '目前的比較基準' : '設為比較基準（表格「與基準差異」與重點指標的 vs 基準都以此欄為準）'}"
+              <button type="button" class="star${isBase ? ' on' : ''}" data-tip="${isBase ? '目前的比較基準（再點一次取消）' : '設為比較基準（表格「與基準差異」與重點指標的 vs 基準都以此欄為準）'}"
                 onclick="setBaselineColumn('${esc(colKey_(c))}')">★</button></div>
           </th>`;
           }).join('')}
@@ -2957,7 +3103,8 @@ function installTooltipEngine_() {
 /* ---------------- 初始化 ---------------- */
 window.addEventListener('DOMContentLoaded', () => {
   installTooltipEngine_();
-  switchTab('vehicletypes');
-  loadVehicleTypeSelector();
+  const saved = loadAppState_();
+  switchTab(saved.tab && document.getElementById('panel-' + saved.tab) ? saved.tab : 'vehicletypes');
+  loadVehicleTypeSelector(saved.vehicleTypeId, saved.scenarioId);
 });
 </script>

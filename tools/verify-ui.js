@@ -79,6 +79,8 @@ ctx.__in = {};   // 要塞進 context 的外部資料先掛在這裡
 const countTag = (s, tag) => (s.match(new RegExp('<' + tag + '[\\s>]', 'g')) || []).length;
 const cols = comparison.columns;
 const lines = comparison.lines;
+/** 跟前端 colKey_() 同一個公式，測試裡用來組出比較欄位的鍵值 */
+const colKeyOf_ = col => (col.scenarioId || '') + '|' + (col.vehicleId || '');
 
 function checkTable(pctBase, showPriceStructure) {
   api(`pctBase = ${JSON.stringify(pctBase)}`);
@@ -167,10 +169,12 @@ api("chartLineCodes = ['A', 'K']");
 api("chartType = 'byLine'");
 const toolbar = api('dashboardToolbarHtml')(cols);
 assert(toolbar.indexOf('id="chart-lines"') === -1, '% 基準工具列不該再混著圖表科目選擇區(已移到圖表旁邊)');
-['pctBase', 'amountUnit', 'volumeBasis', 'highlightBest', 'showKpi', 'showDiffCards'].forEach(name => {
+['pctBase', 'amountUnit', 'volumeBasis', 'highlightBest', 'showKpi'].forEach(name => {
   assert(toolbar.indexOf(`setDashOption('${name}'`) !== -1, `工具列應該有 ${name} 的開關`);
 });
 assert(toolbar.indexOf('value="diff"') !== -1 && toolbar.indexOf('value="diffpct"') !== -1, '第二小欄應該可以選「與基準差異」');
+assert(toolbar.indexOf('onchange="setBaselineColumn(this.value)"') !== -1, '工具列應該有比較基準下拉選單');
+assert(toolbar.indexOf('>(不設定)<') !== -1, '比較基準下拉選單應該有「(不設定)」選項');
 const chartSection = api('chartSectionHtml')(cols, lines);
 assert(chartSection.indexOf('id="chart-lines"') !== -1, '圖表區塊應該有科目選擇區');
 assert(chartSection.indexOf('id="chart-area"') !== -1, '圖表區塊應該跟科目選擇區放在一起');
@@ -321,8 +325,24 @@ assert(ticks.lo <= -214924 && ticks.hi >= 1147009 && ticks.ticks.indexOf(0) !== 
 /* ---- 9. hover 提示內容、與基準差異、最佳/最差、單位與基礎 ---- */
 ctx.__in.comparison = comparison;
 api('lastComparison = __in.comparison');
-api("baselineKey = ''");
 const fakeEl = attrs => ({ getAttribute: k => attrs[k] === undefined ? null : String(attrs[k]) });
+
+// 比較基準預設是「不設定」，不會偷偷選第一欄；沒設定時任何欄位都不該出現 vs 基準
+api("baselineKey = ''");
+assert(api('baselineCol_')(cols) === null, '沒設定比較基準時 baselineCol_() 應該回傳 null，不該偷偷選第一欄');
+assert(api('cellTipText_')(fakeEl({ 'data-c': 1, 'data-l': 'B' })).indexOf('vs 基準') === -1,
+  '沒設定比較基準時，格子提示不該出現 vs 基準');
+api("pctBase = 'diff'");
+assert(api('secondCellHtml')(cols[1].amounts.B, cols[1], lines.find(l => l.LineCode === 'B'), cols, '').indexOf('muted') !== -1,
+  '沒設定比較基準時，差異欄應顯示「—」而不是硬選一欄當基準');
+assert(api('tableMetaText_')(cols).indexOf('尚未設定比較基準') !== -1, '表格說明文字應提示尚未設定比較基準');
+const noBaseKpi = api('kpiStripHtml')(cols, lines);
+assert(noBaseKpi.indexOf('class="kpi-vs') === -1,
+  '沒設定比較基準時，重點指標卡片不該出現 vs 基準或「比較基準」標記');
+api("pctBase = 'exfactory'");
+
+// 設定比較基準之後才驗證正常的 hover/差異行為
+api("baselineKey = __in.comparison.columns[0].scenarioId + '|' + __in.comparison.columns[0].vehicleId");
 const cellTip = api('cellTipText_')(fakeEl({ 'data-c': 1, 'data-l': 'B' }));
 assert(cellTip.indexOf(cols[1].label) === 0, '格子提示第一行應是欄位名稱');
 assert(cellTip.indexOf('銷貨成本合計') !== -1 && cellTip.indexOf('對廠價') !== -1 && cellTip.indexOf('對收入') !== -1, '格子提示應含科目、兩種百分比');
@@ -380,10 +400,12 @@ api('amountUnit = 1000'); api("volumeBasis = 'lc'");
 assert(api('pctCellHtml')(cols[0].amounts.B, cols[0]) === pctEx, '切換單位/基礎後百分比不變');
 api('amountUnit = 1'); api("volumeBasis = 'unit'");
 
-// 重點指標卡片
+// 重點指標卡片(要有比較基準才看得到 vs 基準)
+api("baselineKey = __in.comparison.columns[0].scenarioId + '|' + __in.comparison.columns[0].vehicleId");
 const kpi = api('kpiStripHtml')(cols, lines);
 assert((kpi.match(/class="kpi-card/g) || []).length === cols.length, '每個欄位一張重點指標卡片');
 assert(kpi.indexOf('比較基準') !== -1 && kpi.indexOf('vs 基準') !== -1, '卡片應標示基準與 vs 基準差異');
+api("baselineKey = ''");
 
 /* ---- 10. 只算新增欄位：合併與排序不打後端 ---- */
 const partial = gs.calculateComparison([{ ScenarioID: sc.ScenarioID, VehicleID: 'V2' }]);
@@ -400,18 +422,84 @@ assert(api('mergeComparison_')(null, partial) === partial, '沒有既有結果�
 /* ---- 11. 瀏覽器端記住設定：存/讀要對稱，壞掉的資料要被忽略 ---- */
 let stored = null;
 ctx.localStorage = { setItem: (k, v) => { stored = v; }, getItem: () => stored };
-api("pctBase = 'revenue'"); api("chartType = 'waterfall'"); api('amountUnit = 1000');
+api("pctBase = 'revenue'"); api("chartType = 'waterfall'"); api('amountUnit = 1000'); api("dashView = 'diff'");
 api('saveDashPrefs_')();
-api("pctBase = 'exfactory'"); api("chartType = 'byLine'"); api('amountUnit = 1');
+api("pctBase = 'exfactory'"); api("chartType = 'byLine'"); api('amountUnit = 1'); api("dashView = 'table'");
 api('loadDashPrefs_')();
-assert(api('pctBase') === 'revenue' && api('chartType') === 'waterfall' && api('amountUnit') === 1000, '重新載入後顯示設定應該還原');
-stored = '{"pctBase":"bogus","amountUnit":7,"chartType":"nope"}';
-api("pctBase = 'exfactory'"); api('amountUnit = 1'); api("chartType = 'byLine'");
+assert(api('pctBase') === 'revenue' && api('chartType') === 'waterfall' && api('amountUnit') === 1000 && api('dashView') === 'diff',
+  '重新載入後顯示設定(含目前的子頁籤)應該還原');
+api("dashView = 'table'");
+stored = '{"pctBase":"bogus","amountUnit":7,"chartType":"nope","dashView":"nope"}';
+api("pctBase = 'exfactory'"); api('amountUnit = 1'); api("chartType = 'byLine'"); api("dashView = 'table'");
 api('loadDashPrefs_')();
-assert(api('pctBase') === 'exfactory' && api('amountUnit') === 1 && api('chartType') === 'byLine', '不合法的設定值應被忽略');
+assert(api('pctBase') === 'exfactory' && api('amountUnit') === 1 && api('chartType') === 'byLine' && api('dashView') === 'table',
+  '不合法的設定值(含 dashView)應被忽略');
 stored = 'not json';
 api('loadDashPrefs_')();   // 不該丟例外
 api("pctBase = 'exfactory'"); api("chartType = 'byLine'"); api('amountUnit = 1');
+
+/* ---- 12. 比較基準：點兩次同一顆星星要能取消，signed_() 差異數字四捨五入不能蓋掉真的有差異 ---- */
+api("baselineKey = ''");
+api(`setBaselineColumn(${JSON.stringify(colKeyOf_(cols[0]))})`);
+assert(api('baselineKey') === colKeyOf_(cols[0]), '點星星應該設定比較基準');
+api(`setBaselineColumn(${JSON.stringify(colKeyOf_(cols[0]))})`);
+assert(api('baselineKey') === '', '再點一次目前的比較基準應該取消設定');
+api("baselineKey = ''");
+
+assert(api('signed_')(0) === '0', '差異為 0 就顯示 0，不加正負號');
+assert(api('signed_')(1234) === '+1,234', '正數差異要有 + 號');
+assert(api('signed_')(-1234) === '-1,234', '負數差異要有 - 號');
+// 千元單位下差 400 元 = 0.4 千元，四捨五入到 0 位小數會變成「+0」，看起來像沒有差異；
+// signed_() 應該自動多留小數，讓使用者看得出真的有差異
+assert(api('signed_')(0.4) === '+0.4', `差異被四捨五入蓋掉時應該自動加小數，實際：${api('signed_')(0.4)}`);
+assert(api('signed_')(-0.04) === '-0.04', `更小的差異要再多一位小數，實際：${api('signed_')(-0.04)}`);
+assert(api('signed_')(1234.4, 0) === '+1,234', '差異夠大時仍照原本的整數顯示，不必多留小數');
+
+/* ---- 13. 比較欄位改用表格式編輯：新增列、編輯既有列、拖曳/上下移動、重複偵測 ---- */
+ctx.__in.comparisonOptions = gs.getComparisonOptions();
+api('comparisonOptions = __in.comparisonOptions');
+api('comparisonSelections = [{ ScenarioID: __in.comparison.columns[0].scenarioId, VehicleID: "V1" }, ' +
+  '{ ScenarioID: __in.comparison.columns[0].scenarioId, VehicleID: "V2" }]');
+api('builderDraft_ = { vehicleTypeId: "", scenarioId: "", vehicleId: "" }');
+const builderHtml = api('comparisonBuilderHtml_')();
+assert((builderHtml.match(/<tr draggable="true"/g) || []).length === 2, '已加入的比較欄位每一列都應該可以拖曳排序');
+assert(builderHtml.indexOf('builder-new-row') !== -1, '最後應該有一列新增列');
+assert(builderHtml.indexOf('onchange="onBuilderRowTypeChange_') !== -1 &&
+  builderHtml.indexOf('onchange="onBuilderRowScenarioChange_') !== -1 &&
+  builderHtml.indexOf('onchange="onBuilderRowVehicleChange_') !== -1,
+  '每一列的車型/情境/車系都應該是可以直接改的下拉選單');
+assert(builderHtml.indexOf('id="cmp-vehicletype"') === -1 && builderHtml.indexOf('cmp-chip') === -1,
+  '不該再用舊的挑選器下拉選單或卡片列表');
+
+// 編輯既有列：改成另一欄已經存在的組合要擋下來，不能改成跟別欄重複
+api('onBuilderRowVehicleChange_(0, "V2")');
+assert(api('comparisonSelections')[0].VehicleID === 'V1', '改成跟別欄重複時應該擋下來，維持原本的值');
+// 改成沒人用過的組合要成功
+api('onBuilderRowVehicleChange_(0, "")');
+assert(api('comparisonSelections')[0].VehicleID === '', '改成沒有人用過的組合應該套用成功');
+
+/* ---- 14. 開發總投攤提落點：使用者自訂的科目沒人用時不出現在損益表、也刪得掉；有人用時不能刪除 ---- */
+const orphanCode = gs.addDevAmortLineItem('費用', '測試攤提落點(沒人用)').LineCode;
+let freshLines = gs.calculateComparison([{ ScenarioID: sc.ScenarioID, VehicleID: 'V1' }]).lines;
+assert(!freshLines.some(l => l.LineCode === orphanCode), '還沒有任何開發總投列指到這裡，就不該出現在損益表');
+gs.deletePLLineItem(orphanCode);   // 不該丟例外
+assert(!gs.getPLLineItems().some(l => l.LineCode === orphanCode), '沒人用的自訂攤提落點應該可以直接刪除');
+
+const usedCode = gs.addDevAmortLineItem('費用', '測試攤提落點(有人用)').LineCode;
+const devRow = gs.saveDevInvestmentRow({
+  RowID: '', ScenarioID: sc.ScenarioID, Department: '測試部門', Amount: 12000, Currency: 'TWD', TargetLineCode: usedCode
+});
+freshLines = gs.calculateComparison([{ ScenarioID: sc.ScenarioID, VehicleID: 'V1' }]).lines;
+assert(freshLines.some(l => l.LineCode === usedCode), '這個情境的開發總投有列指到這裡，就應該出現在損益表');
+let deleteThrew = false;
+try { gs.deletePLLineItem(usedCode); } catch (e) {
+  deleteThrew = true;
+  assert(e.message.indexOf('開發總投') !== -1, `錯誤訊息應該指向開發總投，實際：${e.message}`);
+}
+assert(deleteThrew, '還有開發總投列指到這個科目時，不該讓刪除成功');
+gs.deleteDevInvestmentRow(devRow.RowID);
+gs.deletePLLineItem(usedCode);   // 移除引用後應該可以刪除，不該丟例外
+assert(!gs.getPLLineItems().some(l => l.LineCode === usedCode), '移除引用後應該可以刪除');
 
 if (failures.length) {
   console.log(`前端驗證失敗：${failures.length} 項`);

@@ -447,7 +447,13 @@ function applyDevAmortLines_(targetDict, parentLine, devPerUnit, lineDefs) {
   lineDefs.filter(function (d) {
     return d.ParentLine === parentLine && DEV_AMORT_AUTO_SOURCES.indexOf(d.AutoSource) !== -1;
   }).forEach(function (d) {
-    targetDict[d.LineCode] = devPerUnit.perUnit[d.LineCode] || 0;
+    var amount = devPerUnit.perUnit[d.LineCode];
+    // 內建的四個攤提落點(模具/設備/CMC/BASE廠開發費)一律顯示、即使 0，維持 Gate F 損益表固定列序。
+    // 使用者自訂的攤提落點(AutoSource=DEV_AMORT)則只在「這個情境目前真的有開發總投列指到這裡」才顯示，
+    // 不然使用者在開發總投頁面新增過的攤提落點只要試用過一次，就會永遠留在每一份損益表/矩陣頁面上洗不掉
+    // (顯示成金額 0、不屬於任何目前看得到的資料)，而且還刪不掉(deletePLLineItem 會擋住還有資料指向它的科目)。
+    if (amount === undefined && d.AutoSource === AUTO_SOURCE.DEV_AMORT) return;
+    targetDict[d.LineCode] = amount || 0;
   });
 }
 
@@ -630,8 +636,13 @@ function buildResultLines_(lineValues, revenue, exFactoryPrice) {
  * 只算「這個情境底下、已經有銷售構成資料」的車系，還沒建立銷售構成的車系無法計算，直接略過。
  */
 function buildAutoLines_(scenarioId, vehicles, parentLines) {
+  var devPerUnit = amortizeDevInvestmentPerUnit_(scenarioId);
+  // 跟 applyDevAmortLines_ 同一個規則：使用者自訂的攤提落點只有這個情境目前真的用到才列出來，
+  // 不然「銷貨成本」「營業費用」頁面的自動計算科目區塊會永遠多出一列用不到、也刪不掉的科目。
   var autoLineDefs = getPLLineItems().filter(function (d) {
-    return parentLines.indexOf(d.ParentLine) !== -1 && !!d.AutoSource;
+    if (parentLines.indexOf(d.ParentLine) === -1 || !d.AutoSource) return false;
+    if (d.AutoSource === AUTO_SOURCE.DEV_AMORT && devPerUnit.perUnit[d.LineCode] === undefined) return false;
+    return true;
   });
   var result = { lines: autoLineDefs.map(function (d) { return { value: d.LineCode, label: d.LineName }; }), values: {} };
   if (!autoLineDefs.length) return result;

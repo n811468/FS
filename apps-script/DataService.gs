@@ -923,8 +923,20 @@ function deletePLLineItem(lineCode) {
       throw new Error('「' + lineCode + '」是損益結構科目(小計/毛利/淨利)，刪除會讓損益鏈斷掉，不可刪除。');
     }
     var def = getPLLineItems().filter(function (d) { return d.LineCode === lineCode; })[0];
-    if (def && def.AutoSource) {
+    if (def && def.AutoSource && def.AutoSource !== AUTO_SOURCE.DEV_AMORT) {
       throw new Error('「' + lineCode + ' ' + def.LineName + '」是自動計算科目，由比率設定或開發總投攤提產生，不可刪除。');
+    }
+    // DEV_AMORT 是使用者自己在「開發總投」頁面新增的攤提落點(非內建的模具/設備/CMC/BASE廠開發費四個)，
+    // 使用者建的東西應該讓使用者刪得掉 —— 只要目前沒有任何情境的開發總投列還指到這裡就放行，
+    // 否則那些列的金額會攤不到任何科目、憑空消失，所以先擋下來請使用者自己改選或刪除那些列。
+    if (def && def.AutoSource === AUTO_SOURCE.DEV_AMORT) {
+      var used = (sheetToObjects_(SHEETS.DEV_INVESTMENT) || []).filter(function (r) {
+        return devAmortTargetOf_(r) === lineCode;
+      });
+      if (used.length) {
+        throw new Error('「' + lineCode + ' ' + def.LineName + '」在「開發總投」還有 ' + used.length +
+          ' 筆資料指到這個攤提落點，請先把那些列改選別的攤提落點或刪除，才能刪除這個科目。');
+      }
     }
     return deleteRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', lineCode);
   });

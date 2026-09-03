@@ -83,13 +83,24 @@
   .cmp-chip.dragging { opacity: .4; }
   .cmp-chip .chip-handle { display: flex; align-items: center; padding: 0 2px 0 8px; color: #a0aec0; font-size: 13px; cursor: grab; }
 
-  /* ---- 儀表板：建構欄位卡片，選擇跟已加入的比較欄位放在同一張卡，不必分散找 ---- */
-  .dash-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  /* ---- 儀表板：子頁籤(比較欄位/損益表/圖表/差異比較)，一次只專心看一件事 ---- */
+  .dash-head { margin-bottom: 4px; }
   .dash-head h3 { margin: 0; }
-  .dash-head-right { display: flex; align-items: center; gap: 10px; }
-  .builder-card { background: #f9fafb; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; }
-  .builder-card .toolbar { margin-bottom: 10px; }
-  .builder-card .chip-row-label { font-size: 11px; color: #718096; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .04em; }
+  .dash-subnav { display: flex; align-items: center; gap: 2px; margin-bottom: 14px; padding-bottom: 0;
+    border-bottom: 1px solid #e2e8f0; flex-wrap: wrap; }
+  .dash-subnav-btn { border: none; background: transparent; padding: 9px 16px; cursor: pointer; font-size: 14px;
+    border-radius: 6px 6px 0 0; color: #4a5568; margin-bottom: -1px; }
+  .dash-subnav-btn:hover { background: #f0f2f5; }
+  .dash-subnav-btn.active { background: #ebf4ff; color: #1a365d; font-weight: 600; box-shadow: inset 0 -2px 0 #2b6cb0; }
+  .dash-subnav-status { margin-left: 6px; font-size: 12px; color: #888; }
+  .dash-subnav-refresh { margin-left: auto; }
+  /* ---- 比較欄位：一張跟其他頁面一致的表格式編輯，每列一個比較欄位，最後一列是新增列 ---- */
+  table.builder-table th, table.builder-table td { text-align: left; }
+  table.builder-table td:first-child, table.builder-table td:last-child { text-align: center; white-space: nowrap; }
+  table.builder-table select { min-width: 130px; }
+  table.builder-table tr.dragging { opacity: .4; }
+  table.builder-table tr.builder-new-row { background: #fffaf0; }
+  table.builder-table tr.builder-new-row td:first-child { color: #dd6b20; font-weight: 600; }
   .auto-tag { font-size: 10px; color: #2b6cb0; border: 1px solid #90cdf4; border-radius: 3px; padding: 0 3px; margin-left: 4px; }
   .dash-toolbar { row-gap: 8px; }
   .dash-toolbar label[data-tip] { cursor: help; }
