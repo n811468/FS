@@ -83,27 +83,106 @@
   .cmp-chip.dragging { opacity: .4; }
   .cmp-chip .chip-handle { display: flex; align-items: center; padding: 0 2px 0 8px; color: #a0aec0; font-size: 13px; cursor: grab; }
 
-  /* ---- 儀表板：建構欄位卡片，選擇跟已加入的比較欄位放在同一張卡，不必分散找 ---- */
-  .dash-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  /* ---- 儀表板：子頁籤(比較欄位/損益表/圖表/差異比較)，一次只專心看一件事 ---- */
+  .dash-head { margin-bottom: 4px; }
   .dash-head h3 { margin: 0; }
-  .builder-card { background: #f9fafb; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px 16px; margin-bottom: 16px; }
-  .builder-card .toolbar { margin-bottom: 10px; }
-  .builder-card .chip-row-label { font-size: 11px; color: #718096; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .04em; }
+  .dash-subnav { display: flex; align-items: center; gap: 2px; margin-bottom: 14px; padding-bottom: 0;
+    border-bottom: 1px solid #e2e8f0; flex-wrap: wrap; }
+  .dash-subnav-btn { border: none; background: transparent; padding: 9px 16px; cursor: pointer; font-size: 14px;
+    border-radius: 6px 6px 0 0; color: #4a5568; margin-bottom: -1px; }
+  .dash-subnav-btn:hover { background: #f0f2f5; }
+  .dash-subnav-btn.active { background: #ebf4ff; color: #1a365d; font-weight: 600; box-shadow: inset 0 -2px 0 #2b6cb0; }
+  .dash-subnav-status { margin-left: 6px; font-size: 12px; color: #888; }
+  .dash-subnav-refresh { margin-left: auto; }
+  /* ---- 比較欄位：一張跟其他頁面一致的表格式編輯，每列一個比較欄位，最後一列是新增列 ---- */
+  table.builder-table th, table.builder-table td { text-align: left; }
+  table.builder-table td:first-child, table.builder-table td:last-child { text-align: center; white-space: nowrap; }
+  table.builder-table select { min-width: 130px; }
+  table.builder-table tr.dragging { opacity: .4; }
+  table.builder-table tr.builder-new-row { background: #fffaf0; }
+  table.builder-table tr.builder-new-row td:first-child { color: #dd6b20; font-weight: 600; }
   .auto-tag { font-size: 10px; color: #2b6cb0; border: 1px solid #90cdf4; border-radius: 3px; padding: 0 3px; margin-left: 4px; }
-  .charts-row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 16px; align-items: stretch; }
-  .chart-box { flex: 2 1 420px; min-height: 320px; background: #fff; border: 1px solid #eee; border-radius: 6px; padding: 8px; }
-  /* 柱狀圖科目勾選框直接靠在圖旁邊，選了就近看到圖重畫，不必跟圖隔著一整張損益表；
-     勾選框本身就是圖例(legend)，順便顯示目前的金額，一眼看得出勾的是哪個科目 */
-  .chart-picker-box { flex: 1 1 260px; min-width: 220px; background: #f9fafb; border: 1px solid #e2e8f0;
+  .dash-toolbar { row-gap: 8px; }
+  .dash-toolbar label[data-tip] { cursor: help; }
+  .table-meta { font-size: 11.5px; color: #718096; margin: 4px 0 2px; }
+
+  /* ---- 重點指標卡片：每個比較欄位一張，營業淨利與各段毛利率一眼看到 ---- */
+  .kpi-strip { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0 14px; }
+  .kpi-card { flex: 1 1 200px; min-width: 190px; max-width: 300px; background: #fff; border: 1px solid #e2e8f0; border-radius: 8px;
+    padding: 10px 12px; cursor: default; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+  .kpi-card:hover { border-color: #90cdf4; }
+  .kpi-card.baseline { border-color: #ecc94b; background: #fffff0; }
+  .kpi-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; margin-bottom: 4px; }
+  .kpi-type { font-size: 11px; color: #718096; }
+  .kpi-vehicle { font-size: 13px; font-weight: 600; color: #2d3748; }
+  .kpi-main { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+  .kpi-main-label { font-size: 11px; color: #718096; }
+  .kpi-main-num { font-size: 20px; font-weight: 700; color: #1a202c; font-variant-numeric: tabular-nums; }
+  .kpi-main-pct { font-size: 12px; font-weight: 600; color: #4a5568; }
+  .kpi-main-num.negative, .kpi-main-pct.negative, .kpi-num.negative { color: #c53030; }
+  .kpi-bar { height: 5px; background: #edf2f7; border-radius: 3px; margin: 6px 0 8px; overflow: hidden; }
+  .kpi-bar-fill { height: 100%; background: #2f855a; border-radius: 3px; }
+  .kpi-bar-fill.negative { background: #e53e3e; }
+  .kpi-row { display: flex; justify-content: space-between; gap: 6px; font-size: 11.5px; color: #4a5568; line-height: 1.7; }
+  .kpi-row span:first-child { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .kpi-num { font-variant-numeric: tabular-nums; }
+  .kpi-pct { width: 46px; text-align: right; color: #a0aec0; font-variant-numeric: tabular-nums; }
+  .kpi-vs { margin-top: 6px; font-size: 11.5px; font-weight: 600; }
+  .kpi-vs.good, td.delta.good { color: #2f855a; }
+  .kpi-vs.bad, td.delta.bad { color: #c53030; }
+  /* 比較基準：星號按鈕，點了就把這一欄當基準 */
+  .star { appearance: none; border: none; background: transparent; color: #cbd5e0; cursor: pointer; font-size: 13px; padding: 0 2px; line-height: 1; margin-left: auto; }
+  .star:hover { color: #d69e2e; }
+  .star.on { color: #d69e2e; }
+  .pl-table th.col-head.baseline { background: #fffbe6; }
+  .pl-table th.col-head .th-sub { display: flex; align-items: center; justify-content: center; gap: 4px; }
+  .pl-table td.base-mark { color: #b7791f; font-size: 11px; }
+  /* 最佳/最差：小三角形放在數字左邊，不改變數字本身的顏色(負數仍是紅色) */
+  .pl-table td.best::before { content: '▲'; color: #2f855a; font-size: 9px; margin-right: 4px; }
+  .pl-table td.worst::before { content: '▼'; color: #c53030; font-size: 9px; margin-right: 4px; }
+  .pl-table td.best { background: #f0fff4; }
+  .pl-table td.worst { background: #fff5f5; }
+
+  /* ---- 圖表區塊：自己畫的 SVG 長條圖，hover 走跟表格同一套提示 ---- */
+  .chart-card { border: 1px solid #e2e8f0; border-radius: 8px; padding: 10px 12px 12px; margin-bottom: 16px; background: #fff; }
+  .chart-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; margin-bottom: 10px; }
+  .chart-hint { font-size: 11.5px; color: #718096; }
+  .chart-hint b { color: #2d3748; font-weight: 600; }
+  .seg { display: inline-flex; border: 1px solid #cbd5e0; border-radius: 6px; overflow: hidden; }
+  .seg-btn { appearance: none; border: none; border-left: 1px solid #cbd5e0; background: #fff; color: #4a5568; font-size: 12.5px; padding: 5px 11px; cursor: pointer; }
+  .seg-btn:first-child { border-left: none; }
+  .seg-btn:hover { background: #f0f2f5; }
+  .seg-btn.active { background: #1f2d3d; color: #fff; }
+  .charts-row { display: flex; gap: 14px; flex-wrap: wrap; align-items: stretch; }
+  .chart-area { flex: 3 1 520px; min-width: 0; }
+  .chart-svg { display: block; width: 100%; height: auto; font-family: inherit; }
+  .chart-svg rect.bar { cursor: pointer; transition: opacity .1s; }
+  .chart-svg rect.bar:hover { stroke: #1a202c; stroke-width: 1.5; }
+  .chart-svg:hover rect.bar:not(:hover) { opacity: .75; }
+  .chart-svg text.x-label { cursor: default; }
+  .chart-svg line.marker { cursor: help; }
+  .chart-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 2px 0 6px 4px; font-size: 11.5px; color: #4a5568; }
+  .legend-chip { display: inline-flex; align-items: center; gap: 5px; }
+  .legend-chip i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+  .waterfall-row { display: flex; flex-wrap: wrap; gap: 12px; }
+  .waterfall-card { flex: 1 1 520px; min-width: 420px; border: 1px solid #edf2f7; border-radius: 6px; padding: 6px 8px; }
+  .waterfall-title { font-size: 12.5px; font-weight: 600; color: #2d3748; margin: 2px 0 4px 4px; cursor: default; }
+  .chart-box { background: #fff; border: 1px solid #eee; border-radius: 6px; padding: 8px; }
+  /* 科目勾選框直接靠在圖旁邊，選了就近看到圖重畫；小計/毛利/淨利加粗、明細縮排，跟損益表一樣的層次 */
+  .chart-picker-box { flex: 1 1 230px; min-width: 210px; max-width: 320px; background: #f9fafb; border: 1px solid #e2e8f0;
     border-radius: 6px; padding: 10px 12px; }
-  .legend-list { display: flex; flex-direction: column; gap: 1px; max-height: 260px; overflow-y: auto; }
-  .legend-item { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 4px; cursor: pointer; font-size: 12.5px; }
+  .chart-picker-box .toolbar-block-title { display: flex; align-items: center; gap: 8px; }
+  .link-btn { appearance: none; border: none; background: transparent; color: #2b6cb0; font-size: 11px; cursor: pointer; padding: 0; }
+  .link-btn:hover { text-decoration: underline; }
+  .legend-list { display: flex; flex-direction: column; gap: 1px; max-height: 340px; overflow-y: auto; }
+  .legend-item { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 4px; cursor: pointer; font-size: 12.5px; }
   .legend-item:hover { background: #edf2f7; }
   .legend-item input { margin: 0; }
   .legend-item .legend-name { flex: 1; color: #4a5568; }
-  .legend-item.on .legend-name { color: #1a202c; font-weight: 600; }
-  .legend-item .legend-val { font-size: 11px; color: #a0aec0; font-variant-numeric: tabular-nums; }
-  .legend-source-hint { font-size: 11px; color: #a0aec0; margin-bottom: 6px; }
+  .legend-item.subtotal .legend-name { font-weight: 600; color: #2d3748; }
+  .legend-item.detail { padding-left: 18px; }
+  .legend-item.on { background: #ebf4ff; }
+  .legend-item.on .legend-name { color: #1a202c; }
 
   /* ---- 表格橫向捲動：欄位多的頁面(銷售構成、成本矩陣、儀表板)不再把輸入框擠出畫面 ---- */
   .grid-scroll { overflow-x: auto; max-width: 100%; padding-bottom: 4px; }
@@ -120,6 +199,8 @@
 
   label.chk { display: inline-flex; flex-direction: row; align-items: center; gap: 4px; font-size: 12px; color: #444; }
   .toolbar label { display: flex; flex-direction: column; font-size: 12px; color: #555; gap: 3px; }
+  /* 核取方塊那種 label 是「方塊 + 文字」橫排，不要被上面那條直排規則帶著走 */
+  .toolbar label.chk { flex-direction: row; align-items: center; }
   .toolbar-block { width: 100%; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px 12px; margin-top: 8px; background: #f9fafb; }
   .toolbar-block-title { font-size: 12px; font-weight: 600; color: #4a5568; margin-bottom: 4px; }
   .toolbar-block .toolbar { margin-bottom: 6px; }
@@ -141,15 +222,18 @@
   /* 科目名稱後的公式平常隱藏，滑鼠移到 ƒ 圖示（或自動計算的圓點）上才顯示提示。
      用 data-tip + 自己寫的 fixed 定位 tooltip(見 script.html 的 installTooltipEngine_)，
      不用瀏覽器原生 title —— 原生 title 在有橫向捲動/sticky 釘住欄位的表格裡常常被裁掉看不到。 */
-  .formula-hint { display: inline-block; color: #a0aec0; border: 1px solid #cbd5e0; border-radius: 3px;
-    font-size: 10px; line-height: 1; padding: 1px 3px; cursor: help; font-style: italic; vertical-align: middle; margin-left: 3px; }
+  .formula-hint { display: inline-block; color: #718096; border: 1px solid #cbd5e0; border-radius: 3px;
+    font-size: 11px; line-height: 1; padding: 2px 5px; cursor: help; font-style: italic; vertical-align: middle; margin-left: 4px; }
   .formula-hint:hover, .formula-hint:focus-visible { color: #2b6cb0; border-color: #90cdf4; outline: none; }
-  .auto-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #2b6cb0;
-    vertical-align: middle; margin-left: 5px; cursor: help; }
+  .auto-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #2b6cb0;
+    vertical-align: middle; margin-left: 6px; cursor: help; box-shadow: 0 0 0 3px #ebf4ff; }
   [data-tip] { -webkit-tap-highlight-color: transparent; }
-  .js-tooltip { position: fixed; z-index: 999; display: none; max-width: 300px; background: #1a202c; color: #fff;
-    font-size: 11.5px; line-height: 1.6; padding: 8px 11px; border-radius: 6px; white-space: pre-line;
-    box-shadow: 0 8px 20px -6px rgba(0,0,0,.4); pointer-events: none; }
+  .js-tooltip { position: fixed; z-index: 999; display: none; max-width: 360px; background: #1a202c; color: #fff;
+    font-size: 11.5px; line-height: 1.65; padding: 8px 11px; border-radius: 6px; white-space: pre-line;
+    box-shadow: 0 8px 20px -6px rgba(0,0,0,.4); pointer-events: none; font-variant-numeric: tabular-nums; }
+  /* 第一行是標題(欄位名/科目名)，加粗讓多行提示有層次 */
+  .js-tooltip::first-line { font-weight: 600; }
+
   /* 大項可收合：B/E/G/I 小計列前面的箭頭，收合時把底下的明細列整個藏起來 */
   .row-toggle { appearance: none; border: none; background: transparent; padding: 0; margin-right: 4px; cursor: pointer;
     color: inherit; display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px;
@@ -176,6 +260,14 @@
   .diff-table { margin-top: 0; font-size: 12.5px; }
   .diff-table tr.subtotal { background: #fffbe6; font-weight: 600; }
   .diff-table td.negative, .diff-table th.negative { color: #c53030; }
-  .diff-chart-box { margin-top: 10px; min-height: 220px; background: #fff; border: 1px solid #eee;
-    border-radius: 6px; padding: 6px; }
+  .diff-table td.delta { font-weight: 600; }
+  .diff-chart-box { margin-top: 10px; background: #fff; border: 1px solid #eee; border-radius: 6px; padding: 6px; }
+  /* 只有一組差異時卡片會撐滿整列，SVG 跟著放大兩倍字會太大；圖最多畫到 720px 寬、置中 */
+  .diff-chart-box .chart-svg { max-width: 720px; margin: 0 auto; }
+  /* 十字游標：滑鼠所在的列與欄一起變色；放在 subtotal/sticky 底色之後才蓋得過去 */
+  .pl-table tbody tr.hl-row > td { background: #ebf4ff; }
+  .pl-table td.hl-col, .pl-table th.hl-col { background: #f0f5fc; }
+  .pl-table tbody tr.hl-row > td.hl-col { background: #d6e6f8; }
+  .pl-table tr.subtotal.hl-row > td { background: #f6efc3; }
+  .pl-table td.amt, .pl-table td.pct { cursor: default; }
 </style>

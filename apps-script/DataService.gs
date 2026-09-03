@@ -56,10 +56,10 @@ function deleteVehicleType(vehicleTypeId) {
 /** 車型主檔整批儲存：整張表直接編輯、按一次儲存（沒填代號的空白新增列會被略過） */
 function saveVehicleTypeGrid(rows) {
   return withLock_(function () {
-    (rows || []).forEach(function (r) {
-      if (!r.VehicleTypeID) return;
-      upsertRowMerge_(SHEETS.VEHICLE_TYPES, 'VehicleTypeID', r);
-    });
+    var existingByPk = indexByPk_(getVehicleTypes(), 'VehicleTypeID');
+    var upserts = (rows || []).filter(function (r) { return r.VehicleTypeID; })
+      .map(function (r) { return mergeRowForBatch_(SHEETS.VEHICLE_TYPES, 'VehicleTypeID', r, existingByPk); });
+    batchWriteRows_(SHEETS.VEHICLE_TYPES, 'VehicleTypeID', upserts, []);
     return getVehicleTypes();
   });
 }
@@ -117,11 +117,13 @@ function deleteVehicle(vehicleId) {
 /** 車系設定整批儲存 */
 function saveVehicleGrid(vehicleTypeId, rows) {
   return withLock_(function () {
-    (rows || []).forEach(function (r) {
-      if (!r.VehicleID) return;
-      r.VehicleTypeID = vehicleTypeId;
-      upsertRowMerge_(SHEETS.VEHICLES, 'VehicleID', r);
-    });
+    var existingByPk = indexByPk_(sheetToObjects_(SHEETS.VEHICLES), 'VehicleID');
+    var upserts = (rows || []).filter(function (r) { return r.VehicleID; })
+      .map(function (r) {
+        r.VehicleTypeID = vehicleTypeId;
+        return mergeRowForBatch_(SHEETS.VEHICLES, 'VehicleID', r, existingByPk);
+      });
+    batchWriteRows_(SHEETS.VEHICLES, 'VehicleID', upserts, []);
     return getVehicles(vehicleTypeId);
   });
 }
@@ -189,12 +191,15 @@ function getScenarios(vehicleTypeId) {
   var rows = sheetToObjects_(SHEETS.SCENARIOS) || [];
   return vehicleTypeId ? rows.filter(function (r) { return r.VehicleTypeID === vehicleTypeId; }) : rows;
 }
+// 情境代號改用 GATE 別，情境名稱自訂；同一個 GATE 下可以有多個情境(GATE F 現況 / GATE F 目標)，
+// 所以 ScenarioID 只是系統內部鍵值，由 upsertRow_ 自動產生，不需使用者自行編碼。
+function validateScenarioRow_(rowObj) {
+  if (!rowObj.Gate) throw new Error('請選擇 GATE 別');
+  if (GATE_OPTIONS.indexOf(rowObj.Gate) === -1) throw new Error('GATE 別不正確：' + rowObj.Gate);
+}
 function saveScenario(rowObj) {
   return withLock_(function () {
-    // 情境代號改用 GATE 別，情境名稱自訂；同一個 GATE 下可以有多個情境(GATE F 現況 / GATE F 目標)，
-    // 所以 ScenarioID 只是系統內部鍵值，由 upsertRow_ 自動產生，不需使用者自行編碼。
-    if (!rowObj.Gate) throw new Error('請選擇 GATE 別');
-    if (GATE_OPTIONS.indexOf(rowObj.Gate) === -1) throw new Error('GATE 別不正確：' + rowObj.Gate);
+    validateScenarioRow_(rowObj);
     // 用合併式 upsert：情境表單沒有攤提基準台數欄位，直接覆寫會把開發總投頁設定的值清掉
     return upsertRowMerge_(SHEETS.SCENARIOS, 'ScenarioID', rowObj);
   });
@@ -206,11 +211,15 @@ function deleteScenario(scenarioId) {
 /** 情境設定整批儲存（既有情境直接在表格上改名/改性質，按一次儲存） */
 function saveScenarioGrid(vehicleTypeId, rows) {
   return withLock_(function () {
+    var existingByPk = indexByPk_(sheetToObjects_(SHEETS.SCENARIOS), 'ScenarioID');
+    var upserts = [];
     (rows || []).forEach(function (r) {
       if (!r.ScenarioID && !r.Gate && !r.ScenarioName) return;
       r.VehicleTypeID = vehicleTypeId;
-      saveScenario(r);
+      validateScenarioRow_(r);
+      upserts.push(mergeRowForBatch_(SHEETS.SCENARIOS, 'ScenarioID', r, existingByPk));
     });
+    batchWriteRows_(SHEETS.SCENARIOS, 'ScenarioID', upserts, []);
     return getScenarios(vehicleTypeId);
   });
 }
@@ -272,10 +281,8 @@ function getSalesMixGrid(scenarioId, vehicleTypeId) {
 /** 銷售構成整批儲存（表格一次送出，不必逐列存檔） */
 function saveSalesMixGrid(scenarioId, vehicleTypeId, rows) {
   return withLock_(function () {
-    (rows || []).forEach(function (r) {
-      r.ScenarioID = scenarioId;
-      upsertRow_(SHEETS.SALES_MIX, 'RowID', r);
-    });
+    var upserts = (rows || []).map(function (r) { r.ScenarioID = scenarioId; return r; });
+    batchWriteRows_(SHEETS.SALES_MIX, 'RowID', upserts, []);
     return getSalesMixGrid(scenarioId, vehicleTypeId);
   });
 }
@@ -295,8 +302,8 @@ function recalcSalesMixPctByVolume(scenarioId) {
     rows.forEach(function (r) {
       // SalesMixPct 以百分比數值儲存(0~100)
       r.SalesMixPct = total > 0 ? toNumber_(r.MonthlyVolume) / total * 100 : 0;
-      upsertRow_(SHEETS.SALES_MIX, 'RowID', r);
     });
+    batchWriteRows_(SHEETS.SALES_MIX, 'RowID', rows, []);
     return getSalesMix(scenarioId);
   });
 }
@@ -306,8 +313,8 @@ function recalcSalesMixVolumeByPct(scenarioId, totalMonthlyVolume) {
     var total = toNumber_(totalMonthlyVolume);
     rows.forEach(function (r) {
       r.MonthlyVolume = Math.round(toNumber_(r.SalesMixPct) / 100 * total);
-      upsertRow_(SHEETS.SALES_MIX, 'RowID', r);
     });
+    batchWriteRows_(SHEETS.SALES_MIX, 'RowID', rows, []);
     return getSalesMix(scenarioId);
   });
 }
@@ -355,18 +362,26 @@ function buildAmountMatrix_(sheetName, scenarioId, vehicleTypeId, lineOptions) {
   return { lines: lineOptions, vehicles: vehicles, values: values };
 }
 
+/**
+ * 矩陣頁面一次存檔動輒十幾個科目 × 好幾個車系，逐格呼叫 upsertRow_/deleteRow_ 會讓
+ * 一次存檔打出幾百次 Sheets API 呼叫(每格各自掃 PK 欄、讀寫格式、寫入、寫稽核)，
+ * 是存檔感覺卡的主因。改成先分類成「這一批要新增/更新的列」跟「要刪除的 RowID」，
+ * 一次交給 batchWriteRows_ 整段讀一次、整段寫一次（見該函式的說明）。
+ */
 function saveAmountMatrix_(sheetName, scenarioId, cells) {
   return withLock_(function () {
+    var upserts = [], deletePks = [];
     (cells || []).forEach(function (c) {
       var isEmpty = c.Amount === '' || c.Amount === null || c.Amount === undefined;
       if (isEmpty && !c.Notes) {
         // 清空的格子代表這個科目在這個車系沒有金額：有舊資料就刪掉，避免殘留
-        if (c.RowID) deleteRow_(sheetName, 'RowID', c.RowID);
+        if (c.RowID) deletePks.push(c.RowID);
         return;
       }
       c.ScenarioID = scenarioId;
-      upsertRow_(sheetName, 'RowID', c);
+      upserts.push(c);
     });
+    batchWriteRows_(sheetName, 'RowID', upserts, deletePks);
     return true;
   });
 }
@@ -532,10 +547,11 @@ function deleteDevInvestmentRow(rowId) {
 function saveDevInvestmentGrid(scenarioId, rows) {
   return withLock_(function () {
     var order = 0;
+    var upserts = [], deletePks = [];
     (rows || []).forEach(function (r) {
       var isEmpty = !r.Department && (r.Amount === '' || r.Amount === null || r.Amount === undefined);
       if (isEmpty) {
-        if (r.RowID) deleteRow_(SHEETS.DEV_INVESTMENT, 'RowID', r.RowID);
+        if (r.RowID) deletePks.push(r.RowID);
         return;
       }
       // 沒選攤提落點的列不會被攤提到任何科目，金額等於憑空消失，所以直接擋下來
@@ -544,8 +560,9 @@ function saveDevInvestmentGrid(scenarioId, rows) {
       }
       r.ScenarioID = scenarioId;
       r.SortOrder = order++;
-      upsertRow_(SHEETS.DEV_INVESTMENT, 'RowID', r);
+      upserts.push(r);
     });
+    batchWriteRows_(SHEETS.DEV_INVESTMENT, 'RowID', upserts, deletePks);
     return getDevInvestmentSummary(scenarioId);
   });
 }
@@ -591,11 +608,11 @@ function copyScenarioData(sourceScenarioId, targetScenarioId, parts) {
       var pk = pkOf(sheetName);
       var all = sheetToObjects_(sheetName) || [];
 
-      all.filter(function (r) { return r.ScenarioID === targetScenarioId; })
-        .forEach(function (r) { deleteRow_(sheetName, pk, r[pk]); });
+      var deletePks = all.filter(function (r) { return r.ScenarioID === targetScenarioId; })
+        .map(function (r) { return r[pk]; });
 
       var sourceRows = all.filter(function (r) { return r.ScenarioID === sourceScenarioId; });
-      sourceRows.forEach(function (r) {
+      var upserts = sourceRows.map(function (r) {
         var copy = {};
         SCHEMA[sheetName].forEach(function (h) { copy[h] = r[h]; });
         copy[pk] = '';                       // 產生新的鍵值，不要蓋到來源列
@@ -610,8 +627,12 @@ function copyScenarioData(sourceScenarioId, targetScenarioId, parts) {
           // 不必等使用者手動按一次儲存才補上，也不會因為漏了這一步而在畫面上顯示「(請選擇)」。
           copy.TargetLineCode = devAmortTargetOf_(r);
         }
-        upsertRow_(sheetName, pk, copy);
+        return copy;
       });
+      // 同一張表裡先刪目標情境的舊資料、再整批貼上來源情境的複本，一次(讀+寫)搞定，
+      // 不是「先逐列刪、再逐列新增」— 情境資料多的話(開發總投/銷貨成本常常十幾二十列)
+      // 逐列處理會是最容易卡住的一步。
+      batchWriteRows_(sheetName, pk, upserts, deletePks);
       copied[part] = sourceRows.length;
     });
 
@@ -719,13 +740,14 @@ function getRateGrid(scenarioId, vehicleTypeId) {
 /** 稅務/費用比率整批儲存：留白的車系覆寫值代表沿用全車系值，會刪掉舊的覆寫列 */
 function saveRateGrid(scenarioId, rows) {
   return withLock_(function () {
+    var upserts = [], deletePks = [];
     (rows || []).forEach(function (r) {
       var isEmpty = r.Value === '' || r.Value === null || r.Value === undefined;
       if (isEmpty) {
-        if (r.ParamID) deleteRow_(SHEETS.PARAMETERS, 'ParamID', r.ParamID);
+        if (r.ParamID) deletePks.push(r.ParamID);
         return;
       }
-      upsertRow_(SHEETS.PARAMETERS, 'ParamID', {
+      upserts.push({
         ParamID: r.ParamID || '',
         ScenarioID: scenarioId,
         VehicleID: r.VehicleID || '',
@@ -735,6 +757,7 @@ function saveRateGrid(scenarioId, rows) {
         EffectiveDate: r.EffectiveDate || ''
       });
     });
+    batchWriteRows_(SHEETS.PARAMETERS, 'ParamID', upserts, deletePks);
     return true;
   });
 }
@@ -765,14 +788,15 @@ function getFxGrid(scenarioId) {
 /** 匯率整批儲存；留白代表未設定該幣別的匯率，會刪掉舊資料 */
 function saveFxGrid(scenarioId, cells) {
   return withLock_(function () {
+    var upserts = [], deletePks = [];
     (cells || []).forEach(function (c) {
       var isEmpty = c.Value === '' || c.Value === null || c.Value === undefined;
       if (isEmpty) {
-        if (c.ParamID) deleteRow_(SHEETS.PARAMETERS, 'ParamID', c.ParamID);
+        if (c.ParamID) deletePks.push(c.ParamID);
         return;
       }
       if (!c.Currency) throw new Error('請選擇幣別');
-      upsertRow_(SHEETS.PARAMETERS, 'ParamID', {
+      upserts.push({
         ParamID: c.ParamID || '',
         ScenarioID: scenarioId,
         VehicleID: '',
@@ -782,6 +806,7 @@ function saveFxGrid(scenarioId, cells) {
         EffectiveDate: ''
       });
     });
+    batchWriteRows_(SHEETS.PARAMETERS, 'ParamID', upserts, deletePks);
     return getFxGrid(scenarioId);
   });
 }
@@ -858,11 +883,12 @@ function syncCodeOwnedLineItems_() {
  */
 function restoreBuiltInLineItems() {
   return withLock_(function () {
-    PL_LINE_ITEMS.forEach(function (line) {
+    var upserts = PL_LINE_ITEMS.map(function (line) {
       var row = {};
       SCHEMA.PLLineItems.forEach(function (h) { row[h] = line[h] !== undefined ? line[h] : ''; });
-      upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', row);
+      return row;
     });
+    batchWriteRows_(SHEETS.PL_LINE_ITEMS, 'LineCode', upserts, []);
     return getPLLineItems();
   });
 }
@@ -906,14 +932,41 @@ function savePLLineItem_(rowObj) {
 /**
  * 科目設定整批儲存：整張表直接編輯、按一次儲存。
  * 沒有 LineCode 的列就是新增列，代碼由系統自動產生。
+ *
+ * 新增列跟既有列分兩段處理，不是圖方便，是新增列的代碼分配(nextLineCode_)必須看到
+ * 「這一批已經配過的代碼」才不會撞號：同一批新增兩個科目，兩個都呼叫一次
+ * nextLineCode_() 的話，沒看到前一個剛配好的代碼就會拿到同一組代碼。
+ * 逐列呼叫 savePLLineItem_()／upsertRow_() 會在寫入後清快取，下一列重新讀最新代碼
+ * 清單，天然沒有這個問題；新增列一次通常只有幾筆，逐列處理的成本可以忽略。
+ * 既有列的代碼已經固定、不會撞號，這段才整批一次寫回。
  */
 function savePLLineItemGrid(rows) {
   return withLock_(function () {
+    var newRows = [], existingRows = [];
     (rows || []).forEach(function (r) {
       // 完全空白的新增列直接跳過，使用者按了「新增一列」又沒填東西不該報錯
       if (!r.LineCode && !r.LineName) return;
-      savePLLineItem_(r);
+      (r.LineCode ? existingRows : newRows).push(r);
     });
+
+    newRows.forEach(function (r) { savePLLineItem_(r); });
+
+    if (existingRows.length) {
+      var byCode = indexByPk_(getPLLineItems(), 'LineCode');
+      var upserts = existingRows.map(function (r) {
+        if (!r.LineName) throw new Error('科目名稱為必填');
+        var existing = byCode[r.LineCode];
+        // 自動計算科目由 CalcEngine 產生，使用者新增的科目一律是手動輸入科目；
+        // CommodityTaxDeduct(貨物稅完稅價格可扣除)等表單沒有的欄位由合併補齊、保留原值
+        r.AutoSource = existing ? (existing.AutoSource || '') : '';
+        // 結構科目(A/B/C/E/G/I/K)與自動計算科目改掉父科目會讓損益鏈接錯段，一律沿用原值
+        if (existing && (PROTECTED_LINE_CODES.indexOf(r.LineCode) !== -1 || existing.AutoSource)) {
+          r.ParentLine = existing.ParentLine || '';
+        }
+        return mergeRowForBatch_(SHEETS.PL_LINE_ITEMS, 'LineCode', r, byCode);
+      });
+      batchWriteRows_(SHEETS.PL_LINE_ITEMS, 'LineCode', upserts, []);
+    }
     return getPLLineItems();
   });
 }
@@ -923,8 +976,20 @@ function deletePLLineItem(lineCode) {
       throw new Error('「' + lineCode + '」是損益結構科目(小計/毛利/淨利)，刪除會讓損益鏈斷掉，不可刪除。');
     }
     var def = getPLLineItems().filter(function (d) { return d.LineCode === lineCode; })[0];
-    if (def && def.AutoSource) {
+    if (def && def.AutoSource && def.AutoSource !== AUTO_SOURCE.DEV_AMORT) {
       throw new Error('「' + lineCode + ' ' + def.LineName + '」是自動計算科目，由比率設定或開發總投攤提產生，不可刪除。');
+    }
+    // DEV_AMORT 是使用者自己在「開發總投」頁面新增的攤提落點(非內建的模具/設備/CMC/BASE廠開發費四個)，
+    // 使用者建的東西應該讓使用者刪得掉 —— 只要目前沒有任何情境的開發總投列還指到這裡就放行，
+    // 否則那些列的金額會攤不到任何科目、憑空消失，所以先擋下來請使用者自己改選或刪除那些列。
+    if (def && def.AutoSource === AUTO_SOURCE.DEV_AMORT) {
+      var used = (sheetToObjects_(SHEETS.DEV_INVESTMENT) || []).filter(function (r) {
+        return devAmortTargetOf_(r) === lineCode;
+      });
+      if (used.length) {
+        throw new Error('「' + lineCode + ' ' + def.LineName + '」在「開發總投」還有 ' + used.length +
+          ' 筆資料指到這個攤提落點，請先把那些列改選別的攤提落點或刪除，才能刪除這個科目。');
+      }
     }
     return deleteRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', lineCode);
   });
