@@ -115,6 +115,29 @@ function samePk_(a, b) {
   return String(a) === String(b);
 }
 
+/** 把一組列依 PK 轉成「PK字串 -> 列物件」的對照表，整批寫入前先查表用 */
+function indexByPk_(rows, pkField) {
+  var map = {};
+  (rows || []).forEach(function (r) {
+    if (r[pkField] !== undefined && r[pkField] !== null && r[pkField] !== '') map[String(r[pkField])] = r;
+  });
+  return map;
+}
+
+/**
+ * upsertRowMerge_ 的整批版：用預先讀好的 existingByPk(見 indexByPk_) 補齊 rowObj 沒送出的欄位，
+ * 不必為了合併就每一列各自重新讀一次整張表。呼叫端把回傳值收集起來一次交給 batchWriteRows_。
+ */
+function mergeRowForBatch_(sheetName, pkField, rowObj, existingByPk) {
+  var existing = rowObj[pkField] ? existingByPk[String(rowObj[pkField])] : undefined;
+  if (existing) {
+    SCHEMA[sheetName].forEach(function (h) {
+      if (rowObj[h] === undefined) rowObj[h] = existing[h];
+    });
+  }
+  return rowObj;
+}
+
 /**
  * 只更新有帶到的欄位，其餘沿用既有值。
  * 表單只送出畫面上有的欄位，若直接 upsert，沒出現在表單上的欄位(如情境的攤提基準台數、

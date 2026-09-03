@@ -111,10 +111,107 @@ assert(callsFor5 <= 12, `存 5 格不該超過個位數~十來次 API 呼叫，�
 assert(callsFor50 <= callsFor5 + 5, `存 50 格的呼叫次數不該比存 5 格多太多(整批寫入應該是常數等級)，5 格 ${callsFor5} 次、50 格 ${callsFor50} 次`);
 assert(callsFor50 < 50, `無論如何都不該退化回「每格一次呼叫」，50 格卻打了 ${callsFor50} 次`);
 
+/* ---- 5. 科目設定：同一批新增好幾個科目不能撞號 ---- */
+// 新增列的代碼由 nextLineCode_() 逐一分配，整批處理最容易犯的錯就是「兩筆新增都拿到同一個代碼」
+const beforeCodes = gs.getPLLineItems().map(d => d.LineCode);
+gs.savePLLineItemGrid([
+  { LineCode: '', LineName: '新科目A', ParentLine: 'B' },
+  { LineCode: '', LineName: '新科目B', ParentLine: 'B' },
+  { LineCode: '', LineName: '新科目C', ParentLine: 'B' },
+  { LineCode: '', LineName: '新費用A', ParentLine: 'G' }
+]);
+const afterItems = gs.getPLLineItems();
+const newB = afterItems.filter(d => ['新科目A', '新科目B', '新科目C'].indexOf(d.LineName) !== -1);
+const newCodes = newB.map(d => d.LineCode);
+assert(newB.length === 3, `3 個新科目都應該存進去，實際 ${newB.length}`);
+assert(new Set(newCodes).size === 3, `同一批新增的科目代碼不該撞號，實際代碼：${newCodes.join(',')}`);
+newCodes.forEach(c => assert(beforeCodes.indexOf(c) === -1, `新代碼 ${c} 不該是這批存檔前就已經存在的代碼`));
+assert(afterItems.some(d => d.LineName === '新費用A' && d.ParentLine === 'G'), '不同父科目的新增科目也應該正確存進去');
+
+/* ---- 6. 主檔 Grid(車型/車系/情境)：merge 語意要保留，畫面沒送出的欄位不能被洗成空白 ---- */
+gs.saveVehicleType({ VehicleTypeID: 'MG', Notes: '原始備註' });
+gs.saveVehicleTypeGrid([{ VehicleTypeID: 'MG' }]);  // 整批儲存的表單沒有 Notes 欄位
+const mgAfter = gs.getVehicleTypes().find(t => t.VehicleTypeID === 'MG');
+assert(mgAfter && mgAfter.Notes === '原始備註', `saveVehicleTypeGrid 應該保留沒送出的欄位(合併語意)，實際 ${mgAfter && mgAfter.Notes}`);
+
+gs.saveVehicle({ VehicleID: 'VM1', VehicleTypeID: 'DA', VehicleCode: '原始車系名', Notes: '原始車系備註' });
+gs.saveVehicleGrid('DA', [{ VehicleID: 'VM1', VehicleCode: '改過的車系名' }]);
+const vm1After = gs.getVehicles('DA').find(v => v.VehicleID === 'VM1');
+assert(vm1After && vm1After.VehicleCode === '改過的車系名', 'saveVehicleGrid 應該套用有送出的欄位');
+assert(vm1After && vm1After.Notes === '原始車系備註', `saveVehicleGrid 應該保留沒送出的欄位，實際 ${vm1After && vm1After.Notes}`);
+
+gs.saveAmortBasis(scA.ScenarioID, 300, 12);  // 攤提基準台數：情境表單本身沒有這個欄位
+gs.saveScenarioGrid('DA', [{ ScenarioID: scA.ScenarioID, Gate: 'GATE F', ScenarioName: '改過的名字', ScenarioType: '現況' }]);
+const scAAfter = gs.getScenarios('DA').find(s => s.ScenarioID === scA.ScenarioID);
+assert(scAAfter && scAAfter.ScenarioName === '改過的名字', 'saveScenarioGrid 應該套用有送出的欄位');
+assert(scAAfter && String(scAAfter.AmortMonthlyVolume) === '300', `saveScenarioGrid 不該洗掉表單沒有的攤提基準台數欄位，實際 ${scAAfter && scAAfter.AmortMonthlyVolume}`);
+
+/* ---- 7. 開發總投驗證失敗：整批應該原子性地「要嘛全存、要嘛都不存」，不能存一半 ---- */
+const devBefore = gs.getDevInvestmentSummary(scA.ScenarioID).rows.length;
+let devThrew = false;
+try {
+  gs.saveDevInvestmentGrid(scA.ScenarioID, [
+    { RowID: '', Department: '合法列', Amount: 10000, TargetLineCode: 'f4', Currency: 'TWD' },
+    { RowID: '', Department: '沒選攤提落點', Amount: 5000, Currency: 'TWD' }   // 這列應該讓整批失敗
+  ]);
+} catch (e) { devThrew = true; }
+assert(devThrew, '沒選攤提落點但有金額的列應該讓存檔失敗');
+const devAfter = gs.getDevInvestmentSummary(scA.ScenarioID).rows.length;
+assert(devAfter === devBefore, `驗證失敗時不該有任何一列被寫入(原子性)，存檔前 ${devBefore} 列、失敗後 ${devAfter} 列`);
+
+/* ---- 8. 稅務費用比率／匯率設定共用 Parameters 分頁：不同情境、不同用途(比率 vs 匯率)不能互相干擾 ---- */
+gs.saveRateGrid(scA.ScenarioID, [{ ParamID: '', VehicleID: '', ParamName: '營業稅率', Value: 5 }]);
+gs.saveFxGrid(scA.ScenarioID, [{ ParamID: '', ParamName: '現況匯率', Currency: 'CNY', Value: 4.4 }]);
+gs.saveRateGrid(scB.ScenarioID, [{ ParamID: '', VehicleID: '', ParamName: '營業稅率', Value: 9 }]);
+
+gs.saveRateGrid(scA.ScenarioID, [{ ParamID: '', VehicleID: '', ParamName: '銷售佣金率', Value: 7 }]);  // 再存一次同情境的別的費率
+const rateAAfter = gs.getRateGrid(scA.ScenarioID, 'DA');
+const taxRateA = rateAAfter.rates.find(r => r.ParamName === '營業稅率');
+const commissionA = rateAAfter.rates.find(r => r.ParamName === '銷售佣金率');
+assert(Number(taxRateA.globalValue) === 5, `後面存銷售佣金率不該把情境 A 先前存的營業稅率洗掉，實際 ${taxRateA.globalValue}`);
+assert(Number(commissionA.globalValue) === 7, '銷售佣金率應該存進去');
+const fxAAfter = gs.getFxGrid(scA.ScenarioID);
+const cnyRow = fxAAfter.rows.find(r => r.Currency === 'CNY');
+assert(Number(cnyRow.cells['現況匯率'].Value) === 4.4, `saveRateGrid 不該動到匯率設定(共用同一張 Parameters 分頁)，實際 ${cnyRow.cells['現況匯率'].Value}`);
+const rateBAfter = gs.getRateGrid(scB.ScenarioID, 'DA');
+const taxRateB = rateBAfter.rates.find(r => r.ParamName === '營業稅率');
+assert(Number(taxRateB.globalValue) === 9, `情境 A 的存檔不該動到情境 B 的費率，實際 ${taxRateB.globalValue}`);
+
+/* ---- 9. copyScenarioData：帶入資料要正確覆蓋目標情境，且不影響其他情境 ---- */
+const scTarget = gs.createScenarioFrom({ ScenarioID: '', Gate: 'GATE F', ScenarioName: 'Target', ScenarioType: '目標', VehicleTypeID: 'DA' }, '', []);
+gs.saveSalesMixGrid(scTarget.ScenarioID, 'DA', [
+  { RowID: '', VehicleID: 'V1', SalesMixPct: 50, MonthlyVolume: 50, LifeCycleYears: 5, ListPriceTaxIncl: 999999, ScrapFee: 0, ScrapFeeTaxStatus: '含稅' }
+]);
+gs.copyScenarioData(scA.ScenarioID, scTarget.ScenarioID, ['salesmix', 'costofsales', 'devinvestment', 'parameters']);
+
+const targetMix = gs.getSalesMix(scTarget.ScenarioID);
+assert(targetMix.length === 2, `帶入後應該是來源情境(scA)的 2 列車系資料，實際 ${targetMix.length} 列`);
+assert(!targetMix.some(r => r.ListPriceTaxIncl === 999999), '帶入前目標情境原有的資料應該被清掉，不是疊加');
+const targetCost = gs.getCostOfSales(scTarget.ScenarioID);
+assert(targetCost.some(r => r.LineCode === 'b1' && Number(r.Amount) === 450000), '銷貨成本應該正確帶入(來源情境 A 更新後的金額)');
+const targetRate = gs.getRateGrid(scTarget.ScenarioID, 'DA').rates.find(r => r.ParamName === '銷售佣金率');
+assert(Number(targetRate.globalValue) === 7, '費率參數應該一併帶入');
+// 帶入不該影響來源情境自己，也不該影響完全無關的情境 B
+assert(gs.getSalesMix(scA.ScenarioID).length === 2, '帶入不該動到來源情境自己的資料');
+assert(Number(gs.getRateGrid(scB.ScenarioID, 'DA').rates.find(r => r.ParamName === '營業稅率').globalValue) === 9,
+  '帶入資料不該影響完全無關的情境 B');
+
+/* ---- 10. 恢復內建科目預設值：不該動到使用者自訂的科目 ---- */
+gs.addLineItemInline('B', '使用者自己加的科目');
+const beforeRestoreCustom = gs.getPLLineItems().find(d => d.LineName === '使用者自己加的科目');
+gs.restoreBuiltInLineItems();
+const afterRestoreCustom = gs.getPLLineItems().find(d => d.LineCode === beforeRestoreCustom.LineCode);
+assert(afterRestoreCustom && afterRestoreCustom.LineName === '使用者自己加的科目',
+  '恢復內建科目預設值不該動到使用者自己新增的科目');
+const structuralA = gs.getPLLineItems().find(d => d.LineCode === 'A');
+assert(structuralA && structuralA.LineName.indexOf('收入') !== -1, '內建結構科目應該恢復成預設名稱');
+
 if (failures.length) {
   console.log(`整批寫入驗證失敗：${failures.length} 項`);
   failures.forEach(f => console.log('  ✗ ' + f));
   process.exit(1);
 }
-console.log('整批寫入驗證通過：跨情境隔離、新增/更新/刪除混合、AuditLog 逐筆記錄、呼叫次數不隨格數線性成長皆正確。');
+console.log('整批寫入驗證通過：跨情境隔離、新增/更新/刪除混合、AuditLog 逐筆記錄、呼叫次數不隨格數線性成長、');
+console.log('  科目代碼不撞號、主檔 merge 語意、驗證失敗時原子性、Parameters 分頁跨用途隔離、');
+console.log('  copyScenarioData 帶入正確、使用者自訂科目不受影響皆正確。');
 console.log(`  範例：存 5 格 ${callsFor5} 次 API 呼叫、存 50 格 ${callsFor50} 次 API 呼叫（逐格處理原本约需要 5~7 倍格數的呼叫次數）。`);

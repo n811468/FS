@@ -99,9 +99,24 @@ function saveSalesMixRow(rowObj) {
 `tools/verify-write-batching.js`）。做法跟 `CalcEngine.gs` 的 `writePLResult_` 一樣：先把整張表讀一次、
 在記憶體裡套用這一批的新增/更新/刪除、`clearContent()` 後一次 `setValues()` 整段寫回；
 `AuditLog` 也改成 `logAuditBatch_` 一次寫完整批的稽核紀錄，不是每列各自 `appendRow()`。
-目前只套用在 `saveAmountMatrix_`（銷貨成本／營業費用矩陣共用）；其餘 `saveXxxGrid` 系列
-（銷售構成、開發總投、科目設定、稅務費用比率、匯率設定…）還是逐列呼叫 `upsertRow_`，
-效果已經驗證過，之後可以比照套用。
+全部 `saveXxxGrid` 系列都已經套用（銷貨成本／營業費用矩陣、銷售構成、車型/車系/情境主檔、
+開發總投、科目設定、稅務費用比率、匯率設定、`copyScenarioData` 帶入資料、
+`restoreBuiltInLineItems` 恢復內建科目），只有兩個地方刻意維持逐列處理：
+- `savePLLineItemGrid` 的**新增列**：代碼由 `nextLineCode_()` 依「目前實際存在的科目」逐一分配，
+  必須維持「逐列寫入 → 清快取 → 下一列重新讀最新代碼清單」，否則同一批一次新增兩個以上科目
+  會撞號。新增列一次通常只有幾筆，逐列處理的成本可以忽略；同一批的**既有列**（改名、搬動）
+  不受代碼分配影響，仍然整批處理。
+- `syncCodeOwnedLineItems_`（`getBootstrap()` 每次都會呼叫，把程式定義科目的名稱/位置對回程式碼）：
+  只有真的對不上時才寫入，穩定狀態下完全不寫、只讀取（有快取），批次化對它沒有效益。
+
+用 `upsertRowMerge_`（只覆蓋表單有送出的欄位，其餘沿用既有值）的頁面——車型主檔、車系設定、
+情境設定、科目設定的既有列——批次化時用 `mergeRowForBatch_()` 搭配 `indexByPk_()` 先在記憶體裡
+把要合併的來源列建成對照表，效果等價，只是省掉逐列各自重新讀表的次數。
+
+有驗證失敗檢查的頁面（開發總投的「有金額卻沒選攤提落點」）額外多了一個好處：原本逐列寫入時，
+驗證失敗前面幾列已經寫進去了、後面的才沒寫，等於「存了一半」；改成整批寫入後驗證仍在寫入前
+就擋下來，這一批要嘛全部成功、要嘛完全不寫，不會再有存一半的情況
+（`tools/verify-write-batching.js` 的「原子性」測試會驗這一點）。
 
 ---
 
