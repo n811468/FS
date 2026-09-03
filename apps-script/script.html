@@ -116,7 +116,20 @@ let currentTab = 'vehicletypes';
  * 兩次畫面之間使用者已經看得到內容，不再面對空白等待。
  */
 const panelDataCache_ = {};
-function panelCacheKey_(prefix) { return prefix + '::' + currentVehicleTypeId + '::' + currentScenarioId; }
+/**
+ * scope 決定這個快取鍵要不要跟著車型/情境變動：
+ * 'none' 兩者都跟資料無關（如車型主檔、科目設定 —— 全系統共用一份）、
+ * 'vehicleType' 只跟車型有關（如車系設定 —— 情境換了不影響）、
+ * 'scenario' 只跟情境有關（如開發總投 —— 車型換了情境也會跟著清空，不必重複區分）、
+ * 省略或 'both' 則兩者都要區分（如銷售構成、銷貨成本）。
+ * 沒分清楚的話，資料明明沒變，換一下情境或車型就會讓不相關頁面的快取失效，
+ * 切回去時又要空等一次伺服器回應，感覺像整頁重新載入。
+ */
+function panelCacheKey_(prefix, scope) {
+  const vt = (scope === 'none' || scope === 'scenario') ? '' : currentVehicleTypeId;
+  const sc = (scope === 'none' || scope === 'vehicleType') ? '' : currentScenarioId;
+  return prefix + '::' + vt + '::' + sc;
+}
 // 靜默模式：初始化(或切換車型)時會連續設定車型/情境，每一步都重繪會造成
 // 同一個分頁被畫三、四次、也重複打伺服器。開啟後只更新狀態不渲染，最後統一渲染一次。
 let silent = false;
@@ -312,10 +325,13 @@ function renderEntityPanel(key) {
   loadEntityData(key);
 }
 
+/** ENTITIES 的 scopedBy 只有 'vehicleType' 或 null，剛好對應到快取鍵要區分到什麼程度 */
+function entityCacheScope_(cfg) { return cfg.scopedBy === 'vehicleType' ? 'vehicleType' : 'none'; }
+
 function loadEntityData(key) {
   const cfg = ENTITIES[key];
   const args = cfg.scopedBy === 'vehicleType' ? [currentVehicleTypeId] : [];
-  const cacheKey = panelCacheKey_(key);
+  const cacheKey = panelCacheKey_(key, entityCacheScope_(cfg));
   const apply = rows => { entityRows[key] = (rows || []).map(r => Object.assign({}, r, { __existing: true })); drawEntityGrid(key); };
   if (panelDataCache_[cacheKey]) apply(panelDataCache_[cacheKey]);
   google.script.run
@@ -528,7 +544,7 @@ function saveEntityGrid(key) {
   setStatus(key, '儲存中...');
   google.script.run
     .withSuccessHandler(safeHandler(saved => {
-      panelDataCache_[panelCacheKey_(key)] = saved;
+      panelDataCache_[panelCacheKey_(key, entityCacheScope_(cfg))] = saved;
       entityRows[key] = (saved || []).map(r => Object.assign({}, r, { __existing: true }));
       drawEntityGrid(key);
       setStatus(key, '已儲存', 'ok');
@@ -1109,7 +1125,7 @@ function renderDevInvestmentPanel() {
   if (!requireScope('devinvestment', true)) return;
   document.getElementById('panel-devinvestment').innerHTML = gridShell('devinvestment', '開發總投');
 
-  const cacheKey = panelCacheKey_('devinvestment');
+  const cacheKey = panelCacheKey_('devinvestment', 'scenario');
   if (panelDataCache_[cacheKey]) {
     devSummary = panelDataCache_[cacheKey];
     devRows = devSummary.rows.map(r => Object.assign({}, r));
@@ -1324,7 +1340,7 @@ function saveAmortBasis() {
   setStatus('devinvestment', '套用中...');
   google.script.run
     .withSuccessHandler(safeHandler(summary => {
-      panelDataCache_[panelCacheKey_('devinvestment')] = summary;
+      panelDataCache_[panelCacheKey_('devinvestment', 'scenario')] = summary;
       devSummary = summary;
       devRows = summary.rows.map(r => Object.assign({}, r));
       drawDevGrid();
@@ -1351,7 +1367,7 @@ function saveDevGrid() {
   setStatus('devinvestment', '儲存中...');
   google.script.run
     .withSuccessHandler(safeHandler(summary => {
-      panelDataCache_[panelCacheKey_('devinvestment')] = summary;
+      panelDataCache_[panelCacheKey_('devinvestment', 'scenario')] = summary;
       devSummary = summary;
       devRows = summary.rows.map(r => Object.assign({}, r));
       drawDevGrid();
@@ -1448,7 +1464,7 @@ let fxData = null;
 function renderFxPanel() {
   if (!requireScope('paramfx', true)) return;
   document.getElementById('panel-paramfx').innerHTML = gridShell('paramfx', '匯率設定');
-  const cacheKey = panelCacheKey_('paramfx');
+  const cacheKey = panelCacheKey_('paramfx', 'scenario');
   if (panelDataCache_[cacheKey]) { fxData = panelDataCache_[cacheKey]; drawFxGrid(); }
   google.script.run
     .withSuccessHandler(safeHandler(data => { panelDataCache_[cacheKey] = data; fxData = data; drawFxGrid(); }))
