@@ -14,6 +14,7 @@ node tools/verify-gatef.js             # 用實際 Gate F 損益試算表的數�
 node tools/verify-features.js          # 情境帶入、科目自動編號、匯率精簡等行為
 node tools/verify-ui.js                # 損益表版面、% 基準、小計警示、CSV 欄數
 node tools/verify-firestore-client.js  # Firestore REST 用戶端：JWT 簽章、token 快取、CRUD 呼叫格式
+node tools/verify-write-batching.js    # 整批寫入：跨情境隔離、新增/更新/刪除混合、呼叫次數不隨格數線性成長
 ```
 
 `verify-gatef.js` 會順便把比較表印出來，方便跟原始試算表並排肉眼再對一次。

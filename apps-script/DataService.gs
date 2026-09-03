@@ -355,18 +355,26 @@ function buildAmountMatrix_(sheetName, scenarioId, vehicleTypeId, lineOptions) {
   return { lines: lineOptions, vehicles: vehicles, values: values };
 }
 
+/**
+ * 矩陣頁面一次存檔動輒十幾個科目 × 好幾個車系，逐格呼叫 upsertRow_/deleteRow_ 會讓
+ * 一次存檔打出幾百次 Sheets API 呼叫(每格各自掃 PK 欄、讀寫格式、寫入、寫稽核)，
+ * 是存檔感覺卡的主因。改成先分類成「這一批要新增/更新的列」跟「要刪除的 RowID」，
+ * 一次交給 batchWriteRows_ 整段讀一次、整段寫一次（見該函式的說明）。
+ */
 function saveAmountMatrix_(sheetName, scenarioId, cells) {
   return withLock_(function () {
+    var upserts = [], deletePks = [];
     (cells || []).forEach(function (c) {
       var isEmpty = c.Amount === '' || c.Amount === null || c.Amount === undefined;
       if (isEmpty && !c.Notes) {
         // 清空的格子代表這個科目在這個車系沒有金額：有舊資料就刪掉，避免殘留
-        if (c.RowID) deleteRow_(sheetName, 'RowID', c.RowID);
+        if (c.RowID) deletePks.push(c.RowID);
         return;
       }
       c.ScenarioID = scenarioId;
-      upsertRow_(sheetName, 'RowID', c);
+      upserts.push(c);
     });
+    batchWriteRows_(sheetName, 'RowID', upserts, deletePks);
     return true;
   });
 }

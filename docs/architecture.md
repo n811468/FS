@@ -57,6 +57,7 @@ tools/                      # 只在本機用 Node 執行，不會部署到 Apps
 ├─ verify-gatef.js         # 用實際 Gate F 表的數字逐格驗算計算引擎
 ├─ verify-features.js      # 驗這一版的行為（情境帶入、科目自動編號、匯率精簡…）
 ├─ verify-ui.js            # 前端純函式的靜態驗證（損益表結構、hover 提示內容、SVG 圖表、差異模式…）
+├─ verify-write-batching.js # 整批寫入(batchWriteRows_)：跨情境隔離、新增/更新/刪除混合、呼叫次數量測
 └─ dev-server.js           # 本機預覽：把 .gs 跑在 Node 上、假的 google.script.run 走 HTTP，瀏覽器直接開整個前端
 ```
 
@@ -90,6 +91,17 @@ function saveSalesMixRow(rowObj) {
   }
 }
 ```
+
+**整批存檔改用整段讀一次、整段寫一次**（`Utils.gs` 的 `batchWriteRows_`）：矩陣式頁面（銷貨成本／
+營業費用）一次存檔動輒十幾到上百格，若每一格各自呼叫 `upsertRow_`/`deleteRow_`（各自掃 PK 欄找列號、
+讀寫文字格式、寫入、寫稽核），會在同一次執行裡打出對應數量的 Sheets API 呼叫——實測 55 格逐格處理
+約 330 次呼叫，改成整批後降到個位數，而且呼叫次數不會隨格數線性成長（見
+`tools/verify-write-batching.js`）。做法跟 `CalcEngine.gs` 的 `writePLResult_` 一樣：先把整張表讀一次、
+在記憶體裡套用這一批的新增/更新/刪除、`clearContent()` 後一次 `setValues()` 整段寫回；
+`AuditLog` 也改成 `logAuditBatch_` 一次寫完整批的稽核紀錄，不是每列各自 `appendRow()`。
+目前只套用在 `saveAmountMatrix_`（銷貨成本／營業費用矩陣共用）；其餘 `saveXxxGrid` 系列
+（銷售構成、開發總投、科目設定、稅務費用比率、匯率設定…）還是逐列呼叫 `upsertRow_`，
+效果已經驗證過，之後可以比照套用。
 
 ---
 

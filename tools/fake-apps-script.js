@@ -18,6 +18,18 @@ function autoDetectCellValue_(v, format) {
   return v;
 }
 
+/**
+ * 呼叫次數計數器：真的 Apps Script 對 Google Sheets 的每一次 getValues/setValues/
+ * getLastRow…都是一次網路來回，是「存檔為什麼感覺卡」的主因。這裡在假的試算表層
+ * 記下每一種方法被呼叫了幾次，讓 tools/verify-write-batching.js 能拿實際數字
+ * 比較「逐列寫入」跟「整批寫入」差多少次 API 呼叫，不必猜。
+ */
+let API_CALL_COUNTS_ = {};
+function countApiCall_(name) { API_CALL_COUNTS_[name] = (API_CALL_COUNTS_[name] || 0) + 1; }
+function resetApiCallCounts_() { API_CALL_COUNTS_ = {}; }
+function getApiCallCounts_() { return Object.assign({}, API_CALL_COUNTS_); }
+function totalApiCalls_() { return Object.values(API_CALL_COUNTS_).reduce((s, n) => s + n, 0); }
+
 class FakeSheet {
   constructor(name) { this.name = name; this.grid = []; this.formats = []; }
   getName() { return this.name; }
@@ -32,21 +44,27 @@ class FakeSheet {
   _filled(v) { return v !== '' && v !== null && v !== undefined; }
 
   getLastRow() {
+    countApiCall_('getLastRow');
     let last = 0;
     this.grid.forEach((row, i) => { if (row.some(v => this._filled(v))) last = i + 1; });
     return last;
   }
   getLastColumn() {
+    countApiCall_('getLastColumn');
     let last = 0;
     this.grid.forEach(row => row.forEach((v, j) => { if (this._filled(v)) last = Math.max(last, j + 1); }));
     return last;
   }
   appendRow(values) {
-    const r = this.getLastRow();
+    countApiCall_('appendRow');
+    // 不透過 getLastRow()/setValues() 走，避免這一列本身被計算成另外兩次呼叫
+    // (真的 Apps Script 的 appendRow 是單一次 API 呼叫)
+    let r = 0;
+    this.grid.forEach((row, i) => { if (row.some(v => this._filled(v))) r = i + 1; });
     this._ensure(r + 1, values.length);
     values.forEach((v, j) => { this.grid[r][j] = v; });
   }
-  deleteRow(rowIndex) { this.grid.splice(rowIndex - 1, 1); }
+  deleteRow(rowIndex) { countApiCall_('deleteRow'); this.grid.splice(rowIndex - 1, 1); }
 
   getRange(row, col, numRows, numCols) {
     const sheet = this;
@@ -55,6 +73,7 @@ class FakeSheet {
     sheet._ensure(row + nr - 1, col + nc - 1);
     return {
       getValues() {
+        countApiCall_('getValues');
         const out = [];
         for (let i = 0; i < nr; i++) {
           const line = [];
@@ -64,6 +83,7 @@ class FakeSheet {
         return out;
       },
       setValues(values) {
+        countApiCall_('setValues');
         sheet._ensure(row + nr - 1, col + nc - 1);
         for (let i = 0; i < nr; i++) {
           for (let j = 0; j < nc; j++) {
@@ -73,13 +93,15 @@ class FakeSheet {
         }
       },
       clearContent() {
+        countApiCall_('clearContent');
         for (let i = 0; i < nr; i++) {
           for (let j = 0; j < nc; j++) sheet.grid[row - 1 + i][col - 1 + j] = '';
         }
       },
-      getValue() { return sheet.grid[row - 1][col - 1]; },
-      setValue(v) { sheet._ensure(row, col); sheet.grid[row - 1][col - 1] = v; },
+      getValue() { countApiCall_('getValue'); return sheet.grid[row - 1][col - 1]; },
+      setValue(v) { countApiCall_('setValue'); sheet._ensure(row, col); sheet.grid[row - 1][col - 1] = v; },
       getNumberFormats() {
+        countApiCall_('getNumberFormats');
         const out = [];
         for (let i = 0; i < nr; i++) {
           const line = [];
@@ -89,6 +111,7 @@ class FakeSheet {
         return out;
       },
       setNumberFormats(formats) {
+        countApiCall_('setNumberFormats');
         sheet._ensure(row + nr - 1, col + nc - 1);
         for (let i = 0; i < nr; i++) {
           for (let j = 0; j < nc; j++) sheet.formats[row - 1 + i][col - 1 + j] = formats[i][j];
@@ -185,4 +208,4 @@ function loadAppsScript(files) {
   return context;
 }
 
-module.exports = { loadAppsScript };
+module.exports = { loadAppsScript, resetApiCallCounts_, getApiCallCounts_, totalApiCalls_ };

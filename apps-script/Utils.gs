@@ -169,17 +169,21 @@ function upsertRow_(sheetName, pkField, rowObj) {
  * 避免 Sheet 把「0901」這種看起來像數字的字串自動轉成 901。
  * 用 getNumberFormats() 先讀出目前格式，只覆蓋純文字欄位那幾格，其餘欄位(金額/比率)維持原狀，
  * 且只在格式真的需要改變時才寫入，避免每次存檔都多一次 API 呼叫。
+ * range 可以是一列(單筆 upsertRow_)也可以是很多列(batchWriteRows_ 整批寫入)：
+ * getNumberFormats()/setNumberFormats() 本來就是回傳/接受二維陣列，不特別假設列數。
  */
 function applyTextColumnFormats_(range, headers, sheetName) {
   var textCols = TEXT_COLUMNS[sheetName];
   if (!textCols || !textCols.length) return;
-  var current = range.getNumberFormats()[0];
+  var current = range.getNumberFormats();
   var changed = false;
-  var next = headers.map(function (h, i) {
-    if (textCols.indexOf(h) !== -1 && current[i] !== '@') { changed = true; return '@'; }
-    return current[i];
+  var next = current.map(function (rowFormats) {
+    return headers.map(function (h, i) {
+      if (textCols.indexOf(h) !== -1 && rowFormats[i] !== '@') { changed = true; return '@'; }
+      return rowFormats[i];
+    });
   });
-  if (changed) range.setNumberFormats([next]);
+  if (changed) range.setNumberFormats(next);
 }
 
 function deleteRow_(sheetName, pkField, pkValue) {
@@ -200,6 +204,80 @@ function deleteRow_(sheetName, pkField, pkValue) {
   return false;
 }
 
+/**
+ * 整批新增/更新/刪除同一張分頁的很多列，取代「每一列各自呼叫 upsertRow_/deleteRow_」。
+ *
+ * 逐列處理的問題：每一列各自要「掃 PK 欄找列號 → 讀寫格式 → 寫入 → 寫稽核」，
+ * 一次矩陣式的整批存檔(銷貨成本/營業費用/開發總投/科目設定…隨便一頁動輒十幾到上百格)
+ * 就會在同一次執行裡打出對應數量的 Sheets API 呼叫，是存檔感覺卡的主因
+ * （實測 55 格：逐列寫入約 330 次 API 呼叫，整批寫入後降到個位數，見
+ * tools/verify-write-batching.js）。
+ *
+ * 做法跟 CalcEngine.gs 的 writePLResult_ 一樣：整段資料只讀一次、只寫一次 ——
+ *   1. 把現有資料整塊讀出來(1 次 getValues)
+ *   2. 在記憶體裡套用這一批的新增/更新(找不到 PK 就當新增)與刪除
+ *   3. 整段一次寫回(先 clearContent 再 setValues，避免列數變少時留下舊資料的殘影)
+ * 呼叫端仍然一次只描述「這一批要 upsert 哪些列、要刪除哪些 PK」，不需要知道列號，
+ * 跟原本呼叫 upsertRow_/deleteRow_ 的介面一樣簡單。
+ *
+ * upserts：要新增或更新的列物件陣列，沒有 pkField 值的視為新增(自動產生 ID)，
+ *          其餘欄位比照 upsertRow_ 的語意整列覆蓋(不是 merge，畫面沒送出的欄位會變空白，
+ *          呼叫端要跟原本一樣自己決定是否先用 upsertRowMerge_ 那種模式取現有資料補齊)。
+ * deletePks：要刪除的 PK 值陣列；跟同一批 upserts 撞到同一個 PK 時，以 upserts 為準
+ *            (先刪除清單、後面又被 upsert 加回來，理當視為「留下」而不是「刪除」)。
+ */
+function batchWriteRows_(sheetName, pkField, upserts, deletePks) {
+  var sheet = getSheet_(sheetName);
+  var headers = SCHEMA[sheetName];
+  var pkCol = headers.indexOf(pkField);
+  var width = headers.length;
+  var lastRow = sheet.getLastRow();
+
+  var existing = lastRow >= 2 ? sheet.getRange(2, 1, lastRow - 1, width).getValues() : [];
+
+  var deleteSet = {};
+  (deletePks || []).forEach(function (pk) { if (pk !== '' && pk !== null && pk !== undefined) deleteSet[String(pk)] = true; });
+
+  // pk(字串) -> existing 陣列的索引，只收有值的 PK；空白列(理論上不會有，防禦一下)不參與比對
+  var pkIndex = {};
+  existing.forEach(function (row, i) {
+    if (row[pkCol] !== '' && row[pkCol] !== null && row[pkCol] !== undefined) pkIndex[String(row[pkCol])] = i;
+  });
+
+  var auditEntries = [];
+  var now = new Date();
+  var user = Session.getActiveUser().getEmail();
+
+  (upserts || []).forEach(function (rowObj) {
+    if (!rowObj[pkField]) rowObj[pkField] = generateId_(rowIdPrefix_(sheetName));
+    var pk = String(rowObj[pkField]);
+    var rowArray = headers.map(function (h) { return rowObj[h] !== undefined ? rowObj[h] : ''; });
+    var isNew = pkIndex[pk] === undefined;
+    if (isNew) { pkIndex[pk] = existing.length; existing.push(rowArray); }
+    else existing[pkIndex[pk]] = rowArray;
+    auditEntries.push([now, user, sheetName, rowObj[pkField], isNew ? 'INSERT' : 'UPDATE', JSON.stringify(rowObj)]);
+    delete deleteSet[pk];   // 同一批裡先列進刪除清單、又被 upsert 加回來的，以加回來為準
+  });
+
+  var survivors = Object.keys(deleteSet).length ? existing.filter(function (row) {
+    var pk = String(row[pkCol]);
+    if (!deleteSet[pk]) return true;
+    auditEntries.push([now, user, sheetName, row[pkCol], 'DELETE', '{}']);
+    return false;
+  }) : existing;
+
+  // 整段資料一次寫回；先清掉舊範圍再寫，列數變少(刪除多於新增)時才不會留下舊列的殘影
+  if (lastRow >= 2) sheet.getRange(2, 1, lastRow - 1, width).clearContent();
+  if (survivors.length) {
+    var range = sheet.getRange(2, 1, survivors.length, width);
+    applyTextColumnFormats_(range, headers, sheetName);
+    range.setValues(survivors);
+  }
+  invalidateSheetCache_(sheetName);
+  logAuditBatch_(auditEntries);
+  return true;
+}
+
 function rowIdPrefix_(sheetName) {
   var map = {
     SalesMix: 'SM', CostOfSales: 'CS', DevInvestment: 'DI',
@@ -214,6 +292,17 @@ function logAudit_(sheetName, rowId, action, payload) {
   var sheet = ss.getSheetByName('AuditLog');
   if (!sheet) return; // AuditLog 為選配表，不存在就略過
   sheet.appendRow([new Date(), Session.getActiveUser().getEmail(), sheetName, rowId, action, JSON.stringify(payload)]);
+}
+
+/** logAudit_ 的整批版本：entries 是 [[Timestamp, User, SheetName, RowID, Action, Payload], ...]，
+ *  一次 setValues() 寫完，不像逐筆 appendRow() 一列一次呼叫。 */
+function logAuditBatch_(entries) {
+  if (!entries || !entries.length) return;
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('AuditLog');
+  if (!sheet) return; // AuditLog 為選配表，不存在就略過
+  var lastRow = sheet.getLastRow();
+  sheet.getRange(lastRow + 1, 1, entries.length, 6).setValues(entries);
 }
 
 function toNumber_(v) {
