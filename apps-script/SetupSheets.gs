@@ -85,6 +85,22 @@ function seedPLLineItems_() {
 }
 
 /**
+ * 既有試算表升級用：舊版 PLLineItems 分頁沒有「VehicleTypeID(所屬車型)」欄位，
+ * 檢查表頭若缺少就直接補一欄在最後面。留空即維持原本「全部共用」的語意，
+ * 不需要搬遷既有資料。跟 syncCodeOwnedLineItems_() 一樣掛在 getBootstrap() 開頁流程，
+ * 使用者不需要手動重跑 setupSpreadsheet()。
+ */
+function ensurePLLineItemsVehicleTypeColumn_() {
+  var sheet = getSheet_(SHEETS.PL_LINE_ITEMS);
+  var lastCol = sheet.getLastColumn();
+  var headers = lastCol ? sheet.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+  if (headers.indexOf('VehicleTypeID') !== -1) return false;
+  sheet.getRange(1, lastCol + 1).setValue('VehicleTypeID');
+  invalidateSheetCache_(SHEETS.PL_LINE_ITEMS);
+  return true;
+}
+
+/**
  * 把內建科目的名稱、父科目、分類與排序值重設回程式碼中的預設值。
  * seedPLLineItems_() 只補新科目、不動既有科目(使用者可能自己改過名稱)，
  * 所以科目排序改版後要靠這支才會套用到既有的 Sheet。

@@ -72,12 +72,21 @@ const ENTITIES = {
       { name: 'LineName', label: '科目名稱', width: 280, lockIf: r => r.__existing && isFixedLineItem(r) },
       { name: 'ParentLine', label: '父科目', type: 'select', options: LINE_PARENT_OPTIONS, width: 190,
         lockIf: r => r.__existing && isFixedLineItem(r) },
+      // 留空 = 全車型共用；選了某車型 = 只有那個車型看得到、算得到這個科目(見 Constants.gs 說明)。
+      // 結構科目與自動計算科目的損益鏈/公式本身就不分車型，鎖定為「(共用)」不可改。
+      { name: 'VehicleTypeID', label: '所屬車型', type: 'select', options: () => vehicleTypeLineItemOptions_(),
+        width: 130, lockIf: r => r.__existing && isFixedLineItem(r) },
       { name: 'Category', label: '分類', width: 110 },
       { name: 'SortOrder', label: '排序值', type: 'number', width: 80 },
       { name: 'AutoSource', label: '自動計算來源', readOnly: true, width: 150 }
     ]
   }
 };
+
+/** 科目設定「所屬車型」欄位的下拉選項：(共用) + 目前所有車型代號 */
+function vehicleTypeLineItemOptions_() {
+  return [['', '(共用)']].concat((vehicleTypesCache_ || []).map(t => [t.VehicleTypeID, t.VehicleTypeID]));
+}
 
 /** 結構科目或自動計算科目：父科目固定、名稱不可改 */
 function isFixedLineItem(row) {
@@ -104,6 +113,8 @@ const GRID_PANELS = {
 };
 
 let currentVehicleTypeId = '';
+// 「科目設定」頁「所屬車型」下拉選單要用到的完整車型清單，由 renderVehicleTypeOptions 一併更新
+let vehicleTypesCache_ = [];
 let currentScenarioId = '';
 let currentScenario = null;      // 目前情境的完整資料(含 Gate / ScenarioType)
 let scenarioCache = [];
@@ -244,6 +255,7 @@ function loadVehicleTypeSelector(preferredId, preferredScenarioId) {
 }
 
 function renderVehicleTypeOptions(types, pick) {
+  vehicleTypesCache_ = types || [];
   const sel = document.getElementById('vehicletype-selector');
   sel.innerHTML = '<option value="">-- 選擇車型 --</option>' +
     types.map(t => `<option value="${esc(t.VehicleTypeID)}">${esc(t.VehicleTypeID)}</option>`).join('');
@@ -383,11 +395,14 @@ function entityCellHtml(key, i, col, row) {
 
   if (locked) {
     // 新增列的自動編號欄位還沒有值，先讓使用者知道存檔時系統會配號
-    const shown = col.auto && !value ? '(儲存時自動編號)' : value;
+    // 結構科目/自動計算科目的「所屬車型」固定鎖定為共用，留空時顯示「(共用)」而不是空白
+    const shown = col.auto && !value ? '(儲存時自動編號)'
+      : (col.name === 'VehicleTypeID' && !value ? '(共用)' : value);
     return `<td class="row-head calc">${esc(shown)}</td>`;
   }
   if (col.type === 'select') {
-    const options = col.options.map(o => {
+    const colOptions = typeof col.options === 'function' ? col.options() : col.options;
+    const options = colOptions.map(o => {
       const [v, text] = Array.isArray(o) ? o : [o, o];
       return `<option value="${esc(v)}"${String(value) === String(v) ? ' selected' : ''}>${esc(text)}</option>`;
     }).join('');
@@ -904,6 +919,7 @@ function drawMatrix(key) {
     <span class="toolbar-sep"></span>
     ${parentSelect}
     <input id="${key}-new-name" type="text" placeholder="新增項目名稱" style="width:160px;">
+    <label class="chk"><input type="checkbox" id="${key}-new-scoped"> 僅本車型(${esc(currentVehicleTypeId)})專屬</label>
     <button type="button" class="btn secondary" onclick="addMatrixLine('${key}')">新增項目</button>
   `;
 
@@ -1084,15 +1100,17 @@ function addMatrixLine(key) {
   const name = val(`${key}-new-name`);
   if (!name) { setStatus(key, '請先輸入項目名稱', 'err'); return; }
   const parent = cfg.parentOptions ? val(`${key}-new-parent`) : cfg.parentLine;
+  const scopedEl = document.getElementById(`${key}-new-scoped`);
+  const vehicleTypeId = scopedEl && scopedEl.checked ? currentVehicleTypeId : '';
   setStatus(key, '新增中...');
   google.script.run
     .withSuccessHandler(() => { setStatus(key, '已新增項目', 'ok'); renderMatrixPanel(key); })
     .withFailureHandler(err => setStatus(key, '錯誤：' + err.message, 'err'))
-    .addLineItemInline(parent, name);
+    .addLineItemInline(parent, name, vehicleTypeId);
 }
 
 function deleteMatrixLine(key, lineCode) {
-  if (!confirm('科目表是全域共用的：刪除這個項目會一併清掉它在「所有情境」各車系已輸入的金額，確定嗎？')) return;
+  if (!confirm('刪除這個項目會一併清掉它已輸入的金額(所有用得到這個科目的情境/車系)，確定嗎？')) return;
   setStatus(key, '刪除中...');
   google.script.run
     .withSuccessHandler(() => { setStatus(key, '已刪除項目', 'ok'); renderMatrixPanel(key); })
@@ -2277,10 +2295,34 @@ function diffSectionHtml_(cols, lines) {
         <thead><tr><th>項目</th><th>${esc(a.vehicleLabel || a.label)}</th><th>${esc(b.vehicleLabel || b.label)}</th><th>差異</th><th>差異%</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
+      ${subjectPresenceDiffHtml_(a, b, lines)}
       <div class="chart-box diff-chart-box">${diffChartSvg_(a, b, keyLines)}</div>
     </div>`;
   }).join('');
   return `<div class="diff-section">${picker}<div class="diff-cards-row">${cards}</div></div>`;
+}
+
+/**
+ * 科目歸屬差異：不同車型的科目設定可能不一樣(見「科目設定」的「所屬車型」欄位)，
+ * 這裡把「只有 a 欄位算得出來、b 欄位沒有」或反過來的明細科目列出來，
+ * 讓使用者一眼看出兩個車型的科目集合差在哪裡，不用自己在完整損益表裡逐列找空白。
+ * 結構科目(小計/毛利/淨利)與售價結構永遠共用、兩邊都會有，不需要列入這裡。
+ */
+function subjectPresenceDiffHtml_(a, b, lines) {
+  const onlyA = [], onlyB = [];
+  (lines || []).forEach(l => {
+    if (l.isSubtotal || l.isPriceStructure) return;
+    const inA = a.amounts[l.LineCode] !== undefined && a.amounts[l.LineCode] !== null;
+    const inB = b.amounts[l.LineCode] !== undefined && b.amounts[l.LineCode] !== null;
+    if (inA && !inB) onlyA.push(l);
+    else if (!inA && inB) onlyB.push(l);
+  });
+  if (!onlyA.length && !onlyB.length) return '';
+  const chips = arr => arr.map(l => `<span class="chip">${esc(shortLineName(l.LineName))}</span>`).join(' ');
+  return `<div class="subject-diff muted">
+    ${onlyA.length ? `<div>僅「${esc(a.vehicleLabel || a.label)}」有這些科目：${chips(onlyA)}</div>` : ''}
+    ${onlyB.length ? `<div>僅「${esc(b.vehicleLabel || b.label)}」有這些科目：${chips(onlyB)}</div>` : ''}
+  </div>`;
 }
 
 /** 每組差異比較底下的柱狀圖：關鍵科目的差異金額(b-a)，跟差異卡片的表格是同一組數字 */

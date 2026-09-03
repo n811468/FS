@@ -30,7 +30,10 @@ function getBootstrap(preferredVehicleTypeId) {
   // 開頁時順手把「由程式定義的科目名稱」對回來。做成自動修復而不是維護選單，
   // 是因為名稱對不上數字的畫面看起來就是「系統算錯了」，不該要使用者先知道有這支維護功能。
   // 只有真的對不上時才寫入，之後每次開頁都只是一次讀取。
-  withLock_(function () { return syncCodeOwnedLineItems_(); });
+  withLock_(function () {
+    ensurePLLineItemsVehicleTypeColumn_();
+    return syncCodeOwnedLineItems_();
+  });
 
   var types = getVehicleTypes();
   var ids = types.map(function (t) { return t.VehicleTypeID; });
@@ -392,7 +395,7 @@ function saveAmountMatrix_(sheetName, scenarioId, cells) {
  * 不必再跑去儀表板才看得到模具/設備攤提與貨物稅算出多少。
  */
 function getCostOfSalesMatrix(scenarioId, vehicleTypeId) {
-  var matrix = buildAmountMatrix_(SHEETS.COST_OF_SALES, scenarioId, vehicleTypeId, getCostOfSalesLineOptions());
+  var matrix = buildAmountMatrix_(SHEETS.COST_OF_SALES, scenarioId, vehicleTypeId, getCostOfSalesLineOptions(vehicleTypeId));
   matrix.currencies = getConfiguredCurrencies(scenarioId);
   var auto = getCostOfSalesAutoLines(scenarioId, matrix.vehicles);
   matrix.autoLines = auto.lines;
@@ -406,7 +409,7 @@ function saveCostOfSalesMatrix(scenarioId, cells) {
 
 /** 營業費用矩陣：列 = 科目、欄 = 車系。autoLines 同上，含季Margin、開發總投攤提的費用類科目 */
 function getOperatingExpenseMatrix(scenarioId, vehicleTypeId) {
-  var matrix = buildAmountMatrix_(SHEETS.OPERATING_EXPENSE, scenarioId, vehicleTypeId, getOperatingExpenseLineOptions());
+  var matrix = buildAmountMatrix_(SHEETS.OPERATING_EXPENSE, scenarioId, vehicleTypeId, getOperatingExpenseLineOptions(vehicleTypeId));
   var auto = getOperatingExpenseAutoLines(scenarioId, matrix.vehicles);
   matrix.autoLines = auto.lines;
   matrix.autoValues = auto.values;
@@ -421,10 +424,17 @@ function saveOperatingExpenseMatrix(scenarioId, cells) {
  * parentLine 決定這個科目屬於哪一段損益：B = 銷貨成本、E/G/I = 各段費用。
  * LineCode 自動產生（父科目字首 + 流水號），使用者只需要填科目名稱。
  */
-function addLineItemInline(parentLine, lineName) {
+/**
+ * vehicleTypeId 可選：不傳(或空白) = 共用科目，跟現有行為一致；有傳 = 只有這個車型看得到、
+ * 用得到這個科目，不會出現在其他車型的下拉選單與損益計算裡。讓使用者在「銷貨成本」
+ * 「營業費用」頁面直接新增車型專屬科目，不必特地跑去「科目設定」頁再手動指定所屬車型。
+ */
+function addLineItemInline(parentLine, lineName, vehicleTypeId) {
   return withLock_(function () {
     if (!lineName) throw new Error('請輸入科目名稱');
-    return upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', newLineItemRow_(parentLine, lineName));
+    var row = newLineItemRow_(parentLine, lineName);
+    row.VehicleTypeID = vehicleTypeId || '';
+    return upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', row);
   });
 }
 
@@ -525,6 +535,8 @@ function addDevAmortLineItem(category, lineName) {
     var row = newLineItemRow_(parentLine, lineName);
     row.AutoSource = AUTO_SOURCE.DEV_AMORT;
     row.DevAmortCategory = category;
+    row.VehicleTypeID = ''; // 自動計算科目一律共用，不分車型
+
     return upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', row);
   });
 }
@@ -893,8 +905,15 @@ function restoreBuiltInLineItems() {
   });
 }
 
-function getPLLineItems() {
-  return (sheetToObjects_(SHEETS.PL_LINE_ITEMS) || []).sort(function (a, b) { return a.SortOrder - b.SortOrder; });
+/**
+ * 科目清單。不傳 vehicleTypeId 回傳全部(科目設定頁用，管理者要看得到所有科目)；
+ * 有傳則只回傳「共用科目(VehicleTypeID 留空)」∪「該車型專屬科目」，
+ * 讓損益計算、成本/費用輸入頁的下拉選單只看得到跟這個車型有關的科目。
+ */
+function getPLLineItems(vehicleTypeId) {
+  var rows = (sheetToObjects_(SHEETS.PL_LINE_ITEMS) || []).sort(function (a, b) { return a.SortOrder - b.SortOrder; });
+  if (!vehicleTypeId) return rows;
+  return rows.filter(function (d) { return !d.VehicleTypeID || d.VehicleTypeID === vehicleTypeId; });
 }
 function savePLLineItem(rowObj) {
   return withLock_(function () { return savePLLineItem_(rowObj); });
@@ -915,6 +934,7 @@ function savePLLineItem_(rowObj) {
     if (rowObj.SortOrder !== '' && rowObj.SortOrder !== undefined && rowObj.SortOrder !== null) {
       created.SortOrder = toNumber_(rowObj.SortOrder);
     }
+    created.VehicleTypeID = rowObj.VehicleTypeID || '';
     return upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', created);
   }
 
@@ -922,9 +942,11 @@ function savePLLineItem_(rowObj) {
   // 自動計算科目由 CalcEngine 產生，使用者新增的科目一律是手動輸入科目；
   // CommodityTaxDeduct(貨物稅完稅價格可扣除)等表單沒有的欄位由合併式 upsert 保留原值
   rowObj.AutoSource = existing ? (existing.AutoSource || '') : '';
-  // 結構科目(A/B/C/E/G/I/K)與自動計算科目改掉父科目會讓損益鏈接錯段，一律沿用原值
+  // 結構科目(A/B/C/E/G/I/K)與自動計算科目改掉父科目會讓損益鏈接錯段，一律沿用原值；
+  // 這兩類科目的所屬車型也一律鎖定為共用(留空)，避免限定車型後在其他車型的損益鏈斷掉。
   if (existing && (PROTECTED_LINE_CODES.indexOf(rowObj.LineCode) !== -1 || existing.AutoSource)) {
     rowObj.ParentLine = existing.ParentLine || '';
+    rowObj.VehicleTypeID = '';
   }
   return upsertRowMerge_(SHEETS.PL_LINE_ITEMS, 'LineCode', rowObj);
 }
@@ -959,9 +981,11 @@ function savePLLineItemGrid(rows) {
         // 自動計算科目由 CalcEngine 產生，使用者新增的科目一律是手動輸入科目；
         // CommodityTaxDeduct(貨物稅完稅價格可扣除)等表單沒有的欄位由合併補齊、保留原值
         r.AutoSource = existing ? (existing.AutoSource || '') : '';
-        // 結構科目(A/B/C/E/G/I/K)與自動計算科目改掉父科目會讓損益鏈接錯段，一律沿用原值
+        // 結構科目(A/B/C/E/G/I/K)與自動計算科目改掉父科目會讓損益鏈接錯段，一律沿用原值；
+        // 所屬車型同樣鎖定為共用(留空)
         if (existing && (PROTECTED_LINE_CODES.indexOf(r.LineCode) !== -1 || existing.AutoSource)) {
           r.ParentLine = existing.ParentLine || '';
+          r.VehicleTypeID = '';
         }
         return mergeRowForBatch_(SHEETS.PL_LINE_ITEMS, 'LineCode', r, byCode);
       });
@@ -996,11 +1020,13 @@ function deletePLLineItem(lineCode) {
 }
 
 /**
- * 科目下拉選單選項：只回傳「可手動輸入」的明細科目(排除自動計算科目)，
+ * 科目下拉選單選項：只回傳「可手動輸入」的明細科目(排除自動計算科目)。
+ * vehicleTypeId 有傳時只回傳「共用科目」∪「該車型專屬科目」，避免其他車型專屬的
+ * 科目出現在跟它無關的車型輸入頁下拉選單中。
  * 回傳 [{value, label}]，前端 renderForm 直接吃這個格式。
  */
-function lineOptionsFor_(parentCodes, extraCodes) {
-  var opts = getPLLineItems()
+function lineOptionsFor_(parentCodes, extraCodes, vehicleTypeId) {
+  var opts = getPLLineItems(vehicleTypeId)
     .filter(function (d) {
       return !d.AutoSource &&
         (parentCodes.indexOf(d.ParentLine) !== -1 || (extraCodes || []).indexOf(d.LineCode) !== -1);
@@ -1008,12 +1034,12 @@ function lineOptionsFor_(parentCodes, extraCodes) {
     .map(function (d) { return { value: d.LineCode, label: d.LineCode + ' ' + d.LineName }; });
   return opts;
 }
-/** 銷貨成本頁的成本項目選單（B 底下、可手動輸入的科目） */
-function getCostOfSalesLineOptions() {
-  return lineOptionsFor_(['B']);
+/** 銷貨成本頁的成本項目選單（B 底下、可手動輸入的科目，依車型篩選） */
+function getCostOfSalesLineOptions(vehicleTypeId) {
+  return lineOptionsFor_(['B'], null, vehicleTypeId);
 }
-/** 營業費用頁的科目選單（E/G/I 底下可手動輸入的科目，外加 J 前瞻費用） */
-function getOperatingExpenseLineOptions() {
-  return lineOptionsFor_(['E', 'G', 'I'], ['J']);
+/** 營業費用頁的科目選單（E/G/I 底下可手動輸入的科目，外加 J 前瞻費用，依車型篩選） */
+function getOperatingExpenseLineOptions(vehicleTypeId) {
+  return lineOptionsFor_(['E', 'G', 'I'], ['J'], vehicleTypeId);
 }
 

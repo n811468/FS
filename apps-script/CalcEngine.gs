@@ -101,6 +101,10 @@ function calculatePLCoreUncached_(scenarioId, vehicleId) {
   var salesMixRow = getSalesMix(scenarioId).filter(function (r) { return r.VehicleID === vehicleId; })[0];
   if (!salesMixRow) throw new Error('找不到 SalesMix 資料：' + scenarioId + ' / ' + vehicleId);
 
+  // 情境隸屬單一車型，用它決定這個車系可以使用哪些科目(共用科目 + 本車型專屬科目)，
+  // 讓其他車型專屬的科目不會外溢進來(見 manualLineCodesFor_ / getPLLineItems)。
+  var vehicleTypeId = vehicleTypeIdForScenario_(scenarioId);
+
   var params = getParameters(scenarioId);
   var taxRate = pct_(lookupParam_(params, '營業稅率', vehicleId));
   var commissionRate = pct_(lookupParam_(params, '銷售佣金率', vehicleId));
@@ -133,22 +137,23 @@ function calculatePLCoreUncached_(scenarioId, vehicleId) {
 
   // ---- Σd 銷售費用：貨物稅的完稅價格要扣廣促margin，所以 d 類要先算 ----
   var opexRows = getOperatingExpense(scenarioId, vehicleId);
-  var dLines = pickLines_(opexRows, manualLineCodesFor_(['E']));
+  var dLines = pickLines_(opexRows, manualLineCodesFor_(['E'], vehicleTypeId));
   dLines.d4 = exFactoryPrice * marginRate;                                 // 季Margin = 廠價(未稅) × 季Margin率
   applyDevAmortLines_(dLines, 'E', devPerUnit, lineDefsAll);
   var totalD = sumValues_(dLines);
 
   // ---- B 銷貨成本：手動輸入的成本列 + 自動計算的成本列 ----
   var costRows = getCostOfSales(scenarioId, vehicleId);
-  var knownCodes = lineDefsAll.map(function (d) { return d.LineCode; });
-  // 先把所有可手動輸入的成本科目都放進來(值 0)，沒填金額的科目才不會整列從儀表板消失 ——
+  // 先把「本車型可用」的手動成本科目都放進來(值 0)，沒填金額的科目才不會整列從儀表板消失 ——
   // 少了幾列的話，畫面上看到的 b 科目加起來會對不上 B 銷貨成本合計，看起來就像加總算錯。
+  // 只放本車型可用的科目(共用+本車型專屬)，其他車型專屬的科目完全不會出現在這個字典裡，
+  // 儀表板/比較功能才不會把不相干車型的科目顯示成誤導性的 0 元列。
   var bLines = {};
-  manualLineCodesFor_(['B']).forEach(function (code) { bLines[code] = 0; });
+  manualLineCodesFor_(['B'], vehicleTypeId).forEach(function (code) { bLines[code] = 0; });
   costRows.forEach(function (r) {
     var code = r.LineCode;
-    // 科目已被刪除的殘留金額不計入，否則 B 會跟畫面上列出的 b 科目合計對不起來
-    if (!code || knownCodes.indexOf(code) === -1) return;
+    // 科目已被刪除、或不屬於本車型可用範圍的殘留金額不計入，否則 B 會跟畫面上列出的 b 科目合計對不起來
+    if (!code || bLines[code] === undefined) return;
     // 外幣成本用「匯率設定」頁該幣別的現況匯率換算，不在成本列逐筆填匯率
     bLines[code] = (bLines[code] || 0) + toNumber_(r.Amount) * fxRateFor_(params, r.Currency, vehicleId);
   });
@@ -163,13 +168,13 @@ function calculatePLCoreUncached_(scenarioId, vehicleId) {
   var grossProfitE = grossProfitC - totalD; // E 銷貨毛利
 
   // ---- Σf 費用(f1 直接輸入 + 開發總投費用類攤提) ----
-  var fLines = pickLines_(opexRows, manualLineCodesFor_(['G']));
+  var fLines = pickLines_(opexRows, manualLineCodesFor_(['G'], vehicleTypeId));
   applyDevAmortLines_(fLines, 'G', devPerUnit, lineDefsAll);
   var totalF = sumValues_(fLines);
   var contributionG = grossProfitE - totalF; // G 產品貢獻
 
   // ---- Σh 固定營業費用 ----
-  var hLines = pickLines_(opexRows, manualLineCodesFor_(['I']));
+  var hLines = pickLines_(opexRows, manualLineCodesFor_(['I'], vehicleTypeId));
   applyDevAmortLines_(hLines, 'I', devPerUnit, lineDefsAll);
   var totalH = sumValues_(hLines);
   var operatingProfitI = contributionG - totalH; // I 營業淨利(未扣前瞻)
@@ -463,6 +468,12 @@ function isBaselineScenario_(scenarioId) {
   return !s || !s.ScenarioType || s.ScenarioType === SCENARIO_TYPE_BASELINE;
 }
 
+/** 情境所屬的車型代號(Scenarios.VehicleTypeID)，決定這個情境可以使用哪些科目 */
+function vehicleTypeIdForScenario_(scenarioId) {
+  var s = getScenarios().filter(function (r) { return r.ScenarioID === scenarioId; })[0];
+  return s ? (s.VehicleTypeID || '') : '';
+}
+
 /**
  * 開發總投攤提用的 LIFE CYCLE 總台數。
  * 情境若有填「攤提基準台數」(AmortMonthlyVolume × 12 × AmortLifeCycleYears)就以它為準，
@@ -552,9 +563,13 @@ function previewDevInvestmentSummary(scenarioId, rows) {
   return { targets: summary.targets, lifeCycleUnits: summary.lifeCycleUnits };
 }
 
-/** 某個父科目底下、可以手動輸入的明細科目代碼(排除自動計算科目) */
-function manualLineCodesFor_(parentCodes) {
-  return getPLLineItems()
+/**
+ * 某個父科目底下、可以手動輸入的明細科目代碼(排除自動計算科目)。
+ * vehicleTypeId 有傳時只回傳共用科目 + 該車型專屬科目，讓其他車型專屬的科目
+ * 不會被預先塞進這個車型的損益計算裡（見 calculatePLCoreUncached_ 的用法）。
+ */
+function manualLineCodesFor_(parentCodes, vehicleTypeId) {
+  return getPLLineItems(vehicleTypeId)
     .filter(function (d) { return parentCodes.indexOf(d.ParentLine) !== -1 && !d.AutoSource; })
     .map(function (d) { return d.LineCode; });
 }

@@ -39,7 +39,8 @@ var SCHEMA = {
     'Amount', 'Currency', 'ChallengeReductionPct', 'Notes', 'EffectiveDate', 'TargetLineCode', 'SortOrder'],
   OperatingExpense: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'Notes', 'EffectiveDate'],
   Parameters: ['ParamID', 'ScenarioID', 'VehicleID', 'ParamName', 'Currency', 'Value', 'EffectiveDate'],
-  PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'SortOrder', 'AutoSource', 'CommodityTaxDeduct', 'DevAmortCategory'],
+  // VehicleTypeID 留空 = 全車型共用科目；有值 = 僅該車型可用的專屬科目(見 Constants.gs:121-123 附近說明)。
+  PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'SortOrder', 'AutoSource', 'CommodityTaxDeduct', 'DevAmortCategory', 'VehicleTypeID'],
   PLResult: ['ResultID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'PctOfRevenue', 'PctOfExFactory', 'CalcTimestamp']
 };
 
@@ -120,6 +121,9 @@ var DEV_AMORT_AUTO_SOURCES = [
 
 // 結構科目(小計/毛利/淨利)與自動計算科目不允許在「科目設定」頁面刪除，
 // 否則損益鏈會斷掉。其餘明細科目(b*/d*/f1/h*/J)皆可自由新增與刪除。
+// 這兩類科目也不可以限定車型(VehicleTypeID 必須留空)：結構科目要串起每個車型的損益鏈，
+// 自動計算科目的公式(比率/開發總投攤提)本身就不分車型，一旦限定某車型會讓其他車型的
+// 損益鏈斷掉或漏算。
 var PROTECTED_LINE_CODES = ['A', 'B', 'C', 'E', 'G', 'I', 'K'];
 
 // 科目代碼由系統自動產生流水號：父科目字首 + 目前未被使用的最小號碼(b1、b2、d1、f1、h1...)。

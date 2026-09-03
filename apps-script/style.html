@@ -262,6 +262,9 @@
   .diff-table td.negative, .diff-table th.negative { color: #c53030; }
   .diff-table td.delta { font-weight: 600; }
   .diff-chart-box { margin-top: 10px; background: #fff; border: 1px solid #eee; border-radius: 6px; padding: 6px; }
+  /* 科目歸屬差異：不同車型的科目集合不同時，列出「只有其中一方有」的科目名稱 */
+  .subject-diff { margin-top: 8px; font-size: 12px; line-height: 1.8; }
+  .subject-diff .chip { display: inline-block; background: #edf2f7; border-radius: 10px; padding: 1px 8px; margin: 1px 2px; }
   /* 只有一組差異時卡片會撐滿整列，SVG 跟著放大兩倍字會太大；圖最多畫到 720px 寬、置中 */
   .diff-chart-box .chart-svg { max-width: 720px; margin: 0 auto; }
   /* 十字游標：滑鼠所在的列與欄一起變色；放在 subtotal/sticky 底色之後才蓋得過去 */
