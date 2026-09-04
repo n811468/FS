@@ -239,6 +239,9 @@ var TEXT_COLUMNS = {
   DevInvestment: ['RowID', 'ScenarioID', 'Department', 'AssetType', 'Currency', 'Notes', 'TargetLineCode'],
   OperatingExpense: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Notes'],
   Parameters: ['ParamID', 'ScenarioID', 'VehicleID', 'ParamName', 'Currency'],
-  PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'AutoSource', 'CommodityTaxDeduct', 'DevAmortCategory'],
+  // VehicleTypeID/Excluded*/Formula 也要當純文字：車型代號若是純數字(如「2024」)，
+  // 被 Sheet 自動轉成數字之後就跟字串比對不起來，排除清單會整個失效
+  PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'AutoSource', 'CommodityTaxDeduct',
+    'DevAmortCategory', 'VehicleTypeID', 'ExcludedVehicleTypeIDs', 'ExcludedScenarioIDs', 'Formula'],
   CustomRateParams: ['ParamName']
 };

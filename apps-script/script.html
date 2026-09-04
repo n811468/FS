@@ -930,8 +930,11 @@ function onEntityField(key, i, field, value) {
   // 使用者會覺得「選了但沒反應」。改成自動把排序值移到新父科目底下最後面，讓這一列
   // 立刻在畫面上跳到新位置，跟「新增一列」用的排序邏輯一致(見 nextSortOrder_)。
   if (key === 'lineitems' && field === 'ParentLine') {
+    // 算新位置時一定要排除「自己」：這一列的 ParentLine 上一行才剛被改成新值，把自己也
+    // 算進去的話，從後段搬到前段(例如排序值 62 的 h3 改掉父科目)會拿自己的 62 當最大值、
+    // 得到 62.5，看起來就是「選了沒反應」——正好是這段程式要解決的那個症狀。
     const maxSort = (entityRows.lineitems || [])
-      .filter(r => r.ParentLine === value)
+      .filter((r, idx) => idx !== i && r.ParentLine === value)
       .reduce((max, r) => Math.max(max, num(r.SortOrder)), 20);
     entityRows.lineitems[i].SortOrder = maxSort + 0.5;
     drawEntityGrid(key);
@@ -1008,11 +1011,14 @@ function saveEntityGrid(key) {
   setStatus(key, '儲存中...');
   google.script.run
     .withSuccessHandler(safeHandler(saved => {
-      panelDataCache_[panelCacheKey_(key, entityCacheScope_(cfg, key))] = saved;
       entityRows[key] = (saved || []).map(r => Object.assign({}, r, { __existing: true }));
       drawEntityGrid(key);
       setStatus(key, '已儲存', 'ok');
+      // 先讓 afterEntityChange 清掉相依頁面的快取，再把這一頁剛存回來的最新資料放進快取
+      // （順序反過來的話，剛存好的資料會被自己觸發的失效清掉，下次切回來又要多等一次）
       afterEntityChange(key);
+      panelDataCache_[panelCacheKey_(key, entityCacheScope_(cfg, key))] = saved;
+      updatePreloadStatus_();
     }))
     .withFailureHandler(err => setStatus(key, '錯誤：' + err.message, 'err'))
     [cfg.saveGridFn](...args);
@@ -1118,6 +1124,10 @@ function reenableLineItem_(lineCode, scope) {
 function afterEntityChange(key) {
   if (key === 'vehicletypes') refreshVehicleTypeOptions();
   if (key === 'scenarios') refreshScenarioOptions();
+  // 科目改過(改名/改父科目/加減科目/改公式)之後，銷貨成本/營業費用的下拉選單與唯讀自動
+  // 計算區塊、開發總投的攤提落點選單都會跟著變，那幾頁的快取(含背景預載的)一定要清掉，
+  // 不然切過去看到的還是改動前的舊選單。
+  if (key === 'lineitems') invalidateLineItemDependentCaches_();
 }
 
 function refreshVehicleTypeOptions() {

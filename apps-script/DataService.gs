@@ -678,6 +678,13 @@ function addCustomRateParam(name) {
     if (known.indexOf(name) !== -1) throw new Error('「' + name + '」已經是系統內建的比率/匯率參數名稱，不能重複新增。');
     var existing = getCustomRateParamNames_();
     if (existing.indexOf(name) !== -1) throw new Error('「' + name + '」已經存在，不能重複新增。');
+    // 名稱不能跟科目代碼撞號：公式查值時科目代碼優先(見 CalcEngine.gs 的 resolveLineItemFormulas_)，
+    // 撞號的話這個比率永遠會被同名科目的金額蓋掉，填了值也沒有任何作用、又完全看不出原因。
+    var lineCodes = getPLLineItems().map(function (d) { return d.LineCode; });
+    if (lineCodes.indexOf(name) !== -1) {
+      throw new Error('「' + name + '」跟現有的科目代碼重複了。公式引用時會優先當成那個科目，' +
+        '這個比率會永遠取不到值，請換一個名稱。');
+    }
 
     var sheet = getSheet_(SHEETS.CUSTOM_RATE_PARAMS);
     var maxSort = (sheetToObjects_(SHEETS.CUSTOM_RATE_PARAMS) || [])
@@ -900,8 +907,8 @@ function syncCodeOwnedLineItems_() {
 /**
  * 把所有內建科目(含明細科目)的名稱、父科目、分類、排序值整個回復成程式碼中的預設值。
  * 使用者自己新增的科目不受影響。排序值會一併回到實際損益試算表的列序。
- * 排除清單(哪些車型/情境不用這個科目)不算「內建預設值」的一部分(PL_LINE_ITEMS 本身
- * 不記這個)，是使用者自己在「科目設定」頁決定的，回復預設值不應該連帶洗掉。
+ * 排除清單(哪些車型/情境不用這個科目)與自訂公式不算「內建預設值」的一部分(PL_LINE_ITEMS
+ * 本身不記這幾個欄位)，是使用者自己在「科目設定」頁決定的，回復預設值不應該連帶洗掉。
  */
 function restoreBuiltInLineItems() {
   return withLock_(function () {
@@ -913,7 +920,8 @@ function restoreBuiltInLineItems() {
         if (line[h] !== undefined) { row[h] = line[h]; return; }
         // VehicleTypeID/ExcludedVehicleTypeIDs/ExcludedScenarioIDs 不算「內建預設值」的一部分，
         // 是使用者自己在「科目設定」頁決定的，回復預設值不應該連帶洗掉
-        var carryOver = h === 'VehicleTypeID' || h === 'ExcludedVehicleTypeIDs' || h === 'ExcludedScenarioIDs';
+        var carryOver = h === 'VehicleTypeID' || h === 'ExcludedVehicleTypeIDs' ||
+          h === 'ExcludedScenarioIDs' || h === 'Formula';
         row[h] = (existing && carryOver) ? (existing[h] || '') : '';
       });
       return row;
@@ -991,6 +999,10 @@ function setLineItemExclusion(lineCode, vehicleTypeId, excluded) {
     if (def.VehicleTypeID) {
       throw new Error('「' + lineCode + '」目前仍是舊版「' + def.VehicleTypeID + '」專屬科目資料，請重新整理頁面讓系統完成轉換後再試一次。');
     }
+    if (excluded) {
+      assertDevAmortTargetUnused_(def, scenarioIdsOfVehicleType_(vehicleTypeId),
+        '「' + vehicleTypeId + '」這個車型底下');
+    }
     var list = excludedVehicleTypeIds_(def);
     var idx = list.indexOf(vehicleTypeId);
     if (excluded && idx === -1) list.push(vehicleTypeId);
@@ -998,6 +1010,29 @@ function setLineItemExclusion(lineCode, vehicleTypeId, excluded) {
     def.ExcludedVehicleTypeIDs = list.join(',');
     return upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', def);
   });
+}
+
+/** 某個車型底下所有情境的代號，用來判斷「對這個車型排除某科目」會影響到哪些情境的資料 */
+function scenarioIdsOfVehicleType_(vehicleTypeId) {
+  return getScenarios(vehicleTypeId).map(function (s) { return s.ScenarioID; });
+}
+
+/**
+ * 排除一個「開發總投攤提落點」之前，先確認受影響的情境裡沒有開發總投資料還指到它。
+ * 沒擋的話那些投資金額會攤不到任何科目、直接從損益表上消失(金額不小，而且畫面上不會有
+ * 任何提示，最難察覺)——跟 deletePLLineItem 擋刪除是同一個道理，只是這裡影響範圍是
+ * 「某個車型/情境不用它」而不是整個刪掉，所以只檢查受影響範圍內的情境。
+ */
+function assertDevAmortTargetUnused_(def, scenarioIds, rangeLabel) {
+  if (!def || DEV_AMORT_AUTO_SOURCES.indexOf(def.AutoSource) === -1) return;
+  var used = (sheetToObjects_(SHEETS.DEV_INVESTMENT) || []).filter(function (r) {
+    return devAmortTargetOf_(r) === def.LineCode && scenarioIds.indexOf(r.ScenarioID) !== -1;
+  });
+  if (!used.length) return;
+  throw new Error('「' + def.LineCode + ' ' + def.LineName + '」是開發總投的攤提落點，' +
+    rangeLabel + '還有 ' + used.length + ' 筆開發總投資料指到它。' +
+    '現在刪除的話，那些投資金額會攤不到任何科目、直接從損益表上消失，' +
+    '請先到「開發總投」把那些列改選別的攤提落點(或刪除)再回來刪這個科目。');
 }
 
 /**
@@ -1013,6 +1048,7 @@ function setLineItemScenarioExclusion(lineCode, scenarioId, excluded) {
     if (PROTECTED_LINE_CODES.indexOf(lineCode) !== -1) {
       throw new Error('「' + lineCode + '」是損益結構科目(小計/毛利/淨利)，每個情境都需要，不可停用。');
     }
+    if (excluded) assertDevAmortTargetUnused_(def, [scenarioId], '這個情境');
     var list = excludedScenarioIds_(def);
     var idx = list.indexOf(scenarioId);
     if (excluded && idx === -1) list.push(scenarioId);
@@ -1027,9 +1063,10 @@ function setLineItemScenarioExclusion(lineCode, scenarioId, excluded) {
  * （使用者只選父科目、填名稱，不必自己編碼，也不會跟既有科目撞號）。
  * 呼叫端必須已經在 withLock_ 內。
  * vehicleTypeId/scenarioId 選填：帶了的話，Formula 欄位驗證引用的科目名稱時會依這個範圍
- * 篩選(見 validateLineItemFormula_)；沒帶就退回用這筆科目自己的 VehicleTypeID 當範圍。
+ * 篩選(見 validateLineItemFormula_)；沒帶就看全系統科目。
+ * pendingFormulas 選填：這一批要一起存的公式，循環引用檢查用(見 validateLineItemFormula_)。
  */
-function savePLLineItem_(rowObj, vehicleTypeId, scenarioId) {
+function savePLLineItem_(rowObj, vehicleTypeId, scenarioId, pendingFormulas) {
   if (!rowObj.LineName) throw new Error('科目名稱為必填');
 
   if (!rowObj.LineCode) {
@@ -1043,7 +1080,7 @@ function savePLLineItem_(rowObj, vehicleTypeId, scenarioId) {
     // 各車型要不要用這個科目，交給「此車型科目設定」的排除清單決定(見 setLineItemExclusion)。
     created.VehicleTypeID = '';
     created.Formula = rowObj.Formula || '';
-    validateLineItemFormula_(created, null, vehicleTypeId, scenarioId);
+    validateLineItemFormula_(created, null, vehicleTypeId, scenarioId, pendingFormulas);
     return upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', created);
   }
 
@@ -1058,7 +1095,7 @@ function savePLLineItem_(rowObj, vehicleTypeId, scenarioId) {
   // 科目一律全系統共用，「要不要套用在某個車型」完全交給排除清單決定，
   // 不再讓使用者從這個表格把科目直接指定成某個車型專屬(見上方新增列的說明)。
   rowObj.VehicleTypeID = '';
-  validateLineItemFormula_(rowObj, existing, vehicleTypeId, scenarioId);
+  validateLineItemFormula_(rowObj, existing, vehicleTypeId, scenarioId, pendingFormulas);
   return upsertRowMerge_(SHEETS.PL_LINE_ITEMS, 'LineCode', rowObj);
 }
 
@@ -1081,10 +1118,8 @@ function getFormulaReferenceOptions(vehicleTypeId, scenarioId) {
     .filter(function (code) { return byCode[code]; })
     .map(function (code) { return { value: code, label: code + ' ' + byCode[code].LineName }; });
 
-  var lineItems = scoped.filter(function (d) {
-    if (PROTECTED_LINE_CODES.indexOf(d.LineCode) !== -1) return false;
-    return !d.AutoSource;
-  }).map(function (d) { return { value: d.LineCode, label: d.LineCode + ' ' + d.LineName }; });
+  var lineItems = scoped.filter(isFormulaEligibleLine_)
+    .map(function (d) { return { value: d.LineCode, label: d.LineCode + ' ' + d.LineName }; });
 
   var customNames = getCustomRateParamNames_();
   var params = TAX_RATE_PARAM_NAMES.concat(customNames).concat(FX_PARAM_NAMES)
@@ -1102,8 +1137,12 @@ function getFormulaReferenceOptions(vehicleTypeId, scenarioId) {
  *
  * vehicleTypeId/scenarioId 決定「引用的名稱要在哪個範圍內找」：優先用呼叫端傳入的目前
  * 畫面範圍(此車型科目設定的當下範圍)，沒有的話就看全系統科目(不分車型)。
+ *
+ * pendingFormulas 選填：這一批要一起存的「科目代碼 -> 公式」。循環引用一定要拿「存完之後
+ * 會長什麼樣子」來判斷，只看 Sheet 上的舊資料的話，同一批送出的兩列互相引用會整批通過，
+ * 存進去之後每一次儲存又都會踩到循環、連要改回來的那次儲存也被擋掉，變成解不開的死結。
  */
-function validateLineItemFormula_(rowObj, existing, vehicleTypeId, scenarioId) {
+function validateLineItemFormula_(rowObj, existing, vehicleTypeId, scenarioId, pendingFormulas) {
   if (rowObj.Formula === undefined || rowObj.Formula === null) return;
   var formula = String(rowObj.Formula).trim();
   rowObj.Formula = formula;
@@ -1117,6 +1156,14 @@ function validateLineItemFormula_(rowObj, existing, vehicleTypeId, scenarioId) {
   var autoSource = existing ? existing.AutoSource : rowObj.AutoSource;
   if (autoSource) {
     throw new Error('「' + label + '」是內建自動計算科目，不能填公式。');
+  }
+  // 公式算出來的值必須寫得回 B/E/G/I 四段其中之一(見 CalcEngine.gs 的 resolveLineItemFormulas_)。
+  // 不在這四段底下的科目(如 J 前瞻費用)填了公式也不會被計算，等於默默失效，直接擋下來講清楚。
+  // 用「這次要存進去的父科目」判斷，不是舊值：使用者本來就可以把手動科目搬到別段，
+  // 搬完之後合不合用公式，要看搬過去的那一段(結構科目/自動計算科目的父科目在上面已經鎖回原值)
+  var parentLine = rowObj.ParentLine || (existing && existing.ParentLine) || '';
+  if (FORMULA_PARENT_LINES_.indexOf(parentLine) === -1) {
+    throw new Error('「' + label + '」不在銷貨成本/銷售費用/產品貢獻前費用/固定營業費用底下，不支援自訂公式。');
   }
 
   var ast;
@@ -1134,9 +1181,7 @@ function validateLineItemFormula_(rowObj, existing, vehicleTypeId, scenarioId) {
   var scoped = getPLLineItems(vehicleTypeId || '', scenarioId);
   var validDetailCodes = {};
   scoped.forEach(function (d) {
-    if (PROTECTED_LINE_CODES.indexOf(d.LineCode) !== -1) return;
-    if (d.AutoSource) return; // 內建自動計算科目(含開發總投攤提落點)不能被公式引用
-    validDetailCodes[d.LineCode] = true;
+    if (isFormulaEligibleLine_(d)) validDetailCodes[d.LineCode] = true;
   });
 
   refs.forEach(function (name) {
@@ -1146,15 +1191,37 @@ function validateLineItemFormula_(rowObj, existing, vehicleTypeId, scenarioId) {
       '如果需要新的比率，可以先到「稅務費用比率」頁新增這個名稱)。');
   });
 
-  var formulaDefs = scoped
-    .filter(function (d) { return d.Formula && d.LineCode !== lineCode; })
-    .map(function (d) { return { code: d.LineCode, refs: formulaExtractRefs_(formulaParse_(d.Formula)) }; });
+  // 循環引用要用「這批存完之後的樣子」判斷：同一批一起送出的公式以送出的內容為準，
+  // 沒有一起送出的才沿用 Sheet 上的舊值(見上面 pendingFormulas 的說明)。
+  var pending = pendingFormulas || {};
+  var formulaDefs = [];
+  scoped.forEach(function (d) {
+    if (d.LineCode === lineCode) return;
+    var f = Object.prototype.hasOwnProperty.call(pending, d.LineCode) ? pending[d.LineCode] : d.Formula;
+    if (!f) return;
+    // 舊資料萬一有解析不了的公式(理論上存檔時就擋掉了)，不要讓它把這次存檔一起拖下水
+    try { formulaDefs.push({ code: d.LineCode, refs: formulaExtractRefs_(formulaParse_(f)) }); }
+    catch (e) { /* 略過無法解析的既有公式 */ }
+  });
   formulaDefs.push({ code: lineCode || '(新科目)', refs: refs });
   try {
     formulaTopoSort_(formulaDefs);
   } catch (e) {
     throw new Error('「' + label + '」' + e.message);
   }
+}
+
+/**
+ * 公式引擎只處理 B/E/G/I 這四段底下的明細科目：算出來的值要寫回對應的那個字典
+ * (見 CalcEngine.gs 的 resolveLineItemFormulas_)，不在這四段的科目(結構科目、售價結構、
+ * J 前瞻費用)既不能被引用、也不能自己填公式，否則會出現「存得進去但永遠算不出來」。
+ */
+var FORMULA_PARENT_LINES_ = ['B', 'E', 'G', 'I'];
+function isFormulaEligibleLine_(d) {
+  if (!d) return false;
+  if (PROTECTED_LINE_CODES.indexOf(d.LineCode) !== -1) return false;
+  if (d.AutoSource) return false;   // 內建自動計算科目(含開發總投攤提落點)不能被公式引用
+  return FORMULA_PARENT_LINES_.indexOf(d.ParentLine || '') !== -1;
 }
 
 /**
@@ -1184,7 +1251,16 @@ function savePLLineItemGrid(vehicleTypeId, scenarioId, rows) {
       (r.LineCode ? existingRows : newRows).push(r);
     });
 
-    newRows.forEach(function (r) { savePLLineItem_(r, vehicleTypeId, scenarioId); });
+    // 這一整批送出的公式：循環引用要拿「存完之後的樣子」判斷，不能只看 Sheet 上的舊資料，
+    // 不然同一批互相引用的兩列會一起通過、之後每次存檔又都被循環擋住(見 validateLineItemFormula_)
+    var pendingFormulas = {};
+    (rows || []).forEach(function (r) {
+      if (r.LineCode && r.Formula !== undefined && r.Formula !== null) {
+        pendingFormulas[r.LineCode] = String(r.Formula).trim();
+      }
+    });
+
+    newRows.forEach(function (r) { savePLLineItem_(r, vehicleTypeId, scenarioId, pendingFormulas); });
 
     if (existingRows.length) {
       var byCode = indexByPk_(getPLLineItems(), 'LineCode');
@@ -1200,7 +1276,7 @@ function savePLLineItemGrid(vehicleTypeId, scenarioId, rows) {
         }
         // 科目一律全系統共用(見 savePLLineItem_ 的說明)
         r.VehicleTypeID = '';
-        validateLineItemFormula_(r, existing, vehicleTypeId, scenarioId);
+        validateLineItemFormula_(r, existing, vehicleTypeId, scenarioId, pendingFormulas);
         return mergeRowForBatch_(SHEETS.PL_LINE_ITEMS, 'LineCode', r, byCode);
       });
       batchWriteRows_(SHEETS.PL_LINE_ITEMS, 'LineCode', upserts, []);

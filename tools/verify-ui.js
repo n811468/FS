@@ -632,6 +632,23 @@ assert(devTargetHtml.indexOf('投資總額(低減前)') !== -1 && devTargetHtml.
 assert(devTargetHtml.indexOf('單台攤提(低減前)') !== -1 && devTargetHtml.indexOf('單台攤提(低減後)') !== -1,
   '目標情境的單台攤提也要有低減前/後兩欄');
 
+/* ---- 14b. 改父科目要把排序值搬到新段落的最後面(含「從後段搬到前段」) ---- */
+ctx.__in.lineRows = [
+  { __existing: true, LineCode: 'b1', LineName: '材料', ParentLine: 'B', SortOrder: 21 },
+  { __existing: true, LineCode: 'b2', LineName: '運費', ParentLine: 'B', SortOrder: 22 },
+  { __existing: true, LineCode: 'h3', LineName: '品牌廣宣', ParentLine: 'I', SortOrder: 62 }
+];
+api('entityRows.lineitems = __in.lineRows.map(r => Object.assign({}, r))');
+// 從後段(排序值 62)搬到前段 B：把自己也算進 Math.max 的話會得到 62.5，看起來就是「沒反應」
+api("onEntityField('lineitems', 2, 'ParentLine', 'B')");
+assert(api('entityRows.lineitems[2].SortOrder') === 22.5,
+  `從後段搬到前段應該排到 B 的最後面(22.5)，實際 ${api('entityRows.lineitems[2].SortOrder')}`);
+// 反方向(前段搬到後段)也要正確
+api('entityRows.lineitems = __in.lineRows.map(r => Object.assign({}, r))');
+api("onEntityField('lineitems', 0, 'ParentLine', 'I')");
+assert(api('entityRows.lineitems[0].SortOrder') === 62.5,
+  `從前段搬到後段應該排到 I 的最後面(62.5)，實際 ${api('entityRows.lineitems[0].SortOrder')}`);
+
 /* ---- 15. 背景預載狀態：導覽列小圓點與標題列總進度 ---- */
 // 假 DOM 沒有真的導覽列按鈕，這裡只驗狀態判定與總進度文字(小圓點的 DOM 操作本身很單純)
 api('preloadState_ = {}');
