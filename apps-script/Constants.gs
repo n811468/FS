@@ -40,12 +40,16 @@ var SCHEMA = {
   OperatingExpense: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'Notes', 'EffectiveDate'],
   Parameters: ['ParamID', 'ScenarioID', 'VehicleID', 'ParamName', 'Currency', 'Value', 'EffectiveDate'],
   // VehicleTypeID 留空 = 全車型共用科目；有值 = 僅該車型可用的專屬科目(見 Constants.gs:121-123 附近說明)。
-  // ExcludedVehicleTypeIDs：只給共用科目用，逗號分隔的車型代號清單，列在裡面的車型即使科目
-  // 本身是共用的，也視為「這個車型不適用」——用來讓自動計算科目(季Margin、貨物稅、開發總投
-  // 內建的模具/設備/CMC/BASE廠開發費攤提落點等)可以針對個別車型停用，而不用真的刪掉公式科目
-  // (公式是程式定義的，刪不掉；但哪些車型要套用可以調整)。結構科目(小計/毛利/淨利)不可以被
-  // 排除，否則那個車型的損益鏈會斷掉。
-  PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'SortOrder', 'AutoSource', 'CommodityTaxDeduct', 'DevAmortCategory', 'VehicleTypeID', 'ExcludedVehicleTypeIDs'],
+  // ExcludedVehicleTypeIDs：逗號分隔的車型代號清單，列在裡面的車型即使科目本身在範圍內，
+  // 也視為「這個車型不適用」——用來讓自動計算科目(季Margin、貨物稅、開發總投內建的模具/設備/
+  // CMC/BASE廠開發費攤提落點等)可以針對個別車型停用，而不用真的刪掉公式科目(公式是程式定義
+  // 的，刪不掉；但哪些車型要套用可以調整)。
+  // ExcludedScenarioIDs：同樣邏輯，但是針對單一情境——同一車型底下，「GATE F 現況」跟
+  // 「GATE F 目標」可能想套用不一樣的科目組合(例如目標情境計畫未來不再需要某個費用科目)，
+  // 不需要整個車型都停用。情境的停用只能「額外」疊加在車型範圍之上，不能反過來讓情境看到
+  // 車型範圍以外的科目——新建情境預設沿用所屬車型當下的科目範圍，之後想再各自微調停用即可。
+  // 兩種排除都一樣：結構科目(小計/毛利/淨利)不可以被排除，否則損益鏈會斷掉。
+  PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'SortOrder', 'AutoSource', 'CommodityTaxDeduct', 'DevAmortCategory', 'VehicleTypeID', 'ExcludedVehicleTypeIDs', 'ExcludedScenarioIDs'],
   PLResult: ['ResultID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'PctOfRevenue', 'PctOfExFactory', 'CalcTimestamp']
 };
 

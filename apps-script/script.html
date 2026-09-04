@@ -63,10 +63,11 @@ const ENTITIES = {
   },
   lineitems: {
     label: '科目設定', pk: 'LineCode',
-    // 跟車系設定/情境設定一樣，用畫面最上方的「車型」選單決定要看哪個車型的科目：
-    // 選 DA 就自動帶出「共用科目」+「DA 專屬科目」，不會看到跟 DA 無關的其他車型專屬科目。
+    // 跟車系設定/情境設定一樣，用畫面最上方的「車型」+「情境」選單決定要看哪個範圍的科目：
+    // 選 DA 就自動帶出「共用科目」+「DA 專屬科目」，再依目前選的情境排除掉只對這個情境
+    // 停用的科目——同一車型底下，不同情境(如「現況」跟「目標」)可以套用不一樣的科目組合。
     getFn: 'getPLLineItems', saveGridFn: 'savePLLineItemGrid', deleteFn: 'deletePLLineItem',
-    scopedBy: 'vehicleType',
+    scopedBy: 'vehicleType', needScenario: true,
     restorable: true,
     columns: [
       { name: 'LineCode', label: '科目代碼', auto: true, width: 80 },
@@ -343,8 +344,8 @@ function preloadAllPanels_() {
   }).withFailureHandler(noop).getScenarios(vt);
 
   google.script.run.withSuccessHandler(rows => {
-    if (stillCurrent()) panelDataCache_[panelCacheKey_('lineitems', 'vehicleType')] = rows;
-  }).withFailureHandler(noop).getPLLineItems(vt);
+    if (stillCurrent()) panelDataCache_[panelCacheKey_('lineitems', 'both')] = rows;
+  }).withFailureHandler(noop).getPLLineItems(vt, sc);
 
   google.script.run.withSuccessHandler(data => {
     if (stillCurrent()) panelDataCache_[panelCacheKey_('salesmix')] = data;
@@ -436,32 +437,54 @@ function renderEntityPanel(key) {
     panel.dataset.shellReady = '';
     return;
   }
+  if (cfg.needScenario && !currentScenarioId) {
+    panel.innerHTML = '<p class="muted">請先在上方選擇情境</p>';
+    panel.dataset.shellReady = '';
+    return;
+  }
   ensureShell_(key, cfg.label);
   loadEntityData(key);
   if (key === 'lineitems') loadDisabledLineItems_();
 }
 
-/** 目前對這個車型停用的共用自動計算科目清單，畫在科目設定頁工具列，讓使用者可以重新啟用 */
-let lineItemsDisabled_ = [];
+/**
+ * 已停用的自動計算科目清單，畫在科目設定頁工具列，讓使用者可以重新啟用。
+ * 分兩種：對整個車型停用(所有情境都看不到) vs 只對目前這個情境停用(同車型其他情境不受影響)。
+ */
+let lineItemsDisabledByType_ = [];
+let lineItemsDisabledByScenario_ = [];
 function loadDisabledLineItems_() {
-  const vt = currentVehicleTypeId;
+  const vt = currentVehicleTypeId, sc = currentScenarioId;
   google.script.run
     .withSuccessHandler(safeHandler(rows => {
       if (vt !== currentVehicleTypeId) return; // 回來的時候使用者已經切到別的車型，這批結果不算數
-      lineItemsDisabled_ = rows || [];
+      lineItemsDisabledByType_ = rows || [];
       if (currentTab === 'lineitems') drawEntityGrid('lineitems');
     }))
     .withFailureHandler(showGlobalError)
     .getExcludedLineItemsFor(vt);
+  google.script.run
+    .withSuccessHandler(safeHandler(rows => {
+      if (vt !== currentVehicleTypeId || sc !== currentScenarioId) return; // 已經切到別的車型/情境，這批結果不算數
+      lineItemsDisabledByScenario_ = rows || [];
+      if (currentTab === 'lineitems') drawEntityGrid('lineitems');
+    }))
+    .withFailureHandler(showGlobalError)
+    .getScenarioExcludedLineItems(vt, sc);
 }
 
-/** ENTITIES 的 scopedBy 只有 'vehicleType' 或 null，剛好對應到快取鍵要區分到什麼程度 */
-function entityCacheScope_(cfg) { return cfg.scopedBy === 'vehicleType' ? 'vehicleType' : 'none'; }
+/** ENTITIES 的快取鍵要區分到什麼程度：lineitems 額外依情境區分(見上方 needScenario 的說明) */
+function entityCacheScope_(cfg, key) {
+  if (key === 'lineitems') return 'both';
+  return cfg.scopedBy === 'vehicleType' ? 'vehicleType' : 'none';
+}
 
 function loadEntityData(key) {
   const cfg = ENTITIES[key];
-  const args = cfg.scopedBy === 'vehicleType' ? [currentVehicleTypeId] : [];
-  const cacheKey = panelCacheKey_(key, entityCacheScope_(cfg));
+  // 科目設定額外依情境篩選(needScenario)，其餘 ENTITIES 頁面只依 scopedBy 決定要不要帶車型
+  const args = key === 'lineitems' ? [currentVehicleTypeId, currentScenarioId]
+    : cfg.scopedBy === 'vehicleType' ? [currentVehicleTypeId] : [];
+  const cacheKey = panelCacheKey_(key, entityCacheScope_(cfg, key));
   const apply = rows => { entityRows[key] = (rows || []).map(r => Object.assign({}, r, { __existing: true })); drawEntityGrid(key); };
   if (panelDataCache_[cacheKey]) apply(panelDataCache_[cacheKey]);
   google.script.run
@@ -571,17 +594,24 @@ function entityRowActionHtml(key, i, row, total) {
   const renameBtn = cfg.renameFn
     ? `<button type="button" class="btn secondary" onclick="renameEntityRow('${key}', ${i})">重新命名</button>` : '';
   if (key === 'lineitems' && isFixedLineItem(row) && !isDeletableAutoLineItem(row)) {
-    // 結構科目(小計/毛利/淨利)每個車型都要有，真的不能動。
+    // 結構科目(小計/毛利/淨利)每個車型、每個情境都要有，真的不能動。
     if (isStructuralLineItem(row)) return move + renameBtn + '<span class="muted">不可刪除</span>';
-    // 已經是「這個車型」專屬的自動計算科目：要拿掉就直接把左邊「共用/專屬」欄位改回「(共用)」
-    // 再視需要停用即可，不需要另外一顆按鈕做同一件事。
+    // 公式本身(季Margin、貨物稅、開發總投攤提落點...)是程式定義的，刪不掉；但可以調整
+    // 「要不要套用」——可以只針對目前這個情境停用(同車型其他情境不受影響)，
+    // 共用科目還可以整個車型都停用(所有情境都不套用)。
+    const scenarioBtn = `<button type="button" class="btn secondary"
+      onclick="excludeLineItemRow_('${esc(row.LineCode)}', 'scenario')"
+      title="讓目前這個情境不套用它，同車型的其他情境不受影響">此情境停用</button>`;
     if (row.VehicleTypeID === currentVehicleTypeId) {
-      return move + renameBtn + '<span class="muted">已是本車型專屬，用左邊「共用/專屬」欄位調整</span>';
+      // 已經是「這個車型」專屬：要整個車型都不套用，直接把左邊「共用/專屬」欄位改回「(共用)」，
+      // 不需要另外一顆按鈕做同一件事；但仍可以只停用目前這個情境。
+      return move + renameBtn + scenarioBtn +
+        ' <span class="muted">（整個車型都不套用：改左邊「共用/專屬」欄位）</span>';
     }
-    // 其餘共用的自動計算科目(季Margin、貨物稅、開發總投攤提落點...)公式本身刪不掉，
-    // 但可以讓「這個車型」不套用，效果等同這個車型看不到它。
-    return move + renameBtn +
-      `<button type="button" class="btn secondary" onclick="excludeLineItemRow_('${esc(row.LineCode)}')" title="這個科目的公式是程式定義的，刪不掉；但可以讓「${esc(currentVehicleTypeId)}」不套用它">此車型停用</button>`;
+    const typeBtn = `<button type="button" class="btn secondary"
+      onclick="excludeLineItemRow_('${esc(row.LineCode)}', 'vehicleType')"
+      title="讓「${esc(currentVehicleTypeId)}」整個車型(所有情境)都不套用它">此車型停用</button>`;
+    return move + renameBtn + typeBtn + ' ' + scenarioBtn;
   }
   return move + renameBtn + `<button type="button" class="btn danger" onclick="deleteEntityRow('${key}', ${i})">刪除</button>`;
 }
@@ -689,12 +719,13 @@ function saveEntityGrid(key) {
     if (cfg.pk) copy[cfg.pk] = r[cfg.pk] === undefined ? '' : r[cfg.pk];
     return copy;
   });
-  const args = cfg.scopedBy === 'vehicleType' ? [currentVehicleTypeId, rows] : [rows];
+  const args = key === 'lineitems' ? [currentVehicleTypeId, currentScenarioId, rows]
+    : cfg.scopedBy === 'vehicleType' ? [currentVehicleTypeId, rows] : [rows];
 
   setStatus(key, '儲存中...');
   google.script.run
     .withSuccessHandler(safeHandler(saved => {
-      panelDataCache_[panelCacheKey_(key, entityCacheScope_(cfg))] = saved;
+      panelDataCache_[panelCacheKey_(key, entityCacheScope_(cfg, key))] = saved;
       entityRows[key] = (saved || []).map(r => Object.assign({}, r, { __existing: true }));
       drawEntityGrid(key);
       setStatus(key, '已儲存', 'ok');
@@ -717,7 +748,7 @@ function restoreBuiltInLines() {
     .withSuccessHandler(safeHandler(() => {
       // 內建科目一律共用，回復動作影響全系統；重新用「目前車型」的範圍載入，
       // 畫面才不會暫時混進其他車型專屬的科目列。
-      delete panelDataCache_[panelCacheKey_('lineitems', entityCacheScope_(ENTITIES.lineitems))];
+      delete panelDataCache_[panelCacheKey_('lineitems', entityCacheScope_(ENTITIES.lineitems, 'lineitems'))];
       loadEntityData('lineitems');
       setStatus('lineitems', '已回復內建科目的預設名稱與排序', 'ok');
     }))
@@ -758,54 +789,67 @@ function cloneLineItemsFromVehicleType_() {
       pendingStatus = { key: 'lineitems',
         text: result.cloned ? `已從「${source}」複製 ${result.cloned} 個科目（已存在同名科目的不重複複製）` : '沒有新科目需要複製（來源車型的專屬科目都已經複製過了）',
         cls: 'ok' };
-      delete panelDataCache_[panelCacheKey_('lineitems', entityCacheScope_(ENTITIES.lineitems))];
+      delete panelDataCache_[panelCacheKey_('lineitems', entityCacheScope_(ENTITIES.lineitems, 'lineitems'))];
       loadEntityData('lineitems');
     }))
     .withFailureHandler(err => setStatus('lineitems', '錯誤：' + err.message, 'err'))
     .cloneVehicleTypeLineItems(source, currentVehicleTypeId);
 }
 
-/** 已對目前車型停用的自動計算科目：列出來讓使用者知道還有哪些被停用、可以重新啟用 */
+/** 已停用的自動計算科目：對車型停用(所有情境)、對情境停用(只有目前情境)分開列，都可以重新啟用 */
 function disabledLineItemsToolbarHtml_() {
-  if (!lineItemsDisabled_.length) return '';
-  const chips = lineItemsDisabled_.map(d => `<span class="chip">${esc(d.LineName)}
+  const chipsOf = (list, scope) => list.map(d => `<span class="chip">${esc(d.LineName)}
     <button type="button" class="btn secondary" style="margin-left:6px;padding:1px 8px;font-size:12px;"
-      onclick="reenableLineItem_('${esc(d.LineCode)}')">重新啟用</button></span>`).join(' ');
-  return `
-    <div class="toolbar-block">
-      <div class="toolbar-block-title">已對「${esc(currentVehicleTypeId)}」停用的自動計算科目</div>
-      <div class="toolbar">${chips}</div>
-    </div>`;
+      onclick="reenableLineItem_('${esc(d.LineCode)}', '${scope}')">重新啟用</button></span>`).join(' ');
+  const blocks = [];
+  if (lineItemsDisabledByType_.length) {
+    blocks.push(`<div class="toolbar-block">
+      <div class="toolbar-block-title">已對「${esc(currentVehicleTypeId)}」車型停用的自動計算科目(所有情境都不套用)</div>
+      <div class="toolbar">${chipsOf(lineItemsDisabledByType_, 'vehicleType')}</div>
+    </div>`);
+  }
+  if (lineItemsDisabledByScenario_.length) {
+    const scLabel = currentScenario ? scenarioLabel(currentScenario) : currentScenarioId;
+    blocks.push(`<div class="toolbar-block">
+      <div class="toolbar-block-title">已對「${esc(scLabel)}」這個情境停用的科目(同車型其他情境不受影響)</div>
+      <div class="toolbar">${chipsOf(lineItemsDisabledByScenario_, 'scenario')}</div>
+    </div>`);
+  }
+  return blocks.join('');
 }
 
-/** 讓「這個車型」不套用某個共用的自動計算科目（公式本身刪不掉，只是這個車型不算它） */
-function excludeLineItemRow_(lineCode) {
-  if (!confirm(`確定要讓「${currentVehicleTypeId}」不套用這個科目嗎？\n（科目本身還在、其他車型不受影響，之後可以在這頁重新啟用）`)) return;
+/** 讓「這個車型」或「這個情境」不套用某個科目（公式本身刪不掉，只是不套用） */
+function excludeLineItemRow_(lineCode, scope) {
+  const scopeLabel = scope === 'scenario' ? (currentScenario ? scenarioLabel(currentScenario) : currentScenarioId) : currentVehicleTypeId;
+  const rangeText = scope === 'scenario' ? '這個情境' : '這個車型(所有情境)';
+  if (!confirm(`確定要讓「${scopeLabel}」不套用這個科目嗎？\n（科目本身還在、${rangeText}以外不受影響，之後可以在這頁重新啟用）`)) return;
   dashboardDirty_ = true;
   setStatus('lineitems', '處理中...');
   google.script.run
     .withSuccessHandler(safeHandler(() => {
-      delete panelDataCache_[panelCacheKey_('lineitems', entityCacheScope_(ENTITIES.lineitems))];
+      delete panelDataCache_[panelCacheKey_('lineitems', entityCacheScope_(ENTITIES.lineitems, 'lineitems'))];
       loadEntityData('lineitems');
       loadDisabledLineItems_();
       setStatus('lineitems', '已停用', 'ok');
     }))
     .withFailureHandler(err => setStatus('lineitems', '錯誤：' + err.message, 'err'))
-    .setLineItemExclusion(lineCode, currentVehicleTypeId, true);
+    [scope === 'scenario' ? 'setLineItemScenarioExclusion' : 'setLineItemExclusion']
+    (lineCode, scope === 'scenario' ? currentScenarioId : currentVehicleTypeId, true);
 }
 
-function reenableLineItem_(lineCode) {
+function reenableLineItem_(lineCode, scope) {
   dashboardDirty_ = true;
   setStatus('lineitems', '處理中...');
   google.script.run
     .withSuccessHandler(safeHandler(() => {
-      delete panelDataCache_[panelCacheKey_('lineitems', entityCacheScope_(ENTITIES.lineitems))];
+      delete panelDataCache_[panelCacheKey_('lineitems', entityCacheScope_(ENTITIES.lineitems, 'lineitems'))];
       loadEntityData('lineitems');
       loadDisabledLineItems_();
       setStatus('lineitems', '已重新啟用', 'ok');
     }))
     .withFailureHandler(err => setStatus('lineitems', '錯誤：' + err.message, 'err'))
-    .setLineItemExclusion(lineCode, currentVehicleTypeId, false);
+    [scope === 'scenario' ? 'setLineItemScenarioExclusion' : 'setLineItemExclusion']
+    (lineCode, scope === 'scenario' ? currentScenarioId : currentVehicleTypeId, false);
 }
 
 /** 車型/情境改動後，上方的選單也要跟著更新（但不要重畫目前這個分頁，會蓋掉剛顯示的訊息） */
