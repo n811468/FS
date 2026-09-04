@@ -40,7 +40,12 @@ var SCHEMA = {
   OperatingExpense: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'Notes', 'EffectiveDate'],
   Parameters: ['ParamID', 'ScenarioID', 'VehicleID', 'ParamName', 'Currency', 'Value', 'EffectiveDate'],
   // VehicleTypeID 留空 = 全車型共用科目；有值 = 僅該車型可用的專屬科目(見 Constants.gs:121-123 附近說明)。
-  PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'SortOrder', 'AutoSource', 'CommodityTaxDeduct', 'DevAmortCategory', 'VehicleTypeID'],
+  // ExcludedVehicleTypeIDs：只給共用科目用，逗號分隔的車型代號清單，列在裡面的車型即使科目
+  // 本身是共用的，也視為「這個車型不適用」——用來讓自動計算科目(季Margin、貨物稅、開發總投
+  // 內建的模具/設備/CMC/BASE廠開發費攤提落點等)可以針對個別車型停用，而不用真的刪掉公式科目
+  // (公式是程式定義的，刪不掉；但哪些車型要套用可以調整)。結構科目(小計/毛利/淨利)不可以被
+  // 排除，否則那個車型的損益鏈會斷掉。
+  PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'SortOrder', 'AutoSource', 'CommodityTaxDeduct', 'DevAmortCategory', 'VehicleTypeID', 'ExcludedVehicleTypeIDs'],
   PLResult: ['ResultID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'PctOfRevenue', 'PctOfExFactory', 'CalcTimestamp']
 };
 

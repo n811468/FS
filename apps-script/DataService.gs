@@ -906,8 +906,10 @@ function restoreBuiltInLineItems() {
       var existing = existingByCode[line.LineCode];
       var row = {};
       SCHEMA.PLLineItems.forEach(function (h) {
-        row[h] = line[h] !== undefined ? line[h]
-          : (h === 'VehicleTypeID' && existing) ? (existing.VehicleTypeID || '') : '';
+        if (line[h] !== undefined) { row[h] = line[h]; return; }
+        // VehicleTypeID/ExcludedVehicleTypeIDs 不算「內建預設值」的一部分，是使用者自己在
+        // 「科目設定」頁決定的，回復預設值不應該連帶洗掉
+        row[h] = (existing && (h === 'VehicleTypeID' || h === 'ExcludedVehicleTypeIDs')) ? (existing[h] || '') : '';
       });
       return row;
     });
@@ -916,18 +918,64 @@ function restoreBuiltInLineItems() {
   });
 }
 
+/** 把 ExcludedVehicleTypeIDs(逗號分隔) 拆成陣列，方便判斷某車型是否在排除清單裡 */
+function excludedVehicleTypeIds_(d) {
+  return String(d.ExcludedVehicleTypeIDs || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+}
+
 /**
  * 科目清單。不傳 vehicleTypeId 回傳全部(科目設定頁用，管理者要看得到所有科目)；
- * 有傳則只回傳「共用科目(VehicleTypeID 留空)」∪「該車型專屬科目」，
+ * 有傳則只回傳「共用科目(VehicleTypeID 留空) 且沒被排除」∪「該車型專屬科目」，
  * 讓損益計算、成本/費用輸入頁的下拉選單只看得到跟這個車型有關的科目。
  */
 function getPLLineItems(vehicleTypeId) {
   var rows = (sheetToObjects_(SHEETS.PL_LINE_ITEMS) || []).sort(function (a, b) { return a.SortOrder - b.SortOrder; });
   if (!vehicleTypeId) return rows;
-  return rows.filter(function (d) { return !d.VehicleTypeID || d.VehicleTypeID === vehicleTypeId; });
+  return rows.filter(function (d) {
+    if (d.VehicleTypeID) return d.VehicleTypeID === vehicleTypeId;
+    return excludedVehicleTypeIds_(d).indexOf(vehicleTypeId) === -1;
+  });
 }
 function savePLLineItem(rowObj) {
   return withLock_(function () { return savePLLineItem_(rowObj); });
+}
+
+/**
+ * 目前對 vehicleTypeId 停用的共用自動計算科目清單，給「科目設定」頁顯示「已停用」名單、
+ * 讓使用者可以重新啟用用。只有共用科目(VehicleTypeID 留空)才可能出現在這裡——
+ * 車型專屬科目本來就只有自己的車型看得到，不需要另外一套「排除」機制。
+ */
+function getExcludedLineItemsFor(vehicleTypeId) {
+  if (!vehicleTypeId) return [];
+  return getPLLineItems().filter(function (d) {
+    return !d.VehicleTypeID && excludedVehicleTypeIds_(d).indexOf(vehicleTypeId) !== -1;
+  });
+}
+
+/**
+ * 停用/重新啟用某個共用自動計算科目對特定車型的套用。
+ * 只能對「共用」科目操作(專屬科目本來就只有自己車型看得到，用不到這個機制)；
+ * 結構科目(小計/毛利/淨利)一律不可停用，否則那個車型的損益鏈會斷掉。
+ * excluded=true 停用、false 重新啟用；已經是目標狀態就不重複寫入。
+ */
+function setLineItemExclusion(lineCode, vehicleTypeId, excluded) {
+  return withLock_(function () {
+    if (!vehicleTypeId) throw new Error('缺少車型代號');
+    var def = getPLLineItems().filter(function (d) { return d.LineCode === lineCode; })[0];
+    if (!def) throw new Error('找不到科目：' + lineCode);
+    if (PROTECTED_LINE_CODES.indexOf(lineCode) !== -1) {
+      throw new Error('「' + lineCode + '」是損益結構科目(小計/毛利/淨利)，每個車型都需要，不可停用。');
+    }
+    if (def.VehicleTypeID) {
+      throw new Error('「' + lineCode + '」已經是「' + def.VehicleTypeID + '」的專屬科目，不是共用科目，不需要另外停用。');
+    }
+    var list = excludedVehicleTypeIds_(def);
+    var idx = list.indexOf(vehicleTypeId);
+    if (excluded && idx === -1) list.push(vehicleTypeId);
+    if (!excluded && idx !== -1) list.splice(idx, 1);
+    def.ExcludedVehicleTypeIDs = list.join(',');
+    return upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', def);
+  });
 }
 
 /**

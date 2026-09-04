@@ -305,6 +305,7 @@ function renderScenarioOptions(scenarios, preferredId) {
 
 /** 只更新目前情境狀態與標籤，渲染交給呼叫端決定 */
 function setCurrentScenario(value) {
+  const changed = value !== currentScenarioId;
   currentScenarioId = value;
   currentScenario = scenarioCache.filter(s => s.ScenarioID === value)[0] || null;
   const badge = document.getElementById('scenario-type-badge');
@@ -313,6 +314,80 @@ function setCurrentScenario(value) {
     badge.style.display = currentScenario ? 'inline-block' : 'none';
   }
   saveAppState_();
+  // 車型+情境都選好了才背景預先載入所有分頁的資料，之後不管點哪個分頁都能秒開，
+  // 不用每一頁都自己再等一次「點了才載入」的第一次請求。
+  if (changed && currentVehicleTypeId && currentScenarioId) preloadAllPanels_();
+}
+
+/**
+ * 選好車型+情境後，背景把所有分頁的資料都預先跟後端要一次(含儀表板)，
+ * 不畫面、不影響使用者目前正在看的分頁。之後使用者點到哪一頁，
+ * loadEntityData/render*Panel 第一次執行時會發現 panelDataCache_ 已經有資料，直接沿用，
+ * 不用再空等一次伺服器回應——「秒切」的體驗才不會只限定在「已經點過的分頁」。
+ * 每一路請求都各自 withFailureHandler 吞掉錯誤：這只是投機性的預先載入，
+ * 失敗了就等使用者真的點進那一頁時再走正常流程重試、正常顯示錯誤，不在這裡打擾使用者。
+ */
+let preloadSeq_ = 0;
+function preloadAllPanels_() {
+  const vt = currentVehicleTypeId, sc = currentScenarioId;
+  const seq = ++preloadSeq_;
+  const stillCurrent = () => seq === preloadSeq_ && vt === currentVehicleTypeId && sc === currentScenarioId;
+  const noop = () => {};
+
+  google.script.run.withSuccessHandler(rows => {
+    if (stillCurrent()) panelDataCache_[panelCacheKey_('vehicles', 'vehicleType')] = rows;
+  }).withFailureHandler(noop).getVehicles(vt);
+
+  google.script.run.withSuccessHandler(rows => {
+    if (stillCurrent()) panelDataCache_[panelCacheKey_('scenarios', 'vehicleType')] = rows;
+  }).withFailureHandler(noop).getScenarios(vt);
+
+  google.script.run.withSuccessHandler(rows => {
+    if (stillCurrent()) panelDataCache_[panelCacheKey_('lineitems', 'vehicleType')] = rows;
+  }).withFailureHandler(noop).getPLLineItems(vt);
+
+  google.script.run.withSuccessHandler(data => {
+    if (stillCurrent()) panelDataCache_[panelCacheKey_('salesmix')] = data;
+  }).withFailureHandler(noop).getSalesMixGrid(sc, vt);
+
+  google.script.run.withSuccessHandler(data => {
+    if (stillCurrent()) panelDataCache_[panelCacheKey_('costofsales')] = data;
+  }).withFailureHandler(noop).getCostOfSalesMatrix(sc, vt);
+
+  google.script.run.withSuccessHandler(data => {
+    if (stillCurrent()) panelDataCache_[panelCacheKey_('operatingexpense')] = data;
+  }).withFailureHandler(noop).getOperatingExpenseMatrix(sc, vt);
+
+  google.script.run.withSuccessHandler(data => {
+    if (stillCurrent()) panelDataCache_[panelCacheKey_('devinvestment', 'scenario')] = data;
+  }).withFailureHandler(noop).getDevInvestmentSummary(sc);
+
+  google.script.run.withSuccessHandler(data => {
+    if (stillCurrent()) panelDataCache_[panelCacheKey_('paramrates')] = data;
+  }).withFailureHandler(noop).getRateGrid(sc, vt);
+
+  google.script.run.withSuccessHandler(data => {
+    if (stillCurrent()) panelDataCache_[panelCacheKey_('paramfx', 'scenario')] = data;
+  }).withFailureHandler(noop).getFxGrid(sc);
+
+  // 儀表板：先把比較欄位選項跟目前情境的損益計算結果準備好，切過去就直接看得到，不用再等一次計算。
+  google.script.run.withSuccessHandler(options => {
+    if (!stillCurrent()) return;
+    comparisonOptions = options || [];
+    if (!dashPrefsLoaded_) { loadDashPrefs_(); dashPrefsLoaded_ = true; }
+    comparisonSelections = comparisonSelections.filter(selectionExists_);
+    if (sc && !comparisonSelections.some(s => s.ScenarioID === sc)) {
+      comparisonSelections.push({ ScenarioID: sc, VehicleID: '' });
+    }
+    if (!comparisonSelections.length) return;
+    google.script.run.withSuccessHandler(result => {
+      if (!stillCurrent()) return;
+      lastComparison = reorderComparison_(result, comparisonSelections);
+      dashboardDirty_ = false;
+      // 如果使用者現在剛好就停在儀表板分頁，直接把預先算好的結果畫出來
+      if (currentTab === 'dashboard') renderDashboard(lastComparison);
+    }).withFailureHandler(noop).calculateComparison(comparisonSelections);
+  }).withFailureHandler(noop).getComparisonOptions();
 }
 
 function onVehicleTypeChange(value) {
@@ -363,6 +438,21 @@ function renderEntityPanel(key) {
   }
   ensureShell_(key, cfg.label);
   loadEntityData(key);
+  if (key === 'lineitems') loadDisabledLineItems_();
+}
+
+/** 目前對這個車型停用的共用自動計算科目清單，畫在科目設定頁工具列，讓使用者可以重新啟用 */
+let lineItemsDisabled_ = [];
+function loadDisabledLineItems_() {
+  const vt = currentVehicleTypeId;
+  google.script.run
+    .withSuccessHandler(safeHandler(rows => {
+      if (vt !== currentVehicleTypeId) return; // 回來的時候使用者已經切到別的車型，這批結果不算數
+      lineItemsDisabled_ = rows || [];
+      if (currentTab === 'lineitems') drawEntityGrid('lineitems');
+    }))
+    .withFailureHandler(showGlobalError)
+    .getExcludedLineItemsFor(vt);
 }
 
 /** ENTITIES 的 scopedBy 只有 'vehicleType' 或 null，剛好對應到快取鍵要區分到什麼程度 */
@@ -390,7 +480,7 @@ function drawEntityGrid(key) {
       `<button type="button" class="btn secondary" onclick="addEntityRow('${key}')">新增一列</button>`}
     ${cfg.restorable ? '<button type="button" class="btn secondary" onclick="restoreBuiltInLines()">恢復內建科目預設值</button>' : ''}
   ` + (cfg.createUi === 'scenario' ? scenarioToolbarHtml() : '')
-    + (key === 'lineitems' ? cloneLineItemsToolbarHtml_() : '');
+    + (key === 'lineitems' ? cloneLineItemsToolbarHtml_() + disabledLineItemsToolbarHtml_() : '');
 
   const body = rows.length
     ? rows.map((r, i) => `<tr${r.__existing ? '' : ' class="new-row"'}>
@@ -481,7 +571,17 @@ function entityRowActionHtml(key, i, row, total) {
   const renameBtn = cfg.renameFn
     ? `<button type="button" class="btn secondary" onclick="renameEntityRow('${key}', ${i})">重新命名</button>` : '';
   if (key === 'lineitems' && isFixedLineItem(row) && !isDeletableAutoLineItem(row)) {
-    return move + renameBtn + '<span class="muted">不可刪除</span>';
+    // 結構科目(小計/毛利/淨利)每個車型都要有，真的不能動。
+    if (isStructuralLineItem(row)) return move + renameBtn + '<span class="muted">不可刪除</span>';
+    // 已經是「這個車型」專屬的自動計算科目：要拿掉就直接把左邊「共用/專屬」欄位改回「(共用)」
+    // 再視需要停用即可，不需要另外一顆按鈕做同一件事。
+    if (row.VehicleTypeID === currentVehicleTypeId) {
+      return move + renameBtn + '<span class="muted">已是本車型專屬，用左邊「共用/專屬」欄位調整</span>';
+    }
+    // 其餘共用的自動計算科目(季Margin、貨物稅、開發總投攤提落點...)公式本身刪不掉，
+    // 但可以讓「這個車型」不套用，效果等同這個車型看不到它。
+    return move + renameBtn +
+      `<button type="button" class="btn secondary" onclick="excludeLineItemRow_('${esc(row.LineCode)}')" title="這個科目的公式是程式定義的，刪不掉；但可以讓「${esc(currentVehicleTypeId)}」不套用它">此車型停用</button>`;
   }
   return move + renameBtn + `<button type="button" class="btn danger" onclick="deleteEntityRow('${key}', ${i})">刪除</button>`;
 }
@@ -492,6 +592,7 @@ function entityRowActionHtml(key, i, row, total) {
  * 改用後端的 rename 函式，一次把所有引用該代號的地方都更新過去。
  */
 function renameEntityRow(key, i) {
+  dashboardDirty_ = true;
   const cfg = ENTITIES[key];
   const row = entityRows[key][i];
   const oldId = row[cfg.pk];
@@ -566,6 +667,7 @@ function deleteEntityRow(key, i) {
   const cfg = ENTITIES[key];
   const row = entityRows[key][i];
   if (!confirm('確定要刪除這筆資料嗎？')) return;
+  dashboardDirty_ = true;
   setStatus(key, '刪除中...');
   google.script.run
     .withSuccessHandler(safeHandler(() => {
@@ -578,6 +680,7 @@ function deleteEntityRow(key, i) {
 }
 
 function saveEntityGrid(key) {
+  dashboardDirty_ = true;
   const cfg = ENTITIES[key];
   const rows = (entityRows[key] || []).map(r => {
     // 只送出後端 schema 認得的欄位，__existing 這類前端旗標不要一起送過去
@@ -608,6 +711,7 @@ function saveEntityGrid(key) {
  */
 function restoreBuiltInLines() {
   if (!confirm('會把所有內建科目的名稱、父科目、分類與排序回復成系統預設值（自己新增的科目不受影響），確定嗎？')) return;
+  dashboardDirty_ = true;
   setStatus('lineitems', '回復中...');
   google.script.run
     .withSuccessHandler(safeHandler(() => {
@@ -647,6 +751,7 @@ function cloneLineItemsToolbarHtml_() {
 function cloneLineItemsFromVehicleType_() {
   const source = val('clone-lineitems-source');
   if (!source) { setStatus('lineitems', '請先選擇要沿用的來源車型', 'err'); return; }
+  dashboardDirty_ = true;
   setStatus('lineitems', '複製中...');
   google.script.run
     .withSuccessHandler(safeHandler(result => {
@@ -658,6 +763,49 @@ function cloneLineItemsFromVehicleType_() {
     }))
     .withFailureHandler(err => setStatus('lineitems', '錯誤：' + err.message, 'err'))
     .cloneVehicleTypeLineItems(source, currentVehicleTypeId);
+}
+
+/** 已對目前車型停用的自動計算科目：列出來讓使用者知道還有哪些被停用、可以重新啟用 */
+function disabledLineItemsToolbarHtml_() {
+  if (!lineItemsDisabled_.length) return '';
+  const chips = lineItemsDisabled_.map(d => `<span class="chip">${esc(d.LineName)}
+    <button type="button" class="btn secondary" style="margin-left:6px;padding:1px 8px;font-size:12px;"
+      onclick="reenableLineItem_('${esc(d.LineCode)}')">重新啟用</button></span>`).join(' ');
+  return `
+    <div class="toolbar-block">
+      <div class="toolbar-block-title">已對「${esc(currentVehicleTypeId)}」停用的自動計算科目</div>
+      <div class="toolbar">${chips}</div>
+    </div>`;
+}
+
+/** 讓「這個車型」不套用某個共用的自動計算科目（公式本身刪不掉，只是這個車型不算它） */
+function excludeLineItemRow_(lineCode) {
+  if (!confirm(`確定要讓「${currentVehicleTypeId}」不套用這個科目嗎？\n（科目本身還在、其他車型不受影響，之後可以在這頁重新啟用）`)) return;
+  dashboardDirty_ = true;
+  setStatus('lineitems', '處理中...');
+  google.script.run
+    .withSuccessHandler(safeHandler(() => {
+      delete panelDataCache_[panelCacheKey_('lineitems', entityCacheScope_(ENTITIES.lineitems))];
+      loadEntityData('lineitems');
+      loadDisabledLineItems_();
+      setStatus('lineitems', '已停用', 'ok');
+    }))
+    .withFailureHandler(err => setStatus('lineitems', '錯誤：' + err.message, 'err'))
+    .setLineItemExclusion(lineCode, currentVehicleTypeId, true);
+}
+
+function reenableLineItem_(lineCode) {
+  dashboardDirty_ = true;
+  setStatus('lineitems', '處理中...');
+  google.script.run
+    .withSuccessHandler(safeHandler(() => {
+      delete panelDataCache_[panelCacheKey_('lineitems', entityCacheScope_(ENTITIES.lineitems))];
+      loadEntityData('lineitems');
+      loadDisabledLineItems_();
+      setStatus('lineitems', '已重新啟用', 'ok');
+    }))
+    .withFailureHandler(err => setStatus('lineitems', '錯誤：' + err.message, 'err'))
+    .setLineItemExclusion(lineCode, currentVehicleTypeId, false);
 }
 
 /** 車型/情境改動後，上方的選單也要跟著更新（但不要重畫目前這個分頁，會蓋掉剛顯示的訊息） */
@@ -747,6 +895,7 @@ function createScenario() {
     setStatus('scenarios', '請至少勾選一項要帶入的資料，或把來源情境改成「不帶入」', 'err');
     return;
   }
+  dashboardDirty_ = true;
   setStatus('scenarios', '建立中...');
   google.script.run
     .withSuccessHandler(safeHandler(saved => {
@@ -774,6 +923,7 @@ function importIntoCurrentScenario() {
   if (!parts.length) { setStatus('scenarios', '請至少勾選一項要帶入的資料', 'err'); return; }
   if (!confirm('帶入會先清掉目前情境所勾選類別的資料，再整批複製來源情境的內容，確定嗎？')) return;
 
+  dashboardDirty_ = true;
   setStatus('scenarios', '帶入中...');
   google.script.run
     .withSuccessHandler(safeHandler(() => {
@@ -934,6 +1084,7 @@ function updateSalesMixTotals() {
 }
 
 function saveSalesMixGrid() {
+  dashboardDirty_ = true;
   setStatus('salesmix', '儲存中...');
   google.script.run
     .withSuccessHandler(safeHandler(data => {
@@ -1159,6 +1310,7 @@ function saveMatrix(key) {
     cells.push(cell);
   });
 
+  dashboardDirty_ = true;
   setStatus(key, '儲存中...');
   google.script.run
     .withSuccessHandler(() => { setStatus(key, '已儲存', 'ok'); renderMatrixPanel(key); })
@@ -1173,6 +1325,7 @@ function addMatrixLine(key) {
   const parent = cfg.parentOptions ? val(`${key}-new-parent`) : cfg.parentLine;
   // 從這裡快速新增的科目一律先歸到目前車型專屬；要改成共用科目，到「科目設定」頁調整即可，
   // 不在這裡重複問一次「共用/專屬」，減少選項、避免跟科目設定頁的設定搞混。
+  dashboardDirty_ = true;
   setStatus(key, '新增中...');
   google.script.run
     .withSuccessHandler(() => { setStatus(key, '已新增項目', 'ok'); renderMatrixPanel(key); })
@@ -1182,6 +1335,7 @@ function addMatrixLine(key) {
 
 function deleteMatrixLine(key, lineCode) {
   if (!confirm('刪除這個項目會一併清掉它已輸入的金額(所有用得到這個科目的情境/車系)，確定嗎？')) return;
+  dashboardDirty_ = true;
   setStatus(key, '刪除中...');
   google.script.run
     .withSuccessHandler(() => { setStatus(key, '已刪除項目', 'ok'); renderMatrixPanel(key); })
@@ -1420,6 +1574,7 @@ function addDevAmortTarget() {
   const category = val('dev-new-target-category');
   const name = val('dev-new-target-name');
   if (!name) { setStatus('devinvestment', '請先輸入攤提科目名稱', 'err'); return; }
+  dashboardDirty_ = true;
   setStatus('devinvestment', '新增中...');
   google.script.run
     .withSuccessHandler(safeHandler(() => { setStatus('devinvestment', '已新增攤提科目', 'ok'); renderDevInvestmentPanel(); }))
@@ -1429,6 +1584,7 @@ function addDevAmortTarget() {
 
 /** 攤提基準台數：開發投資的攤提台數常與銷售構成的預估台數不同，可獨立設定；留空則沿用銷售構成 */
 function saveAmortBasis() {
+  dashboardDirty_ = true;
   setStatus('devinvestment', '套用中...');
   google.script.run
     .withSuccessHandler(safeHandler(summary => {
@@ -1456,6 +1612,7 @@ function removeDevRow(i) {
 }
 
 function saveDevGrid() {
+  dashboardDirty_ = true;
   setStatus('devinvestment', '儲存中...');
   google.script.run
     .withSuccessHandler(safeHandler(summary => {
@@ -1543,6 +1700,7 @@ function saveRateGrid() {
   document.querySelectorAll('#grid-paramrates .rate-override').forEach(inp => {
     rows.push({ ParamID: inp.dataset.paramid || '', ParamName: inp.dataset.name, VehicleID: inp.dataset.vehicle, Value: inp.value === '' ? '' : num(inp.value) });
   });
+  dashboardDirty_ = true;
   setStatus('paramrates', '儲存中...');
   google.script.run
     .withSuccessHandler(() => { setStatus('paramrates', '已儲存', 'ok'); renderRatePanel(); })
@@ -1614,6 +1772,7 @@ function saveFxGrid() {
       ParamName: inp.dataset.name, Value: inp.value === '' ? '' : num(inp.value)
     });
   });
+  dashboardDirty_ = true;
   setStatus('paramfx', '儲存中...');
   google.script.run
     .withSuccessHandler(safeHandler(data => { fxData = data; drawFxGrid(); setStatus('paramfx', '已儲存', 'ok'); }))
@@ -1625,6 +1784,13 @@ function saveFxGrid() {
 let comparisonOptions = [];
 let comparisonSelections = [];
 let lastComparison = null;
+/**
+ * 儀表板是否需要整份重新計算：任何可能影響損益的資料被存檔(銷售構成/銷貨成本/營業費用/
+ * 開發總投/稅務費用比率/匯率/科目設定)都會把這個設回 true。只要沒改過東西，切回儀表板
+ * 就直接用手上的結果重畫，不再每次都跟後端重算一次(見 loadComparisonPicker)。
+ * 存檔動作一開始就設 true（不等存檔成功才設），避免存檔失敗但誤判成資料仍是舊的。
+ */
+let dashboardDirty_ = true;
 let dashPrefsLoaded_ = false;
 let dashView = 'table';               // 目前顯示哪個子頁：'columns' 比較欄位 / 'table' 損益表 / 'chart' 圖表 / 'diff' 差異比較
 // 新增比較欄位那一列還沒送出的草稿(車型/情境/車系)，跟已經加入的 comparisonSelections 分開放
@@ -1646,8 +1812,9 @@ function loadComparisonPicker() {
         comparisonSelections.push({ ScenarioID: currentScenarioId, VehicleID: '' });
       }
       if (!comparisonSelections.length) dashView = 'columns';   // 還沒有任何比較欄位時，直接停在「比較欄位」頁面
-      // 進儀表板一律重新跟後端要一次：其他分頁可能剛改過成本/費用，快取在手上的舊結果不能信
-      refreshDashboard(true);
+      // 只有真的改過可能影響損益的資料(dashboardDirty_)才整份重算；沒改過就沿用上次算好的
+      // 結果直接重畫，切回儀表板不用每次都重新等一次計算(見 dashboardDirty_ 的說明)。
+      refreshDashboard(dashboardDirty_);
     }))
     .withFailureHandler(showGlobalError)
     .getComparisonOptions();
@@ -1977,6 +2144,9 @@ function refreshDashboard(force) {
       setDashStatus_('');
       lastComparison = force ? result : mergeComparison_(lastComparison, result);
       lastComparison = reorderComparison_(lastComparison, comparisonSelections);
+      // 算完之後手上的結果就是最新的了(不管這次是整份重算還是只補算新增欄位)，
+      // 直到下次有資料被存檔(dashboardDirty_ 設回 true)之前，都不用再重算。
+      dashboardDirty_ = false;
       renderDashboard(lastComparison);
     }))
     .withFailureHandler(err => {
