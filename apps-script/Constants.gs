@@ -39,7 +39,8 @@ var SCHEMA = {
     'Amount', 'Currency', 'ChallengeReductionPct', 'Notes', 'EffectiveDate', 'TargetLineCode', 'SortOrder'],
   OperatingExpense: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'Notes', 'EffectiveDate'],
   Parameters: ['ParamID', 'ScenarioID', 'VehicleID', 'ParamName', 'Currency', 'Value', 'EffectiveDate'],
-  // VehicleTypeID 留空 = 全車型共用科目；有值 = 僅該車型可用的專屬科目(見 Constants.gs:121-123 附近說明)。
+  // VehicleTypeID：科目一律全系統共用，這個欄位新資料一律留空，只留給既有試算表的相容
+  // 轉換用途(見 SetupSheets.gs 的 migrateExclusiveLineItemsToShared_)。
   // ExcludedVehicleTypeIDs：逗號分隔的車型代號清單，列在裡面的車型即使科目本身在範圍內，
   // 也視為「這個車型不適用」——用來讓自動計算科目(季Margin、貨物稅、開發總投內建的模具/設備/
   // CMC/BASE廠開發費攤提落點等)可以針對個別車型停用，而不用真的刪掉公式科目(公式是程式定義

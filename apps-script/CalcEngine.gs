@@ -101,8 +101,8 @@ function calculatePLCoreUncached_(scenarioId, vehicleId) {
   var salesMixRow = getSalesMix(scenarioId).filter(function (r) { return r.VehicleID === vehicleId; })[0];
   if (!salesMixRow) throw new Error('找不到 SalesMix 資料：' + scenarioId + ' / ' + vehicleId);
 
-  // 情境隸屬單一車型，用它決定這個車系可以使用哪些科目(共用科目 + 本車型專屬科目)，
-  // 讓其他車型專屬的科目不會外溢進來(見 manualLineCodesFor_ / getPLLineItems)。
+  // 情境隸屬單一車型，用它決定這個車系可以使用哪些科目——科目一律全系統共用，
+  // 這個車型自己排除掉的科目才不會被算進來(見 manualLineCodesFor_ / getPLLineItems)。
   var vehicleTypeId = vehicleTypeIdForScenario_(scenarioId);
 
   var params = getParameters(scenarioId);
@@ -135,7 +135,7 @@ function calculatePLCoreUncached_(scenarioId, vehicleId) {
   var devPerUnit = amortizeDevInvestmentPerUnit_(scenarioId);
   // 只留本車型+本情境可用的科目定義：自動計算科目(季Margin、貨物稅、開發總投攤提...)
   // 不只可能只有某些車型需要，同一車型底下也可能只有某些情境需要(見「科目設定」頁的
-  // 「共用/專屬」與「此情境停用」)，所以 lineDefsAll 一律先依車型+情境篩過，後面不管是
+  // 「此車型/此情境刪除」)，所以 lineDefsAll 一律先依車型+情境篩過，後面不管是
   // 開發總投攤提落點、季Margin、貨物稅，都用同一份已篩過的定義去判斷要不要算這個科目。
   var lineDefsAll = getPLLineItems(vehicleTypeId, scenarioId);
   var scopedCodes_ = {};
@@ -153,7 +153,7 @@ function calculatePLCoreUncached_(scenarioId, vehicleId) {
   var costRows = getCostOfSales(scenarioId, vehicleId);
   // 先把「本車型可用」的手動成本科目都放進來(值 0)，沒填金額的科目才不會整列從儀表板消失 ——
   // 少了幾列的話，畫面上看到的 b 科目加起來會對不上 B 銷貨成本合計，看起來就像加總算錯。
-  // 只放本車型可用的科目(共用+本車型專屬)，其他車型專屬的科目完全不會出現在這個字典裡，
+  // 只放本車型可用的科目，被本車型排除掉的科目完全不會出現在這個字典裡，
   // 儀表板/比較功能才不會把不相干車型的科目顯示成誤導性的 0 元列。
   var bLines = {};
   manualLineCodesFor_(['B'], vehicleTypeId, scenarioId).forEach(function (code) { bLines[code] = 0; });
@@ -608,7 +608,7 @@ function getDevInvestmentSummary(scenarioId, overrideRows) {
   var isBaseline = isBaselineScenario_(scenarioId);
   var lineNames = {};
   getPLLineItems().forEach(function (d) { lineNames[d.LineCode] = d.LineName; });
-  // 攤提落點的可選清單依「科目設定」的共用/專屬/停用設定，只列出這個情境(所屬車型+
+  // 攤提落點的可選清單依「科目設定」的刪除(排除)設定，只列出這個情境(所屬車型+
   // 這個情境本身)看得到的落點，跟銷貨成本/營業費用頁的科目下拉選單同一套規則。
   var targetOptions = getDevAmortTargetOptions(vehicleTypeIdForScenario_(scenarioId), scenarioId);
 
@@ -665,7 +665,7 @@ function previewDevInvestmentSummary(scenarioId, rows) {
  * 某個父科目底下、可以手動輸入的明細科目代碼(排除自動計算科目與自訂公式科目——
  * 公式科目的值由 resolveLineItemFormulas_() 算出來寫回同一個字典，不是從
  * CostOfSales/OperatingExpense 頁的手動輸入列讀值)。
- * vehicleTypeId 有傳時只回傳共用科目 + 該車型專屬科目，讓其他車型專屬的科目
+ * vehicleTypeId 有傳時只回傳這個車型還沒排除掉的科目，讓被這個車型排除的科目
  * 不會被預先塞進這個車型的損益計算裡；再傳 scenarioId 的話，同一車型底下
  * 對這個情境額外停用的科目也會一併排除（見 calculatePLCoreUncached_ 的用法）。
  */

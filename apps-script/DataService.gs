@@ -32,6 +32,7 @@ function getBootstrap(preferredVehicleTypeId) {
   // 只有真的對不上時才寫入，之後每次開頁都只是一次讀取。
   withLock_(function () {
     ensurePLLineItemsVehicleTypeColumn_();
+    migrateExclusiveLineItemsToShared_();
     return syncCodeOwnedLineItems_();
   });
 
@@ -425,15 +426,14 @@ function saveOperatingExpenseMatrix(scenarioId, cells) {
  * LineCode 自動產生（父科目字首 + 流水號），使用者只需要填科目名稱。
  */
 /**
- * vehicleTypeId 可選：不傳(或空白) = 共用科目，跟現有行為一致；有傳 = 只有這個車型看得到、
- * 用得到這個科目，不會出現在其他車型的下拉選單與損益計算裡。讓使用者在「銷貨成本」
- * 「營業費用」頁面直接新增車型專屬科目，不必特地跑去「科目設定」頁再手動指定所屬車型。
+ * 讓使用者在「銷貨成本」「營業費用」頁面直接新增科目，不必特地跑去「科目設定」頁。
+ * 科目一律全系統共用(見 savePLLineItem_ 的說明)；只有目前這個車型不想用的話，
+ * 到「科目設定」頁按「刪除」排除即可，不影響其他車型。
  */
-function addLineItemInline(parentLine, lineName, vehicleTypeId) {
+function addLineItemInline(parentLine, lineName) {
   return withLock_(function () {
     if (!lineName) throw new Error('請輸入科目名稱');
     var row = newLineItemRow_(parentLine, lineName);
-    row.VehicleTypeID = vehicleTypeId || '';
     return upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', row);
   });
 }
@@ -471,22 +471,6 @@ function nextSortOrder_(parentLine) {
     if (d.ParentLine === parentLine) maxSort = Math.max(maxSort, toNumber_(d.SortOrder));
   });
   return (maxSort || 20) + 0.5;
-}
-
-/**
- * 刪除科目，並清掉該科目在「所有情境」已輸入的金額。
- * 科目表是全域的，只清當前情境會讓其他情境留下孤兒金額，
- * 那些金額不會顯示在任何頁面上，卻仍被計入銷貨成本，最難察覺。
- */
-function deleteLineItemInline(lineCode) {
-  return withLock_(function () {
-    [SHEETS.COST_OF_SALES, SHEETS.OPERATING_EXPENSE].forEach(function (sheetName) {
-      (sheetToObjects_(sheetName) || []).forEach(function (r) {
-        if (r.LineCode === lineCode) deleteRow_(sheetName, 'RowID', r.RowID);
-      });
-    });
-    return deletePLLineItem(lineCode);
-  });
 }
 
 // ---- DevInvestment ----
@@ -527,11 +511,7 @@ function getDevAmortTargetOptions(vehicleTypeId, scenarioId) {
  * 新科目一律標記 AutoSource=DEV_AMORT，之後不會出現在「銷貨成本」「營業費用」的手動輸入選單裡，
  * 避免跟開發總投攤提的金額重複計列。
  */
-/**
- * vehicleTypeId 可選：不傳(或空白) = 共用攤提落點，所有車型都看得到；有傳 = 只有這個車型
- * 專屬（跟銷貨成本/營業費用頁「新增項目」的邏輯一致），要調成共用可以到「科目設定」頁改。
- */
-function addDevAmortLineItem(category, lineName, vehicleTypeId) {
+function addDevAmortLineItem(category, lineName) {
   return withLock_(function () {
     if (!lineName) throw new Error('請輸入科目名稱');
     var parentLine = DEV_AMORT_CATEGORY_PARENT[category];
@@ -539,7 +519,6 @@ function addDevAmortLineItem(category, lineName, vehicleTypeId) {
     var row = newLineItemRow_(parentLine, lineName);
     row.AutoSource = AUTO_SOURCE.DEV_AMORT;
     row.DevAmortCategory = category;
-    row.VehicleTypeID = vehicleTypeId || '';
 
     return upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', row);
   });
@@ -896,8 +875,8 @@ function syncCodeOwnedLineItems_() {
 /**
  * 把所有內建科目(含明細科目)的名稱、父科目、分類、排序值整個回復成程式碼中的預設值。
  * 使用者自己新增的科目不受影響。排序值會一併回到實際損益試算表的列序。
- * 「共用/專屬」設定不算「內建預設值」的一部分(PL_LINE_ITEMS 本身不記這個)，
- * 是使用者自己在「科目設定」頁決定的，回復預設值不應該連帶把它洗回共用。
+ * 排除清單(哪些車型/情境不用這個科目)不算「內建預設值」的一部分(PL_LINE_ITEMS 本身
+ * 不記這個)，是使用者自己在「科目設定」頁決定的，回復預設值不應該連帶洗掉。
  */
 function restoreBuiltInLineItems() {
   return withLock_(function () {
@@ -927,10 +906,12 @@ function excludedVehicleTypeIds_(d) { return splitIdList_(d.ExcludedVehicleTypeI
 function excludedScenarioIds_(d) { return splitIdList_(d.ExcludedScenarioIDs); }
 
 /**
- * 科目清單。不傳 vehicleTypeId 回傳全部(科目設定頁用，管理者要看得到所有科目)；
- * 有傳 vehicleTypeId 則只回傳「共用科目(VehicleTypeID 留空) 且沒對這個車型排除」∪
- * 「該車型專屬科目」；再傳 scenarioId 的話，同一車型底下還可以個別對某情境額外排除
- * (情境的排除只能疊加在車型範圍之上，不能讓情境看到車型範圍以外的科目)。
+ * 科目清單。不傳 vehicleTypeId 回傳全部(全系科目設定：管理者要看得到全系統的科目定義，
+ * 不分車型)；有傳 vehicleTypeId 則回傳「此車型科目設定」目前範圍內看得到的科目——科目
+ * 一律全系統共用，只看有沒有被這個車型的排除清單點名(ExcludedVehicleTypeIDs)；再傳
+ * scenarioId 的話，同一車型底下還可以個別對某情境額外排除(情境的排除只能疊加在車型範圍
+ * 之上，不能讓情境看到車型範圍以外的科目)。VehicleTypeID 欄位只留給既有資料相容用途
+ * (見 SetupSheets.gs 的 migrateExclusiveLineItemsToShared_)，新資料一律留空。
  * 讓損益計算、成本/費用輸入頁的下拉選單只看得到跟這個車型+情境有關的科目。
  */
 function getPLLineItems(vehicleTypeId, scenarioId) {
@@ -948,9 +929,8 @@ function savePLLineItem(rowObj) {
 }
 
 /**
- * 目前對 vehicleTypeId 停用的共用自動計算科目清單，給「科目設定」頁顯示「已對車型停用」
- * 名單、讓使用者可以重新啟用。只有共用科目(VehicleTypeID 留空)才可能出現在這裡——
- * 車型專屬科目本來就只有自己的車型看得到，不需要另外一套「排除」機制。
+ * 目前對 vehicleTypeId 停用(排除)的科目清單，給「此車型科目設定」顯示「已對車型刪除」
+ * 名單、讓使用者可以復原。
  */
 function getExcludedLineItemsFor(vehicleTypeId) {
   if (!vehicleTypeId) return [];
@@ -960,9 +940,9 @@ function getExcludedLineItemsFor(vehicleTypeId) {
 }
 
 /**
- * 目前對 scenarioId 額外停用的科目清單(不分共用或該車型專屬)，給「科目設定」頁顯示
- * 「已對情境停用」名單。只看「這個車型範圍內、且被排除清單點名這個情境」的科目——
- * 車型範圍以外的科目本來就跟這個情境無關，不會出現在這裡。
+ * 目前對 scenarioId 額外停用的科目清單，給「此車型科目設定」顯示「已對情境刪除」名單。
+ * 只看「這個車型範圍內、且被排除清單點名這個情境」的科目——車型範圍以外的科目本來就
+ * 跟這個情境無關，不會出現在這裡。
  */
 function getScenarioExcludedLineItems(vehicleTypeId, scenarioId) {
   if (!vehicleTypeId || !scenarioId) return [];
@@ -972,8 +952,8 @@ function getScenarioExcludedLineItems(vehicleTypeId, scenarioId) {
 }
 
 /**
- * 停用/重新啟用某個共用自動計算科目對特定車型的套用(整個車型、底下所有情境都不套用)。
- * 只能對「共用」科目操作(專屬科目本來就只有自己車型看得到，用不到這個機制)；
+ * 停用/重新啟用某個科目對特定車型的套用(整個車型、底下所有情境都不套用)——
+ * 這是「此車型科目設定」決定要不要用某個全系科目的唯一途徑(見 getPLLineItems 的說明)。
  * 結構科目(小計/毛利/淨利)一律不可停用，否則那個車型的損益鏈會斷掉。
  * excluded=true 停用、false 重新啟用；已經是目標狀態就不重複寫入。
  */
@@ -985,8 +965,10 @@ function setLineItemExclusion(lineCode, vehicleTypeId, excluded) {
     if (PROTECTED_LINE_CODES.indexOf(lineCode) !== -1) {
       throw new Error('「' + lineCode + '」是損益結構科目(小計/毛利/淨利)，每個車型都需要，不可停用。');
     }
+    // VehicleTypeID 理論上新資料一律留空(見 savePLLineItem_)，這裡留著防禦性判斷，
+    // 涵蓋 migrateExclusiveLineItemsToShared_() 執行前、既有試算表還沒轉換完成的過渡狀態。
     if (def.VehicleTypeID) {
-      throw new Error('「' + lineCode + '」已經是「' + def.VehicleTypeID + '」的專屬科目，不是共用科目，不需要另外停用。');
+      throw new Error('「' + lineCode + '」目前仍是舊版「' + def.VehicleTypeID + '」專屬科目資料，請重新整理頁面讓系統完成轉換後再試一次。');
     }
     var list = excludedVehicleTypeIds_(def);
     var idx = list.indexOf(vehicleTypeId);
@@ -999,9 +981,8 @@ function setLineItemExclusion(lineCode, vehicleTypeId, excluded) {
 
 /**
  * 停用/重新啟用某個科目對特定情境的套用(只影響這一個情境，同車型的其他情境不受影響)。
- * 跟車型層級的排除不同：不限定只能對共用科目操作——不管科目是共用還是屬於這個車型專屬，
- * 只要在這個情境不適用，都可以個別停用(例如「GATE F 目標」情境計畫未來不再需要某個費用)。
- * 結構科目(小計/毛利/淨利)一律不可停用。
+ * 跟車型層級的排除不同，可以疊加在車型範圍之上再對單一情境個別停用
+ * (例如「GATE F 目標」情境計畫未來不再需要某個費用)。結構科目(小計/毛利/淨利)一律不可停用。
  */
 function setLineItemScenarioExclusion(lineCode, scenarioId, excluded) {
   return withLock_(function () {
@@ -1017,40 +998,6 @@ function setLineItemScenarioExclusion(lineCode, scenarioId, excluded) {
     if (!excluded && idx !== -1) list.splice(idx, 1);
     def.ExcludedScenarioIDs = list.join(',');
     return upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', def);
-  });
-}
-
-/**
- * 沿用某個車型的專屬科目，複製一份掛到另一個車型底下，讓使用者可以「以現有車型為基礎調整」，
- * 而不用從零開始一個個新增。複製出來的是全新、獨立的科目(系統重新配一組代碼)，
- * 跟來源車型的原始科目完全脫鉤——之後不管改名、改金額、刪除都只影響新車型，
- * 不會動到來源車型的任何資料或計算結果(科目代碼是全系統唯一的 key，兩邊從此各自獨立)。
- * 共用科目本來就每個車型都看得到，不需要、也不應該被複製。
- * 已經複製過的科目(同名稱+同父科目)不重複複製，避免使用者按兩次造成重複科目。
- */
-function cloneVehicleTypeLineItems(sourceVehicleTypeId, targetVehicleTypeId) {
-  return withLock_(function () {
-    if (!sourceVehicleTypeId || !targetVehicleTypeId) throw new Error('請選擇來源車型與目標車型');
-    if (sourceVehicleTypeId === targetVehicleTypeId) throw new Error('來源車型跟目標車型不能是同一個');
-
-    var sourceItems = getPLLineItems().filter(function (d) { return d.VehicleTypeID === sourceVehicleTypeId; });
-    var existingTarget = getPLLineItems().filter(function (d) { return d.VehicleTypeID === targetVehicleTypeId; });
-    var existingKey = function (d) { return d.ParentLine + '|' + d.LineName; };
-    var already = {};
-    existingTarget.forEach(function (d) { already[existingKey(d)] = true; });
-
-    var cloned = 0;
-    sourceItems.forEach(function (src) {
-      if (already[existingKey(src)]) return; // 已經複製過同名稱的科目，跳過避免重複
-      var created = newLineItemRow_(src.ParentLine, src.LineName);
-      created.Category = src.Category || created.Category;
-      created.CommodityTaxDeduct = src.CommodityTaxDeduct || '';
-      created.VehicleTypeID = targetVehicleTypeId;
-      upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', created);
-      already[existingKey(src)] = true;
-      cloned++;
-    });
-    return { cloned: cloned, items: getPLLineItems(targetVehicleTypeId) };
   });
 }
 
@@ -1071,7 +1018,9 @@ function savePLLineItem_(rowObj, vehicleTypeId, scenarioId) {
     if (rowObj.SortOrder !== '' && rowObj.SortOrder !== undefined && rowObj.SortOrder !== null) {
       created.SortOrder = toNumber_(rowObj.SortOrder);
     }
-    created.VehicleTypeID = rowObj.VehicleTypeID || '';
+    // 任何新科目一律先進到全系統的科目清單(全系科目設定)，不再支援「一開始就只給某個車型看」；
+    // 各車型要不要用這個科目，交給「此車型科目設定」的排除清單決定(見 setLineItemExclusion)。
+    created.VehicleTypeID = '';
     created.Formula = rowObj.Formula || '';
     validateLineItemFormula_(created, null, vehicleTypeId, scenarioId);
     return upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', created);
@@ -1085,12 +1034,9 @@ function savePLLineItem_(rowObj, vehicleTypeId, scenarioId) {
   if (existing && (PROTECTED_LINE_CODES.indexOf(rowObj.LineCode) !== -1 || existing.AutoSource)) {
     rowObj.ParentLine = existing.ParentLine || '';
   }
-  // 只有結構科目(小計/毛利/淨利)一定要全車型共用；自動計算科目(季Margin、貨物稅、
-  // 開發總投攤提...)雖然公式/名稱不能改，但「要不要套用在這個車型」可以調整——
-  // 有些車型可能根本不適用某個自動計算科目(見 CalcEngine.gs 如何依此決定要不要算)。
-  if (existing && PROTECTED_LINE_CODES.indexOf(rowObj.LineCode) !== -1) {
-    rowObj.VehicleTypeID = '';
-  }
+  // 科目一律全系統共用，「要不要套用在某個車型」完全交給排除清單決定，
+  // 不再讓使用者從這個表格把科目直接指定成某個車型專屬(見上方新增列的說明)。
+  rowObj.VehicleTypeID = '';
   validateLineItemFormula_(rowObj, existing, vehicleTypeId, scenarioId);
   return upsertRowMerge_(SHEETS.PL_LINE_ITEMS, 'LineCode', rowObj);
 }
@@ -1101,8 +1047,7 @@ function savePLLineItem_(rowObj, vehicleTypeId, scenarioId) {
  * 輸入)，什麼都不檢查。找不到問題就直接 return，找到問題一律 throw Error 擋下存檔。
  *
  * vehicleTypeId/scenarioId 決定「引用的名稱要在哪個範圍內找」：優先用呼叫端傳入的目前
- * 畫面範圍，沒有的話退回這筆科目自己的 VehicleTypeID(可能是空字串=共用科目，這時只能
- * 看到共用科目彼此的引用，涵蓋不到各車型專屬科目，屬於已知的寬鬆邊界情況)。
+ * 畫面範圍(此車型科目設定的當下範圍)，沒有的話就看全系統科目(不分車型)。
  */
 function validateLineItemFormula_(rowObj, existing, vehicleTypeId, scenarioId) {
   if (rowObj.Formula === undefined || rowObj.Formula === null) return;
@@ -1132,8 +1077,7 @@ function validateLineItemFormula_(rowObj, existing, vehicleTypeId, scenarioId) {
   var paramNames = {};
   TAX_RATE_PARAM_NAMES.concat(FX_PARAM_NAMES).forEach(function (n) { paramNames[n] = 1; });
 
-  var scopeVehicleTypeId = vehicleTypeId || rowObj.VehicleTypeID || (existing && existing.VehicleTypeID) || '';
-  var scoped = getPLLineItems(scopeVehicleTypeId, scenarioId);
+  var scoped = getPLLineItems(vehicleTypeId || '', scenarioId);
   var validDetailCodes = {};
   scoped.forEach(function (d) {
     if (PROTECTED_LINE_CODES.indexOf(d.LineCode) !== -1) return;
@@ -1171,9 +1115,10 @@ function validateLineItemFormula_(rowObj, existing, vehicleTypeId, scenarioId) {
  */
 /**
  * vehicleTypeId/scenarioId：畫面上目前選取的車型+情境(跟車系設定的 saveVehicleGrid 同一個
- * 呼叫慣例)。這裡不需要拿它們去改寫科目的所屬車型/排除清單 —— 每一列的「共用/專屬」由列
- * 本身的 VehicleTypeID 欄位決定，前端已經照使用者的選擇填好了；vehicleTypeId/scenarioId
- * 只用來決定存檔後要回傳哪個車型+情境範圍看得到的科目清單，讓畫面重繪時維持在目前的範圍內。
+ * 呼叫慣例)。這裡的表格是「此車型科目設定」目前範圍內看得到的科目，用來決定 Formula 欄位
+ * 驗證引用名稱時要看哪個範圍(見 validateLineItemFormula_)，以及存檔後要回傳哪個車型+情境
+ * 範圍看得到的科目清單，讓畫面重繪時維持在目前的範圍內——不影響科目本身是不是全系統共用
+ * (科目一律共用，見 savePLLineItem_ 的說明)。
  */
 function savePLLineItemGrid(vehicleTypeId, scenarioId, rows) {
   return withLock_(function () {
@@ -1198,10 +1143,8 @@ function savePLLineItemGrid(vehicleTypeId, scenarioId, rows) {
         if (existing && (PROTECTED_LINE_CODES.indexOf(r.LineCode) !== -1 || existing.AutoSource)) {
           r.ParentLine = existing.ParentLine || '';
         }
-        // 只有結構科目一定要全車型共用；自動計算科目可以調整要不要套用在某個車型(見上方說明)
-        if (existing && PROTECTED_LINE_CODES.indexOf(r.LineCode) !== -1) {
-          r.VehicleTypeID = '';
-        }
+        // 科目一律全系統共用(見 savePLLineItem_ 的說明)
+        r.VehicleTypeID = '';
         validateLineItemFormula_(r, existing, vehicleTypeId, scenarioId);
         return mergeRowForBatch_(SHEETS.PL_LINE_ITEMS, 'LineCode', r, byCode);
       });
@@ -1237,7 +1180,7 @@ function deletePLLineItem(lineCode) {
 
 /**
  * 科目下拉選單選項：只回傳「可手動輸入」的明細科目(排除自動計算科目)。
- * vehicleTypeId 有傳時只回傳「共用科目」∪「該車型專屬科目」，再傳 scenarioId 的話
+ * vehicleTypeId 有傳時只回傳這個車型還沒排除掉的科目，再傳 scenarioId 的話
  * 同一車型底下對這個情境額外停用的科目也會排除，避免跟這個車型/情境無關的科目
  * 出現在輸入頁下拉選單中。
  * 回傳 [{value, label}]，前端 renderForm 直接吃這個格式。

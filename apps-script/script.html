@@ -67,9 +67,11 @@ const ENTITIES = {
   },
   lineitems: {
     label: '科目設定', pk: 'LineCode',
-    // 跟車系設定/情境設定一樣，用畫面最上方的「車型」+「情境」選單決定要看哪個範圍的科目：
-    // 選 DA 就自動帶出「共用科目」+「DA 專屬科目」，再依目前選的情境排除掉只對這個情境
-    // 停用的科目——同一車型底下，不同情境(如「現況」跟「目標」)可以套用不一樣的科目組合。
+    // 科目一律全系統共用(全系科目設定)：這個表格編輯的是科目本身的定義(名稱/父科目/分類/
+    // 排序/公式)，跟目前選的車型無關。畫面最上方的「車型」+「情境」選單決定的是「此車型
+    // 科目設定」——要不要用這個科目，透過下面的「刪除」/已刪除清單的「復原」決定(見
+    // lineItemsRowActionHtml_ / disabledLineItemsToolbarHtml_)，同一車型底下不同情境
+    // (如「現況」跟「目標」)也可以個別再排除。
     getFn: 'getPLLineItems', saveGridFn: 'savePLLineItemGrid', deleteFn: 'deletePLLineItem',
     scopedBy: 'vehicleType', needScenario: true,
     restorable: true,
@@ -79,15 +81,6 @@ const ENTITIES = {
       { name: 'LineName', label: '科目名稱', width: 280, lockIf: r => r.__existing && isFixedLineItem(r) },
       { name: 'ParentLine', label: '父科目', type: 'select', options: LINE_PARENT_OPTIONS, width: 190,
         lockIf: r => r.__existing && isFixedLineItem(r) },
-      // 留空 = 全車型共用(所有車型都看得到、都會算)；選了目前這個車型 = 只有這個車型專屬。
-      // 因為畫面本來就已經鎖定在目前選的車型，這裡只需要「共用」跟「本車型專屬」兩個選項，
-      // 不需要(也不應該)讓使用者從這裡把科目直接轉給別的車型，那樣容易搞混。
-      // 只有小計/毛利/淨利這些「結構科目」(損益鏈本身)一定要全車型共用、不能改；
-      // 售價結構、成本明細、費用明細即使是公式自動算出來的(如季Margin、貨物稅、開發總投攤提)，
-      // 也可能只有某些車型需要，所以「共用/專屬」在這裡開放調整——調整的只是「這個車型要不要
-      // 顯示/計算這個科目」，公式本身(名稱、父科目)還是鎖定不能改。
-      { name: 'VehicleTypeID', label: '共用 / 專屬', type: 'select', options: () => lineItemScopeOptions_(),
-        width: 170, lockIf: r => r.__existing && isStructuralLineItem(r) },
       { name: 'Category', label: '分類', width: 110 },
       { name: 'SortOrder', label: '排序值', type: 'number', width: 80 },
       { name: 'AutoSource', label: '自動計算來源', readOnly: true, width: 150 },
@@ -105,16 +98,11 @@ const ENTITIES = {
   }
 };
 
-/** 科目設定「共用 / 專屬」欄位的下拉選項：只有「共用」跟「目前車型專屬」兩個，避免跟別的車型搞混 */
-function lineItemScopeOptions_() {
-  return [['', '(共用，所有車型可用)'], [currentVehicleTypeId, '僅「' + currentVehicleTypeId + '」專屬']];
-}
-
 /** 結構科目或自動計算科目：父科目固定、名稱不可改(公式/損益鏈由程式決定) */
 function isFixedLineItem(row) {
   return PROTECTED_LINE_CODES.indexOf(row.LineCode) !== -1 || !!row.AutoSource;
 }
-/** 真正的結構科目(小計/毛利/淨利，A/B/C/E/G/I/K)：損益鏈本身，一定要全車型共用，不能改成專屬 */
+/** 真正的結構科目(小計/毛利/淨利，A/B/C/E/G/I/K)：損益鏈本身，每個車型都需要，不可刪除/排除 */
 function isStructuralLineItem(row) {
   return PROTECTED_LINE_CODES.indexOf(row.LineCode) !== -1;
 }
@@ -139,8 +127,6 @@ const GRID_PANELS = {
 };
 
 let currentVehicleTypeId = '';
-// 「科目設定」頁「所屬車型」下拉選單要用到的完整車型清單，由 renderVehicleTypeOptions 一併更新
-let vehicleTypesCache_ = [];
 let currentScenarioId = '';
 let currentScenario = null;      // 目前情境的完整資料(含 Gate / ScenarioType)
 let scenarioCache = [];
@@ -297,7 +283,6 @@ function loadVehicleTypeSelector(preferredId, preferredScenarioId) {
 }
 
 function renderVehicleTypeOptions(types, pick) {
-  vehicleTypesCache_ = types || [];
   const sel = document.getElementById('vehicletype-selector');
   sel.innerHTML = '<option value="">-- 選擇車型 --</option>' +
     types.map(t => `<option value="${esc(t.VehicleTypeID)}">${esc(t.VehicleTypeID)}</option>`).join('');
@@ -539,7 +524,7 @@ function drawEntityGrid(key) {
       `<button type="button" class="btn secondary" onclick="addEntityRow('${key}')">新增一列</button>`}
     ${cfg.restorable ? '<button type="button" class="btn secondary" onclick="restoreBuiltInLines()">恢復內建科目預設值</button>' : ''}
   ` + (cfg.createUi === 'scenario' ? scenarioToolbarHtml() : '')
-    + (key === 'lineitems' ? cloneLineItemsToolbarHtml_() + disabledLineItemsToolbarHtml_() : '');
+    + (key === 'lineitems' ? disabledLineItemsToolbarHtml_() : '');
 
   const body = rows.length
     ? rows.map((r, i) => key === 'lineitems'
@@ -575,9 +560,7 @@ function entityCellHtml(key, i, col, row) {
 
   if (locked) {
     // 新增列的自動編號欄位還沒有值，先讓使用者知道存檔時系統會配號
-    // 結構科目/自動計算科目的「所屬車型」固定鎖定為共用，留空時顯示「(共用)」而不是空白
-    const shown = col.auto && !value ? '(儲存時自動編號)'
-      : (col.name === 'VehicleTypeID' && !value ? '(共用)' : value);
+    const shown = col.auto && !value ? '(儲存時自動編號)' : value;
     return `<td class="row-head calc">${esc(shown)}</td>`;
   }
   if (col.type === 'select') {
@@ -659,19 +642,23 @@ function lineItemsRowHtml_(i, row, total) {
  * 科目名稱本來就能直接在「科目名稱」欄位打字改(非公式/結構科目的話)，不需要另外的
  * 「重新命名」按鈕——科目代碼是系統自動配號的內部識別碼，使用者不需要、也不應該去改它，
  * 所以這裡不像車型/車系那樣提供重新命名代碼的功能。
+ *
+ * 科目一律全系統共用，「刪除」在這裡(此車型科目設定)一律是「這個車型(或這個情境)不要用
+ * 這個科目」，不是把科目從全系統整個抹掉——不管是內建公式科目還是使用者自訂的科目都一樣，
+ * 一律走 openLineItemDeleteModal_ 的排除流程，其他車型完全不受影響，也隨時可以復原。
+ * 唯一的例外是開發總投攤提落點(isDeletableAutoLineItem)：那是使用者自訂的攤提「掛點」，
+ * 概念上不是「這個車型要不要用」，是這個掛點本身還要不要存在，所以維持真正刪除(後端
+ * deletePLLineItem 仍會擋住「還有開發總投資料指到這裡」的情況，不會憑空弄丟資料)。
  */
 function lineItemsRowActionHtml_(i, row) {
   if (!row.__existing) {
     return `<button type="button" class="btn secondary" onclick="removeEntityRow('lineitems', ${i})">移除</button>`;
   }
   if (isStructuralLineItem(row)) return '<span class="hint">結構科目，不可刪除</span>';
-  if (isFixedLineItem(row) && !isDeletableAutoLineItem(row)) {
-    if (row.VehicleTypeID === currentVehicleTypeId) {
-      return '<span class="hint">已是本車型專屬，如要移除請改左邊「共用/專屬」欄位</span>';
-    }
-    return `<button type="button" class="btn danger" onclick="openLineItemDeleteModal_('${esc(row.LineCode)}')">刪除</button>`;
+  if (isDeletableAutoLineItem(row)) {
+    return `<button type="button" class="btn danger" onclick="deleteEntityRow('lineitems', ${i})">刪除</button>`;
   }
-  return `<button type="button" class="btn danger" onclick="deleteEntityRow('lineitems', ${i})">刪除</button>`;
+  return `<button type="button" class="btn danger" onclick="openLineItemDeleteModal_('${esc(row.LineCode)}')">刪除</button>`;
 }
 
 /**
@@ -778,9 +765,6 @@ function addEntityRow(key) {
   const row = { __existing: false };
   cfg.columns.forEach(c => { row[c.name] = ''; });
   if (cfg.pk) row[cfg.pk] = '';
-  // 科目設定頁在某個車型底下按「新增一列」，理當是要新增這個車型專屬的科目
-  // （要新增共用科目的話，存檔前把「共用 / 專屬」欄位改選「(共用)」即可）
-  if (key === 'lineitems') row.VehicleTypeID = currentVehicleTypeId;
   entityRows[key].push(row);
   drawEntityGrid(key);
 }
@@ -844,54 +828,13 @@ function restoreBuiltInLines() {
   setStatus('lineitems', '回復中...');
   google.script.run
     .withSuccessHandler(safeHandler(() => {
-      // 內建科目一律共用，回復動作影響全系統；重新用「目前車型」的範圍載入，
-      // 畫面才不會暫時混進其他車型專屬的科目列。
+      // 內建科目一律共用，回復動作影響全系統，重新載入目前範圍看得到的最新資料
       invalidateLineItemDependentCaches_();
       loadEntityData('lineitems');
       setStatus('lineitems', '已回復內建科目的預設名稱與排序', 'ok');
     }))
     .withFailureHandler(err => setStatus('lineitems', '錯誤：' + err.message, 'err'))
     .restoreBuiltInLineItems();
-}
-
-/**
- * 「沿用其他車型科目」：新車型剛建立、還沒有任何專屬科目時，可以選一個既有車型，
- * 把它的專屬科目複製一份過來當作起點，再自己增刪調整；也可以不理會這個功能，
- * 直接用「新增一列」從空白開始建立這個車型自己的科目。
- * 複製出來的是全新、獨立的科目（見 cloneVehicleTypeLineItems 的說明），
- * 之後不管怎麼改，都不會影響來源車型的資料或損益計算。
- */
-function cloneLineItemsToolbarHtml_() {
-  if (!currentVehicleTypeId) return '';
-  const others = (vehicleTypesCache_ || []).filter(t => t.VehicleTypeID !== currentVehicleTypeId);
-  if (!others.length) return '';
-  const options = others.map(t => `<option value="${esc(t.VehicleTypeID)}">${esc(t.VehicleTypeID)}</option>`).join('');
-  return `
-    <div class="toolbar-block">
-      <div class="toolbar-block-title">沿用其他車型的專屬科目</div>
-      <div class="toolbar">
-        <span class="muted">把選定車型的專屬科目複製一份到「${esc(currentVehicleTypeId)}」，複製後兩邊各自獨立、互不影響：</span>
-        <select id="clone-lineitems-source"><option value="">-- 選擇來源車型 --</option>${options}</select>
-        <button type="button" class="btn secondary" onclick="cloneLineItemsFromVehicleType_()">套用</button>
-      </div>
-    </div>`;
-}
-
-function cloneLineItemsFromVehicleType_() {
-  const source = val('clone-lineitems-source');
-  if (!source) { setStatus('lineitems', '請先選擇要沿用的來源車型', 'err'); return; }
-  markDashboardDirty_();
-  setStatus('lineitems', '複製中...');
-  google.script.run
-    .withSuccessHandler(safeHandler(result => {
-      pendingStatus = { key: 'lineitems',
-        text: result.cloned ? `已從「${source}」複製 ${result.cloned} 個科目（已存在同名科目的不重複複製）` : '沒有新科目需要複製（來源車型的專屬科目都已經複製過了）',
-        cls: 'ok' };
-      invalidateLineItemDependentCaches_();
-      loadEntityData('lineitems');
-    }))
-    .withFailureHandler(err => setStatus('lineitems', '錯誤：' + err.message, 'err'))
-    .cloneVehicleTypeLineItems(source, currentVehicleTypeId);
 }
 
 /** 已刪除的公式科目：對車型刪除(所有情境)、對情境刪除(只有目前情境)分開列，都可以復原 */
@@ -917,7 +860,7 @@ function disabledLineItemsToolbarHtml_() {
 }
 
 /**
- * 科目定義變動(新增/刪除/共用專屬/停用啟用/沿用複製/回復預設)會影響到「銷貨成本」
+ * 科目定義變動(新增/刪除/停用啟用/回復預設)會影響到「銷貨成本」
  * 「營業費用」的科目下拉選單與唯讀自動計算科目區塊、「開發總投」的攤提落點選單——
  * 這幾頁各自有自己的資料快取，不會因為科目設定變了就自動失效，這裡統一清掉，
  * 下次切過去才會真的重新跟後端要一次，不會看到停用前的舊選單/舊科目列。
@@ -1300,7 +1243,7 @@ function drawMatrix(key) {
     <span class="toolbar-sep"></span>
     ${parentSelect}
     <input id="${key}-new-name" type="text" placeholder="新增項目名稱" style="width:160px;">
-    <button type="button" class="btn secondary" onclick="addMatrixLine('${key}')" title="新增的項目預設是「${esc(currentVehicleTypeId)}」專屬；要改成共用，到「科目設定」頁調整">新增項目</button>
+    <button type="button" class="btn secondary" onclick="addMatrixLine('${key}')" title="新增的項目全車型共用；只有目前這個車型不想用的話，到「科目設定」頁按「刪除」排除即可">新增項目</button>
   `;
 
   if (!data.vehicles.length) {
@@ -1481,24 +1424,27 @@ function addMatrixLine(key) {
   const name = val(`${key}-new-name`);
   if (!name) { setStatus(key, '請先輸入項目名稱', 'err'); return; }
   const parent = cfg.parentOptions ? val(`${key}-new-parent`) : cfg.parentLine;
-  // 從這裡快速新增的科目一律先歸到目前車型專屬；要改成共用科目，到「科目設定」頁調整即可，
-  // 不在這裡重複問一次「共用/專屬」，減少選項、避免跟科目設定頁的設定搞混。
   markDashboardDirty_();
   setStatus(key, '新增中...');
   google.script.run
-    .withSuccessHandler(() => { setStatus(key, '已新增項目', 'ok'); renderMatrixPanel(key); })
+    .withSuccessHandler(() => { setStatus(key, '已新增項目', 'ok'); invalidateLineItemDependentCaches_(); renderMatrixPanel(key); })
     .withFailureHandler(err => setStatus(key, '錯誤：' + err.message, 'err'))
-    .addLineItemInline(parent, name, currentVehicleTypeId);
+    .addLineItemInline(parent, name);
 }
 
+/**
+ * 這裡的「刪除」是讓目前這個車型不要用這個項目(排除)，不是把科目從全系統整個抹掉——
+ * 科目一律全系統共用，其他車型不受影響，之後也可以在「科目設定」頁復原
+ * (跟 lineItemsRowActionHtml_ 的「刪除」是同一套邏輯，見那邊的說明)。
+ */
 function deleteMatrixLine(key, lineCode) {
-  if (!confirm('刪除這個項目會一併清掉它已輸入的金額(所有用得到這個科目的情境/車系)，確定嗎？')) return;
+  if (!confirm('確定要讓「' + currentVehicleTypeId + '」不再使用這個項目嗎？(不影響其他車型，之後可在「科目設定」頁復原)')) return;
   markDashboardDirty_();
-  setStatus(key, '刪除中...');
+  setStatus(key, '處理中...');
   google.script.run
-    .withSuccessHandler(() => { setStatus(key, '已刪除項目', 'ok'); renderMatrixPanel(key); })
+    .withSuccessHandler(() => { setStatus(key, '已刪除項目', 'ok'); invalidateLineItemDependentCaches_(); renderMatrixPanel(key); })
     .withFailureHandler(err => setStatus(key, '錯誤：' + err.message, 'err'))
-    .deleteLineItemInline(lineCode);
+    .setLineItemExclusion(lineCode, currentVehicleTypeId, true);
 }
 
 /**
@@ -1726,7 +1672,7 @@ function onDevCategoryChange(i, category) {
 
 /**
  * 在開發總投頁面直接新增攤提落點科目，之後就會出現在「攤提落點」下拉選單裡。
- * 跟銷貨成本/營業費用頁「新增項目」一致：預設歸到目前車型專屬，要改共用到「科目設定」頁調整。
+ * 科目一律全系統共用；只有目前這個車型不想用的話，到「科目設定」頁按「刪除」排除即可。
  */
 function addDevAmortTarget() {
   const category = val('dev-new-target-category');
@@ -1735,9 +1681,9 @@ function addDevAmortTarget() {
   markDashboardDirty_();
   setStatus('devinvestment', '新增中...');
   google.script.run
-    .withSuccessHandler(safeHandler(() => { setStatus('devinvestment', '已新增攤提科目', 'ok'); renderDevInvestmentPanel(); }))
+    .withSuccessHandler(safeHandler(() => { setStatus('devinvestment', '已新增攤提科目', 'ok'); invalidateLineItemDependentCaches_(); renderDevInvestmentPanel(); }))
     .withFailureHandler(err => setStatus('devinvestment', '錯誤：' + err.message, 'err'))
-    .addDevAmortLineItem(category, name, currentVehicleTypeId);
+    .addDevAmortLineItem(category, name);
 }
 
 /** 攤提基準台數：開發投資的攤提台數常與銷售構成的預估台數不同，可獨立設定；留空則沿用銷售構成 */
@@ -2722,7 +2668,8 @@ function diffSectionHtml_(cols, lines) {
 }
 
 /**
- * 科目歸屬差異：不同車型的科目設定可能不一樣(見「科目設定」的「所屬車型」欄位)，
+ * 科目歸屬差異：不同車型用得到的科目可能不一樣(科目一律全系統共用，各車型可在
+ * 「科目設定」頁各自「刪除」不想用的科目，見 getExcludedLineItemsFor)，
  * 這裡把「只有 a 欄位算得出來、b 欄位沒有」或反過來的明細科目列出來，
  * 讓使用者一眼看出兩個車型的科目集合差在哪裡，不用自己在完整損益表裡逐列找空白。
  * 結構科目(小計/毛利/淨利)與售價結構永遠共用、兩邊都會有，不需要列入這裡。

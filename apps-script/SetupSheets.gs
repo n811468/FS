@@ -104,6 +104,38 @@ function ensurePLLineItemsVehicleTypeColumn_() {
 }
 
 /**
+ * 既有資料升級用：舊版「科目設定」頁曾經允許把科目設成某個車型專屬(PLLineItems.VehicleTypeID
+ * 直接指到那個車型)，讓其他車型完全看不到這個科目。現在簡化成單一層模型：任何科目一律先進到
+ * 全系統的科目清單(全系科目設定)，各車型再自己選擇要不要用(排除清單，此車型科目設定)——
+ * 「專屬」這個概念不再由使用者手動設定，一律透過「這個車型是否排除」表達。
+ *
+ * 既有資料裡如果還留著舊的「專屬車型」設定，換算成等效的排除清單(排除當時所有其他既有車型)
+ * 之後清空 VehicleTypeID，讓行為在轉換當下維持不變，但資料模型統一成一種。之後新增的車型
+ * 預設看得到這個科目(使用者可以再自行排除)——這正是新模型想要的行為，舊的「專屬」語意本來
+ * 就沒辦法對「以後才新增的車型」表達意見，不需要、也沒辦法完全保留。
+ * 跟 ensurePLLineItemsVehicleTypeColumn_() 一樣掛在 getBootstrap() 開頁流程，使用者不需要
+ * 手動執行維護功能；沒有殘留的舊「專屬」資料時完全不動任何東西。
+ */
+function migrateExclusiveLineItemsToShared_() {
+  var items = sheetToObjects_(SHEETS.PL_LINE_ITEMS) || [];
+  var exclusiveItems = items.filter(function (d) { return d.VehicleTypeID; });
+  if (!exclusiveItems.length) return 0;
+
+  var allTypeIds = (sheetToObjects_(SHEETS.VEHICLE_TYPES) || []).map(function (t) { return t.VehicleTypeID; });
+  exclusiveItems.forEach(function (d) {
+    var keepVisibleTo = d.VehicleTypeID;
+    var excluded = splitIdList_(d.ExcludedVehicleTypeIDs);
+    allTypeIds.forEach(function (id) {
+      if (id !== keepVisibleTo && excluded.indexOf(id) === -1) excluded.push(id);
+    });
+    d.ExcludedVehicleTypeIDs = excluded.join(',');
+    d.VehicleTypeID = '';
+    upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', d);
+  });
+  return exclusiveItems.length;
+}
+
+/**
  * 把內建科目的名稱、父科目、分類與排序值重設回程式碼中的預設值。
  * seedPLLineItems_() 只補新科目、不動既有科目(使用者可能自己改過名稱)，
  * 所以科目排序改版後要靠這支才會套用到既有的 Sheet。
