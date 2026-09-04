@@ -92,7 +92,8 @@ const ENTITIES = {
         placeholder: '留空=手動輸入；如 P8 * 貨物稅率 * 0.85',
         title: '可引用 P1~P9、其他明細科目代碼(b*/d*/f*/h*)、比率匯率參數名稱(' +
           TAX_RATE_PARAM_NAMES.concat(FX_PARAM_NAMES).join('、') +
-          ')，直接寫名稱、不加符號。不能引用結構科目(A/B/C/E/G/I/K)或內建自動計算科目。',
+          '，還沒有的比率可以先到「稅務費用比率」頁新增)，直接寫名稱、不加符號。' +
+          '不能引用結構科目(A/B/C/E/G/I/K)或內建自動計算科目。',
         lockIf: r => r.__existing && isFixedLineItem(r) }
     ]
   }
@@ -734,6 +735,17 @@ function onEntityField(key, i, field, value) {
   entityRows[key][i][field] = value;
   if (key === 'scenarios' && (field === 'CreatedDate' || field === 'ScenarioType')) {
     autoFillScenarioName_(i);
+  }
+  // 科目設定頁改「父科目」：金額算的段落其實已經正確跟著改了(見 CalcEngine.gs 的
+  // manualLineCodesFor_)，但排序值沒有跟著動的話，這一列還是卡在舊段落的位置，
+  // 使用者會覺得「選了但沒反應」。改成自動把排序值移到新父科目底下最後面，讓這一列
+  // 立刻在畫面上跳到新位置，跟「新增一列」用的排序邏輯一致(見 nextSortOrder_)。
+  if (key === 'lineitems' && field === 'ParentLine') {
+    const maxSort = (entityRows.lineitems || [])
+      .filter(r => r.ParentLine === value)
+      .reduce((max, r) => Math.max(max, num(r.SortOrder)), 20);
+    entityRows.lineitems[i].SortOrder = maxSort + 0.5;
+    drawEntityGrid(key);
   }
 }
 
@@ -1575,15 +1587,27 @@ function drawDevGrid() {
   })).getKnownDepartments();
 }
 
-/** 「攤提落點 → 投資總額(低減後)/單台攤提」彙總表，抽成獨立函式方便即時試算時單獨重畫這一小塊 */
+/**
+ * 「攤提落點 → 投資總額/單台攤提」彙總表，抽成獨立函式方便即時試算時單獨重畫這一小塊。
+ * 現況情境沒有挑戰低減目標，低減前後金額必然相等，欄位標題就不寫「低減後」、也不必多列
+ * 一欄重複的數字；目標情境才會真的套用低減率，這時多顯示「低減前」「低減金額」兩欄，
+ * 讓使用者看得到低減的實際效果，不是只看到低減後的單一數字。
+ */
 function devTargetsTableHtml() {
+  const isTarget = !devSummary.isBaseline;
+  const totalHeader = isTarget ? '投資總額(低減後)' : '投資總額';
   return `
-    <table class="grid-table" style="max-width:640px;">
-      <thead><tr><th>攤提落點</th><th>投資總額(低減後)</th><th>單台攤提</th></tr></thead>
+    <table class="grid-table" style="max-width:840px;">
+      <thead><tr>
+        <th>攤提落點</th>
+        ${isTarget ? '<th>投資總額(低減前)</th><th>低減金額</th>' : ''}
+        <th>${totalHeader}</th><th>單台攤提</th>
+      </tr></thead>
       <tbody>
-        ${(devSummary.targets || []).filter(t => t.Total).map(t => `
+        ${(devSummary.targets || []).filter(t => t.Total || t.RawTotal).map(t => `
           <tr>
             <td class="row-head">${esc(shortLineName(t.LineName))}</td>
+            ${isTarget ? `<td class="calc">${fmt(t.RawTotal)}</td><td class="calc">${fmt(t.ReductionAmount)}</td>` : ''}
             <td class="calc">${fmt(t.Total)}</td>
             <td class="calc">${fmt(t.PerUnit)}</td>
           </tr>`).join('')}
@@ -1759,8 +1783,13 @@ function renderRatePanel() {
 }
 
 function drawRateGrid() {
-  document.getElementById('toolbar-paramrates').innerHTML =
-    '<button type="button" class="btn" onclick="saveRateGrid()">儲存</button>';
+  document.getElementById('toolbar-paramrates').innerHTML = `
+    <button type="button" class="btn" onclick="saveRateGrid()">儲存</button>
+    <span class="toolbar-sep"></span>
+    <input id="paramrates-new-name" type="text" placeholder="新增比率項目名稱，如「關稅率」" style="width:200px;">
+    <button type="button" class="btn secondary" onclick="addCustomRateParam_()"
+      title="新增後可以直接在「科目設定」頁的自訂公式裡用這個名稱引用，如 P8 * 關稅率">新增比率項目</button>
+  `;
 
   document.getElementById('grid-paramrates').innerHTML = `
     <div class="grid-scroll">
@@ -1768,11 +1797,12 @@ function drawRateGrid() {
       <thead><tr>
         <th>比率項目</th><th>全車系適用</th>
         ${rateData.vehicles.map(v => `<th>${esc(v.VehicleCode || v.VehicleID)}</th>`).join('')}
+        <th></th>
       </tr></thead>
       <tbody>
         ${rateData.rates.map(rate => `
           <tr>
-            <td class="row-head">${esc(rate.ParamName)}${rate.isDefault ? ' <span class="auto-tag">預設值</span>' : ''}</td>
+            <td class="row-head">${esc(rate.ParamName)}${rate.isDefault ? ' <span class="auto-tag">預設值</span>' : ''}${rate.custom ? ' <span class="auto-tag">自訂</span>' : ''}</td>
             <td><input type="number" step="any" class="rate-global" data-name="${esc(rate.ParamName)}"
               data-paramid="${esc(rate.globalParamID)}" value="${esc(rate.globalValue)}"
               oninput="updateRatePlaceholders('${esc(rate.ParamName)}')"></td>
@@ -1782,11 +1812,38 @@ function drawRateGrid() {
                 data-vehicle="${esc(v.VehicleID)}" data-paramid="${esc(o.ParamID)}" value="${esc(o.Value)}"
                 placeholder="${esc(rate.globalValue)}"></td>`;
             }).join('')}
+            <td>${rate.custom
+              ? `<button type="button" class="btn danger" onclick="deleteCustomRateParam_('${esc(rate.ParamName)}')">刪除</button>`
+              : ''}</td>
           </tr>`).join('')}
       </tbody>
     </table>
     </div>
-    <p class="muted">車系欄位留白 = 沿用全車系適用的值（灰字為目前沿用的數值）。</p>`;
+    <p class="muted">車系欄位留白 = 沿用全車系適用的值（灰字為目前沿用的數值）。
+      標「自訂」的是自己新增的比率項目，可以直接在「科目設定」頁的自訂公式裡用名稱引用。</p>`;
+}
+
+/** 新增一個自訂比率參數名稱：新增後就會出現在下面的表格，也能在科目公式裡直接用名稱引用 */
+function addCustomRateParam_() {
+  const name = val('paramrates-new-name');
+  if (!name) { setStatus('paramrates', '請輸入比率項目名稱', 'err'); return; }
+  markDashboardDirty_();
+  setStatus('paramrates', '新增中...');
+  google.script.run
+    .withSuccessHandler(safeHandler(() => { setStatus('paramrates', '已新增比率項目', 'ok'); renderRatePanel(); }))
+    .withFailureHandler(err => setStatus('paramrates', '錯誤：' + err.message, 'err'))
+    .addCustomRateParam(name);
+}
+
+/** 刪除一個自訂比率參數：後端會先擋下還有科目公式引用中的情況，避免公式突然找不到值 */
+function deleteCustomRateParam_(name) {
+  if (!confirm('確定要刪除比率項目「' + name + '」嗎？(所有情境已填的值都會一併清除，且不能刪除還被科目公式引用中的項目)')) return;
+  markDashboardDirty_();
+  setStatus('paramrates', '刪除中...');
+  google.script.run
+    .withSuccessHandler(safeHandler(() => { setStatus('paramrates', '已刪除比率項目', 'ok'); renderRatePanel(); }))
+    .withFailureHandler(err => setStatus('paramrates', '錯誤：' + err.message, 'err'))
+    .deleteCustomRateParam(name);
 }
 
 /** 改全車系值時，同步更新各車系欄位的提示值，一眼看得出沿用的是多少 */

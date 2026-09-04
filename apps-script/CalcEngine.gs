@@ -275,8 +275,10 @@ function resolveLineItemFormulas_(lineDefsAll, dictByParent, priceStructureRaw_,
     return formulaItems.map(function (d) { return { lineCode: d.LineCode, lineName: d.LineName, message: e.message }; });
   }
 
+  // 自訂比率參數(見「稅務費用比率」頁的 addCustomRateParam)跟內建比率參數一樣，都是
+  // 百分比數值儲存，valueOf() 一樣要經過 pct_() 換成小數。
   var taxRateParamSet = {};
-  TAX_RATE_PARAM_NAMES.forEach(function (n) { taxRateParamSet[n] = true; });
+  TAX_RATE_PARAM_NAMES.concat(getCustomRateParamNames_()).forEach(function (n) { taxRateParamSet[n] = true; });
   var fxParamSet = {};
   FX_PARAM_NAMES.forEach(function (n) { fxParamSet[n] = true; });
 
@@ -516,7 +518,7 @@ function getComparisonOptions() {
 function amortizeDevInvestmentPerUnit_(scenarioId, overrideRows) {
   var devRows = overrideRows || getDevInvestment(scenarioId);
   var totalUnits = getLifeCycleUnits(scenarioId);
-  var empty = { perUnit: {}, totalsByLine: {}, totalUnits: totalUnits };
+  var empty = { perUnit: {}, totalsByLine: {}, rawTotalsByLine: {}, totalUnits: totalUnits };
   if (totalUnits <= 0) return empty;
 
   // 現況情境沒有挑戰低減目標，一律用原始金額；目標情境才套用低減率。
@@ -524,6 +526,7 @@ function amortizeDevInvestmentPerUnit_(scenarioId, overrideRows) {
   var params = getParameters(scenarioId);
 
   var totals = {};
+  var rawTotals = {};
   devRows.forEach(function (r) {
     var target = devAmortTargetOf_(r);
     if (!target) return;   // 沒選攤提落點的列不攤提(儲存時已擋下有金額卻沒選的情形)
@@ -532,12 +535,15 @@ function amortizeDevInvestmentPerUnit_(scenarioId, overrideRows) {
     // ChallengeReductionPct 以 0~100 的百分比數值儲存(如 15 代表 15%)
     var reduced = amount * (isBaseline ? 1 : 1 - pct_(r.ChallengeReductionPct));
     totals[target] = (totals[target] || 0) + reduced;
+    // 低減前金額一律用原始投入金額，不管是不是現況情境——現況情境兩者本來就相等，
+    // 讓「開發總投」頁可以在目標情境呈現低減前後差異(見 getDevInvestmentSummary)。
+    rawTotals[target] = (rawTotals[target] || 0) + amount;
   });
 
   var perUnit = {};
   Object.keys(totals).forEach(function (code) { perUnit[code] = totals[code] / totalUnits; });
 
-  return { perUnit: perUnit, totalsByLine: totals, totalUnits: totalUnits };
+  return { perUnit: perUnit, totalsByLine: totals, rawTotalsByLine: rawTotals, totalUnits: totalUnits };
 }
 
 /**
@@ -635,13 +641,19 @@ function getDevInvestmentSummary(scenarioId, overrideRows) {
     lifeCycleUnits: perUnit.totalUnits,
     salesMixLifeCycleUnits: getSalesMixLifeCycleUnits(scenarioId),
     targetOptions: targetOptions,
-    // 每個落點科目的投資總額(低減後)與單台攤提，讓「開發總投 → 損益科目」對得起來
+    // 每個落點科目的投資總額(低減後)與單台攤提，讓「開發總投 → 損益科目」對得起來。
+    // RawTotal 是低減前的原始投入金額；現況情境兩者必然相等(isBaseline 時不套用低減率)，
+    // 目標情境才會不同，讓畫面可以呈現低減前後的差異(見 devTargetsTableHtml)。
     targets: targetOptions.map(function (opt) {
       var code = opt.value;
+      var total = perUnit.totalsByLine[code] || 0;
+      var rawTotal = perUnit.rawTotalsByLine[code] || 0;
       return {
         LineCode: code, LineName: opt.label,
-        Total: perUnit.totalsByLine[code] || 0,
-        PerUnit: perUnit.totalUnits ? (perUnit.totalsByLine[code] || 0) / perUnit.totalUnits : 0
+        Total: total,
+        RawTotal: rawTotal,
+        ReductionAmount: rawTotal - total,
+        PerUnit: perUnit.totalUnits ? total / perUnit.totalUnits : 0
       };
     }),
     amortMonthlyVolume: scenario.AmortMonthlyVolume === undefined ? '' : scenario.AmortMonthlyVolume,

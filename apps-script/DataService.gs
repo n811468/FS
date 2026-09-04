@@ -32,6 +32,7 @@ function getBootstrap(preferredVehicleTypeId) {
   // 只有真的對不上時才寫入，之後每次開頁都只是一次讀取。
   withLock_(function () {
     ensurePLLineItemsVehicleTypeColumn_();
+    ensureCustomRateParamsSheet_();
     migrateExclusiveLineItemsToShared_();
     return syncCodeOwnedLineItems_();
   });
@@ -689,10 +690,75 @@ function deleteParameterRow(paramId) {
 // 「參數設定」頁面拆成兩組管理：稅務/費用比率 vs 匯率設定，各自獨立的分頁籤與表格，
 // 底層仍寫入同一張 Parameters 分頁，只是依 ParamName 篩選讀取範圍。
 function getTaxRateParameters(scenarioId) {
-  return getParameters(scenarioId).filter(function (p) { return TAX_RATE_PARAM_NAMES.indexOf(p.ParamName) !== -1; });
+  var names = TAX_RATE_PARAM_NAMES.concat(getCustomRateParamNames_());
+  return getParameters(scenarioId).filter(function (p) { return names.indexOf(p.ParamName) !== -1; });
 }
 function getFxParameters(scenarioId) {
   return getParameters(scenarioId).filter(function (p) { return FX_PARAM_NAMES.indexOf(p.ParamName) !== -1; });
+}
+
+/**
+ * 使用者自訂的比率參數名稱清單(依新增順序)。跟內建的 TAX_RATE_PARAM_NAMES 是分開的兩層：
+ * 內建名稱程式碼寫死、全系統都認得；自訂名稱由使用者在「稅務費用比率」頁自己新增，例如
+ * 「關稅率」，新增後同樣可以直接在「科目設定」頁的自訂公式裡用名稱引用(見
+ * validateLineItemFormula_ / CalcEngine.gs 的 resolveLineItemFormulas_)。
+ */
+function getCustomRateParamNames_() {
+  return sortByOrder_(sheetToObjects_(SHEETS.CUSTOM_RATE_PARAMS) || [], 'SortOrder')
+    .map(function (r) { return r.ParamName; });
+}
+
+/**
+ * 新增一個自訂比率參數名稱，之後就會出現在「稅務費用比率」頁可以直接填值，
+ * 也能在「科目設定」頁的自訂公式裡用名稱引用(如「P8 * 關稅率」)。
+ * 名稱規則比照公式引用的識別字規則(FORMULA_IDENT_RE_)：中文或英文字母開頭，
+ * 後面接中文/英文/數字，不能有空格或符號，否則公式解析器會認不得。
+ */
+function addCustomRateParam(name) {
+  return withLock_(function () {
+    name = String(name || '').trim();
+    if (!name) throw new Error('請輸入比率項目名稱');
+    var identMatch = name.match(FORMULA_IDENT_RE_);
+    if (!identMatch || identMatch[0] !== name) {
+      throw new Error('「' + name + '」不是合法的名稱：只能是中文或英文字母開頭、後面接中文/英文/數字，' +
+        '不能有空格或符號(這個名稱之後要能直接寫進科目公式裡引用)。');
+    }
+    var known = TAX_RATE_PARAM_NAMES.concat(FX_PARAM_NAMES);
+    if (known.indexOf(name) !== -1) throw new Error('「' + name + '」已經是系統內建的比率/匯率參數名稱，不能重複新增。');
+    var existing = getCustomRateParamNames_();
+    if (existing.indexOf(name) !== -1) throw new Error('「' + name + '」已經存在，不能重複新增。');
+
+    var sheet = getSheet_(SHEETS.CUSTOM_RATE_PARAMS);
+    var maxSort = (sheetToObjects_(SHEETS.CUSTOM_RATE_PARAMS) || [])
+      .reduce(function (max, r) { return Math.max(max, toNumber_(r.SortOrder)); }, 0);
+    sheet.appendRow([name, maxSort + 1]);
+    invalidateSheetCache_(SHEETS.CUSTOM_RATE_PARAMS);
+    return getCustomRateParamNames_();
+  });
+}
+
+/**
+ * 刪除一個自訂比率參數：先擋下還有科目公式引用到它的情況，避免刪掉後那些公式突然
+ * 找不到值(見 resolveLineItemFormulas_ 找不到引用時的處理，公式會被迫算成 0)。
+ * 確定可以刪除的話，順便清掉所有情境底下這個名稱已經填過的值，避免留下無主孤兒資料。
+ */
+function deleteCustomRateParam(name) {
+  return withLock_(function () {
+    var usedBy = getPLLineItems().filter(function (d) {
+      if (!d.Formula) return false;
+      try { return formulaExtractRefs_(formulaParse_(d.Formula)).indexOf(name) !== -1; }
+      catch (e) { return false; }
+    });
+    if (usedBy.length) {
+      throw new Error('「' + name + '」還被以下科目的公式引用中，請先修改那些公式再刪除：' +
+        usedBy.map(function (d) { return d.LineCode + ' ' + d.LineName; }).join('、'));
+    }
+    deleteRow_(SHEETS.CUSTOM_RATE_PARAMS, 'ParamName', name);
+    (sheetToObjects_(SHEETS.PARAMETERS) || []).forEach(function (r) {
+      if (r.ParamName === name) deleteRow_(SHEETS.PARAMETERS, 'ParamID', r.ParamID);
+    });
+    return getCustomRateParamNames_();
+  });
 }
 
 /**
@@ -712,7 +778,13 @@ function getRateGrid(scenarioId, vehicleTypeId) {
     })[0];
   };
 
-  var rates = TAX_RATE_PARAM_NAMES.map(function (name) {
+  var customNames = getCustomRateParamNames_();
+  var customSet = {};
+  customNames.forEach(function (n) { customSet[n] = true; });
+
+  // 內建比率名稱在前、使用者自訂的排在後面(依新增順序)，讓固定清單不會因為自訂項目
+  // 增減而跳動位置。
+  var rates = TAX_RATE_PARAM_NAMES.concat(customNames).map(function (name) {
     var global = find(name, '');
     var overrides = {};
     vehicles.forEach(function (v) {
@@ -723,8 +795,10 @@ function getRateGrid(scenarioId, vehicleTypeId) {
       ParamName: name,
       globalParamID: global ? global.ParamID : '',
       // 沒設定過就帶系統預設值，使用者確認後按儲存即可，不必每次自己查稅率
+      // (自訂項目沒有系統預設值，沒設定過就是空白，等使用者自己填)
       globalValue: global ? toNumber_(global.Value) : (DEFAULT_PARAMS[name] !== undefined ? DEFAULT_PARAMS[name] : ''),
       isDefault: !global,
+      custom: !!customSet[name],
       overrides: overrides
     };
   });
@@ -1075,7 +1149,7 @@ function validateLineItemFormula_(rowObj, existing, vehicleTypeId, scenarioId) {
 
   var priceCodes = { P1: 1, P2: 1, P3: 1, P4: 1, P5: 1, P6: 1, P7: 1, P8: 1, P9: 1 };
   var paramNames = {};
-  TAX_RATE_PARAM_NAMES.concat(FX_PARAM_NAMES).forEach(function (n) { paramNames[n] = 1; });
+  TAX_RATE_PARAM_NAMES.concat(FX_PARAM_NAMES).concat(getCustomRateParamNames_()).forEach(function (n) { paramNames[n] = 1; });
 
   var scoped = getPLLineItems(vehicleTypeId || '', scenarioId);
   var validDetailCodes = {};
@@ -1088,7 +1162,8 @@ function validateLineItemFormula_(rowObj, existing, vehicleTypeId, scenarioId) {
   refs.forEach(function (name) {
     if (priceCodes[name] || paramNames[name] || validDetailCodes[name]) return;
     throw new Error('「' + label + '」公式引用了不存在或不能引用的名稱「' + name +
-      '」(只能引用 P1~P9、非結構/非內建自動計算的明細科目、或比率匯率參數)。');
+      '」(只能引用 P1~P9、非結構/非內建自動計算的明細科目、或比率匯率參數——' +
+      '如果需要新的比率，可以先到「稅務費用比率」頁新增這個名稱)。');
   });
 
   var formulaDefs = scoped

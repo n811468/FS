@@ -18,6 +18,7 @@ var SHEETS = {
   DEV_INVESTMENT: 'DevInvestment',
   OPERATING_EXPENSE: 'OperatingExpense',
   PARAMETERS: 'Parameters',
+  CUSTOM_RATE_PARAMS: 'CustomRateParams',
   PL_LINE_ITEMS: 'PLLineItems',
   PL_RESULT: 'PLResult'
 };
@@ -39,6 +40,12 @@ var SCHEMA = {
     'Amount', 'Currency', 'ChallengeReductionPct', 'Notes', 'EffectiveDate', 'TargetLineCode', 'SortOrder'],
   OperatingExpense: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'Notes', 'EffectiveDate'],
   Parameters: ['ParamID', 'ScenarioID', 'VehicleID', 'ParamName', 'Currency', 'Value', 'EffectiveDate'],
+  // 使用者在「稅務費用比率」頁自己新增的比率參數名稱清單(見 DataService.gs 的
+  // addCustomRateParam/getCustomRateParamNames_)。這裡只登記「有哪些名稱」，實際數值
+  // 還是跟內建比率參數一樣存在 Parameters 分頁(依情境/車系)。新增後可以直接在「科目設定」
+  // 頁的自訂公式裡用名稱引用，跟 TAX_RATE_PARAM_NAMES 一樣視為百分比數值(見 CalcEngine.gs
+  // 的 resolveLineItemFormulas_)。
+  CustomRateParams: ['ParamName', 'SortOrder'],
   // VehicleTypeID：科目一律全系統共用，這個欄位新資料一律留空，只留給既有試算表的相容
   // 轉換用途(見 SetupSheets.gs 的 migrateExclusiveLineItemsToShared_)。
   // ExcludedVehicleTypeIDs：逗號分隔的車型代號清單，列在裡面的車型即使科目本身在範圍內，

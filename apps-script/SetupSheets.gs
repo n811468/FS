@@ -104,6 +104,21 @@ function ensurePLLineItemsVehicleTypeColumn_() {
 }
 
 /**
+ * 既有試算表升級用：舊版沒有「CustomRateParams」分頁(使用者自訂比率參數名稱清單，
+ * 見 DataService.gs 的 addCustomRateParam)，開頁時如果還沒有這張分頁就自動建立、
+ * 只寫入標題列，使用者不需要手動重跑 setupSpreadsheet()。
+ */
+function ensureCustomRateParamsSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (ss.getSheetByName(SHEETS.CUSTOM_RATE_PARAMS)) return false;
+  var sheet = ss.insertSheet(SHEETS.CUSTOM_RATE_PARAMS);
+  sheet.getRange(1, 1, 1, SCHEMA.CustomRateParams.length).setValues([SCHEMA.CustomRateParams]);
+  sheet.setFrozenRows(1);
+  invalidateSheetCache_(SHEETS.CUSTOM_RATE_PARAMS);
+  return true;
+}
+
+/**
  * 既有資料升級用：舊版「科目設定」頁曾經允許把科目設成某個車型專屬(PLLineItems.VehicleTypeID
  * 直接指到那個車型)，讓其他車型完全看不到這個科目。現在簡化成單一層模型：任何科目一律先進到
  * 全系統的科目清單(全系科目設定)，各車型再自己選擇要不要用(排除清單，此車型科目設定)——
