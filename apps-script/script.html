@@ -618,22 +618,21 @@ function entityRowActionHtml(key, i, row, total) {
   if (key === 'lineitems' && isFixedLineItem(row) && !isDeletableAutoLineItem(row)) {
     // 結構科目(小計/毛利/淨利)每個車型、每個情境都要有，真的不能動。
     if (isStructuralLineItem(row)) return move + renameBtn + '<span class="muted">不可刪除</span>';
-    // 公式本身(季Margin、貨物稅、開發總投攤提落點...)是程式定義的，刪不掉；但可以調整
-    // 「要不要套用」——可以只針對目前這個情境停用(同車型其他情境不受影響)，
-    // 共用科目還可以整個車型都停用(所有情境都不套用)。
-    const scenarioBtn = `<button type="button" class="btn secondary"
-      onclick="excludeLineItemRow_('${esc(row.LineCode)}', 'scenario')"
-      title="讓目前這個情境不套用它，同車型的其他情境不受影響">此情境停用</button>`;
+    // 公式本身(季Margin、貨物稅、開發總投攤提落點...)是程式定義的，真的刪不掉，但對使用者
+    // 來說「刪除」跟「這個車型不要套用」是同一件事，所以畫面上統一用同一顆「刪除」按鈕、
+    // 同一個動作：按下去這個車型就看不到這個科目了，底層是标記排除還是真的刪列，
+    // 使用者不需要分辨。只有已經被設成「這個車型專屬」的科目沒辦法再排除(見下方說明)，
+    // 才會退回顯示提示文字，改請使用者從「共用/專屬」欄位調整。
     if (row.VehicleTypeID === currentVehicleTypeId) {
-      // 已經是「這個車型」專屬：要整個車型都不套用，直接把左邊「共用/專屬」欄位改回「(共用)」，
-      // 不需要另外一顆按鈕做同一件事；但仍可以只停用目前這個情境。
-      return move + renameBtn + scenarioBtn +
-        ' <span class="muted">（整個車型都不套用：改左邊「共用/專屬」欄位）</span>';
+      return move + renameBtn +
+        '<span class="muted">已是本車型專屬，如要移除請改左邊「共用/專屬」欄位設回共用</span>';
     }
-    const typeBtn = `<button type="button" class="btn secondary"
-      onclick="excludeLineItemRow_('${esc(row.LineCode)}', 'vehicleType')"
-      title="讓「${esc(currentVehicleTypeId)}」整個車型(所有情境)都不套用它">此車型停用</button>`;
-    return move + renameBtn + typeBtn + ' ' + scenarioBtn;
+    return move + renameBtn +
+      `<button type="button" class="btn danger" onclick="deleteLineItemUnified_('${esc(row.LineCode)}')"
+        title="這個車型不再套用這個科目；其他車型、其他情境不受影響">刪除</button>
+      <button type="button" class="btn secondary" style="margin-left:4px;padding:3px 8px;font-size:12px;"
+        onclick="excludeLineItemRow_('${esc(row.LineCode)}', 'scenario')"
+        title="只有目前這個情境不套用，同車型的其他情境不受影響">僅此情境</button>`;
   }
   return move + renameBtn + `<button type="button" class="btn danger" onclick="deleteEntityRow('${key}', ${i})">刪除</button>`;
 }
@@ -863,13 +862,39 @@ function flashDisabledLineItemsBlock_(scope) {
   el.classList.add('flash');
 }
 
+/**
+ * 「刪除」一個共用/公式科目：對使用者來說這就是刪除(這個車型再也看不到)，
+ * 底層其實是車型層級的排除標記(公式定義本身留著，其他車型不受影響)。
+ * 是 excludeLineItemRow_(lineCode, 'vehicleType') 的使用者友善包裝——文字用「刪除」，
+ * 不再提「停用」這種需要多想一層的詞。
+ */
+function deleteLineItemUnified_(lineCode) {
+  try {
+    const row = (entityRows.lineitems || []).find(r => r.LineCode === lineCode);
+    const itemLabel = row ? `「${row.LineCode} ${row.LineName}」` : '這個科目';
+    if (!confirm(`確定要刪除${itemLabel}嗎？\n（這個科目是系統公式定義的，實際上刪不掉，這裡是讓「${currentVehicleTypeId}」這個車型(所有情境)都不再套用它；其他車型不受影響，之後可以在下方「已停用」清單重新啟用）`)) return;
+    runLineItemExclusionChange_(lineCode, 'vehicleType', true);
+  } catch (e) { showGlobalError(e); }
+}
+
 /** 讓「這個車型」或「這個情境」不套用某個科目（公式本身刪不掉，只是不套用） */
 function excludeLineItemRow_(lineCode, scope) {
-  const scopeLabel = scope === 'scenario' ? (currentScenario ? scenarioLabel(currentScenario) : currentScenarioId) : currentVehicleTypeId;
-  const rangeText = scope === 'scenario' ? '這個情境' : '這個車型(所有情境)';
-  const row = (entityRows.lineitems || []).find(r => r.LineCode === lineCode);
+  try {
+    const scopeLabel = scope === 'scenario' ? (currentScenario ? scenarioLabel(currentScenario) : currentScenarioId) : currentVehicleTypeId;
+    const rangeText = scope === 'scenario' ? '這個情境' : '這個車型(所有情境)';
+    const row = (entityRows.lineitems || []).find(r => r.LineCode === lineCode);
+    const itemLabel = row ? `「${row.LineCode} ${row.LineName}」` : '這個科目';
+    if (!confirm(`確定要讓「${scopeLabel}」不套用${itemLabel}嗎？\n（科目本身還在、${rangeText}以外不受影響，之後可以在這頁重新啟用）`)) return;
+    runLineItemExclusionChange_(lineCode, scope, true);
+  } catch (e) { showGlobalError(e); }
+}
+
+/** 實際送出排除/重新啟用的 RPC，delete/exclude/reenable 三個入口共用同一段邏輯，只有訊息文字不同 */
+function runLineItemExclusionChange_(lineCode, scope, excluded) {
+  const row = (entityRows.lineitems || []).find(r => r.LineCode === lineCode)
+    || (scope === 'scenario' ? lineItemsDisabledByScenario_ : lineItemsDisabledByType_).find(r => r.LineCode === lineCode);
   const itemLabel = row ? `「${row.LineCode} ${row.LineName}」` : '這個科目';
-  if (!confirm(`確定要讓「${scopeLabel}」不套用${itemLabel}嗎？\n（科目本身還在、${rangeText}以外不受影響，之後可以在這頁重新啟用）`)) return;
+  const rangeText = scope === 'scenario' ? '這個情境' : '這個車型(所有情境)';
   markDashboardDirty_();
   setStatus('lineitems', '處理中...');
   google.script.run
@@ -877,29 +902,18 @@ function excludeLineItemRow_(lineCode, scope) {
       invalidateLineItemDependentCaches_();
       loadEntityData('lineitems');
       loadDisabledLineItems_(scope);
-      setStatus('lineitems', `已停用${itemLabel}，${rangeText}不會再計算這個科目`, 'ok');
+      setStatus('lineitems',
+        excluded ? `已刪除${itemLabel}，${rangeText}不會再計算這個科目` : `已重新啟用${itemLabel}`, 'ok');
     }))
     .withFailureHandler(err => setStatus('lineitems', '錯誤：' + err.message, 'err'))
     [scope === 'scenario' ? 'setLineItemScenarioExclusion' : 'setLineItemExclusion']
-    (lineCode, scope === 'scenario' ? currentScenarioId : currentVehicleTypeId, true);
+    (lineCode, scope === 'scenario' ? currentScenarioId : currentVehicleTypeId, excluded);
 }
 
 function reenableLineItem_(lineCode, scope) {
-  const list = scope === 'scenario' ? lineItemsDisabledByScenario_ : lineItemsDisabledByType_;
-  const row = (list || []).find(r => r.LineCode === lineCode);
-  const itemLabel = row ? `「${row.LineCode} ${row.LineName}」` : '這個科目';
-  markDashboardDirty_();
-  setStatus('lineitems', '處理中...');
-  google.script.run
-    .withSuccessHandler(safeHandler(() => {
-      invalidateLineItemDependentCaches_();
-      loadEntityData('lineitems');
-      loadDisabledLineItems_(scope);
-      setStatus('lineitems', `已重新啟用${itemLabel}`, 'ok');
-    }))
-    .withFailureHandler(err => setStatus('lineitems', '錯誤：' + err.message, 'err'))
-    [scope === 'scenario' ? 'setLineItemScenarioExclusion' : 'setLineItemExclusion']
-    (lineCode, scope === 'scenario' ? currentScenarioId : currentVehicleTypeId, false);
+  try {
+    runLineItemExclusionChange_(lineCode, scope, false);
+  } catch (e) { showGlobalError(e); }
 }
 
 /** 車型/情境改動後，上方的選單也要跟著更新（但不要重畫目前這個分頁，會蓋掉剛顯示的訊息） */
