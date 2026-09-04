@@ -9,10 +9,6 @@ const GATE_OPTIONS = ['GATE F', 'GATE E', 'GATE D', 'GATE C', 'GATE B', 'GATE A'
 const SCENARIO_TYPES = ['現況', '目標'];
 // 結構科目與自動計算科目不能刪、父科目也不能改，否則損益鏈會接錯段（後端也會擋，這裡只是不畫按鈕）
 const PROTECTED_LINE_CODES = ['A', 'B', 'C', 'E', 'G', 'I', 'K'];
-// 科目「自訂公式」欄位可引用的比率/匯率參數名稱，跟 Constants.gs 的同名常數保持一致，
-// 純粹用來組出欄位說明文字（真正的驗證在後端 DataService.gs 的 validateLineItemFormula_）
-const TAX_RATE_PARAM_NAMES = ['營業稅率', '銷售佣金率', '季Margin率', '貨物稅率', '貨物稅完稅價格計算率'];
-const FX_PARAM_NAMES = ['現況匯率'];
 const PL_LINE_PARENT_OPTIONS = [
   ['B', 'B 銷貨成本'],
   ['E', 'E 銷售費用(銷貨毛利前)'],
@@ -86,14 +82,12 @@ const ENTITIES = {
       { name: 'AutoSource', label: '自動計算來源', readOnly: true, width: 150 },
       // 填了公式，這個科目就變成自動算出來的(不能再手動輸入金額，也不會出現在銷貨成本/
       // 營業費用頁的下拉選單)——跟其他自動計算科目一樣，結構科目/內建自動計算科目鎖定不可填。
-      // 可引用：P1~P9(售價結構)、其他明細科目代碼(b*/d*/f*/h*，手動輸入或同樣是公式的都可以)、
-      // 比率/匯率參數名稱，全部直接寫名稱、不加任何符號，例如：P8 * 貨物稅率 * 0.85、b1 + b2。
-      { name: 'Formula', label: '自訂公式', width: 260,
+      // 可引用哪些名稱不寫死在前端：由後端 getFormulaReferenceOptions 給，跟存檔驗證同一份
+      // 規則，欄位旁邊的「＋ 插入引用」選單直接列出來讓使用者用選的(見 formulaCellHtml_)。
+      { name: 'Formula', label: '自訂公式', width: 240,
         placeholder: '留空=手動輸入；如 P8 * 貨物稅率 * 0.85',
-        title: '可引用 P1~P9、其他明細科目代碼(b*/d*/f*/h*)、比率匯率參數名稱(' +
-          TAX_RATE_PARAM_NAMES.concat(FX_PARAM_NAMES).join('、') +
-          '，還沒有的比率可以先到「稅務費用比率」頁新增)，直接寫名稱、不加符號。' +
-          '不能引用結構科目(A/B/C/E/G/I/K)或內建自動計算科目。',
+        title: '用右邊的「＋ 插入引用」選要引用的售價結構/科目/比率，或直接打字。' +
+          '運算子支援 + - * / 與括號；不能引用結構科目(A/B/C/E/G/I/K)或內建自動計算科目。',
         lockIf: r => r.__existing && isFixedLineItem(r) }
     ]
   }
@@ -495,6 +489,25 @@ function loadDisabledLineItems_(flashScope) {
     .getScenarioExcludedLineItems(vt, sc);
 }
 
+/**
+ * 「自訂公式」欄位的「＋ 插入引用」選單選項(售價結構/明細科目/比率參數)。
+ * 由後端算(跟存檔驗證同一份規則，見 getFormulaReferenceOptions)，前端只負責顯示，
+ * 這樣新增自訂比率、增刪科目之後選單自動跟著變，不會有前端寫死的清單慢慢跟後端脫節。
+ * 跟著車型+情境跑，切換範圍要重新取一次。
+ */
+let formulaRefOptions_ = null;
+function loadFormulaRefOptions_() {
+  const vt = currentVehicleTypeId, sc = currentScenarioId;
+  google.script.run
+    .withSuccessHandler(safeHandler(opts => {
+      if (vt !== currentVehicleTypeId || sc !== currentScenarioId) return; // 已經切到別的範圍，這批結果不算數
+      formulaRefOptions_ = opts;
+      if (currentTab === 'lineitems') drawEntityGrid('lineitems');
+    }))
+    .withFailureHandler(showGlobalError)
+    .getFormulaReferenceOptions(vt, sc);
+}
+
 /** ENTITIES 的快取鍵要區分到什麼程度：lineitems 額外依情境區分(見上方 needScenario 的說明) */
 function entityCacheScope_(cfg, key) {
   if (key === 'lineitems') return 'both';
@@ -509,6 +522,8 @@ function loadEntityData(key) {
   const cacheKey = panelCacheKey_(key, entityCacheScope_(cfg, key));
   const apply = rows => { entityRows[key] = (rows || []).map(r => Object.assign({}, r, { __existing: true })); drawEntityGrid(key); };
   if (panelDataCache_[cacheKey]) apply(panelDataCache_[cacheKey]);
+  // 科目設定頁的「自訂公式」欄位要有可引用項目的選單，跟科目清單一起重新取
+  if (key === 'lineitems') loadFormulaRefOptions_();
   google.script.run
     .withSuccessHandler(safeHandler(rows => { panelDataCache_[cacheKey] = rows; apply(rows); }))
     .withFailureHandler(showGlobalError)
@@ -623,20 +638,79 @@ function entityRowActionHtml(key, i, row, total) {
 /**
  * 「科目設定」頁專用的列版面，跟其他 ENTITIES 表格(車型主檔/車系設定/情境設定)分開處理：
  *   1. 排序用的 ▲▼ 直接放進「排序值」那一格，跟它調整的資料放在一起，不會再跟後面的
- *      「重新命名/刪除」操作擠在同一欄看起來很亂。
- *   2. 「操作」欄只保留「重新命名」跟單一顆「刪除」——不管是使用者自建的科目還是季Margin/
- *      貨物稅這類公式科目，一律叫「刪除」；公式科目點下去才彈出範圍選擇視窗(見
- *      openLineItemDeleteModal_)，不在列上放兩顆按鈕讓使用者自己判斷「停用」跟「僅此情境」
- *      是什麼意思。
+ *      「刪除」操作擠在同一欄看起來很亂。
+ *   2. 「操作」欄只保留單一顆「刪除」——不管是使用者自建的科目還是季Margin/貨物稅這類
+ *      公式科目，一律叫「刪除」，點下去才彈出範圍選擇視窗(見 openLineItemDeleteModal_)，
+ *      不在列上放兩顆按鈕讓使用者自己判斷「停用」跟「僅此情境」是什麼意思。
+ *   3. 「自訂公式」那一格附一個「＋ 插入引用」選單(見 formulaCellHtml_)，要引用比率或
+ *      別的科目時用選的就好，不必自己記名稱、也不會打錯字。
  */
 function lineItemsRowHtml_(i, row, total) {
   const cells = ENTITIES.lineitems.columns.map(col => {
+    if (col.name === 'Formula') return formulaCellHtml_(i, row, col);
     const html = entityCellHtml('lineitems', i, col, row);
     if (col.name !== 'SortOrder') return html;
     const move = moveButtonsHtml('lineitems', i, total);
     return move ? html.replace('</td>', `<span class="row-move-group">${move}</span></td>`) : html;
   }).join('');
   return `<tr${row.__existing ? '' : ' class="new-row"'}>${cells}<td class="row-actions">${lineItemsRowActionHtml_(i, row)}</td></tr>`;
+}
+
+/**
+ * 「自訂公式」欄位：輸入框 + 「＋ 插入引用」選單。
+ * 公式本身仍然是自由輸入(要支援 +-*&#47;、括號、多層組合，下拉選單表達不了)，但「要引用哪個
+ * 比率/科目」改成用選的插進游標位置——使用者最常卡住的就是「這個比率到底叫什麼名字」，
+ * 選單直接把後端認得的名稱列出來，選完就不會有打錯字要等存檔才被擋下來的情況。
+ * 鎖定的列(結構科目/內建自動計算科目)沿用通用唯讀呈現，不給選單。
+ */
+function formulaCellHtml_(i, row, col) {
+  if (col.lockIf && col.lockIf(row)) return entityCellHtml('lineitems', i, col, row);
+  const value = row.Formula === undefined || row.Formula === null ? '' : row.Formula;
+  return `<td>
+    <input id="formula-input-${i}" type="text" value="${esc(value)}" style="width:${col.width}px;"
+      placeholder="${esc(col.placeholder)}" title="${esc(col.title)}"
+      oninput="onEntityField('lineitems', ${i}, 'Formula', this.value)">
+    ${formulaRefPickerHtml_(i, row)}
+  </td>`;
+}
+
+/** 「＋ 插入引用」選單：選項來自後端(跟存檔驗證同一份規則)，還沒載到就先不畫，不影響打字 */
+function formulaRefPickerHtml_(i, row) {
+  if (!formulaRefOptions_) return '';
+  const group = (label, items) => items.length
+    ? `<optgroup label="${esc(label)}">${items.map(o =>
+        `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('')}</optgroup>`
+    : '';
+  // 自己不能引用自己(一定是循環引用，存檔會被擋)，所以從選單裡拿掉
+  const lines = (formulaRefOptions_.lineItems || []).filter(o => o.value !== row.LineCode);
+  return `<select class="formula-ref-picker" onchange="insertFormulaRef_(${i}, this)"
+      title="選一個要引用的項目，會插進左邊公式的游標位置">
+    <option value="">＋ 插入引用…</option>
+    ${group('售價結構', formulaRefOptions_.priceStructure || [])}
+    ${group('明細科目', lines)}
+    ${group('比率/匯率參數', formulaRefOptions_.params || [])}
+  </select>`;
+}
+
+/** 把選到的名稱插進公式輸入框的游標位置，前後視需要補空白，避免兩個名稱黏成一個 */
+function insertFormulaRef_(i, sel) {
+  const name = sel.value;
+  sel.value = '';
+  if (!name) return;
+  const input = document.getElementById(`formula-input-${i}`);
+  if (!input) return;
+  const start = input.selectionStart === null ? input.value.length : input.selectionStart;
+  const end = input.selectionEnd === null ? input.value.length : input.selectionEnd;
+  const before = input.value.slice(0, start);
+  const after = input.value.slice(end);
+  // 「P8貨物稅率」會被公式解析器當成一個看不懂的名稱，所以緊鄰文字時自動補一個空白
+  const insert = (before && !/[\s(]$/.test(before) ? ' ' : '') + name +
+    (after && !/^[\s)]/.test(after) ? ' ' : '');
+  input.value = before + insert + after;
+  const caret = (before + insert).length;
+  input.focus();
+  input.setSelectionRange(caret, caret);
+  onEntityField('lineitems', i, 'Formula', input.value);
 }
 
 /**
@@ -1589,30 +1663,34 @@ function drawDevGrid() {
 
 /**
  * 「攤提落點 → 投資總額/單台攤提」彙總表，抽成獨立函式方便即時試算時單獨重畫這一小塊。
- * 現況情境沒有挑戰低減目標，低減前後金額必然相等，欄位標題就不寫「低減後」、也不必多列
- * 一欄重複的數字；目標情境才會真的套用低減率，這時多顯示「低減前」「低減金額」兩欄，
- * 讓使用者看得到低減的實際效果，不是只看到低減後的單一數字。
+ * 現況情境沒有挑戰低減目標，低減前後必然相等，欄位標題就不寫「低減後」、也不必多列
+ * 重複的數字；目標情境才會真的套用低減率，這時總額與單台攤提都各顯示低減前/低減後兩欄，
+ * 讓使用者一眼看得到「低減目標達成後，每台成本差多少」——實際攤進損益的是低減後那個。
  */
 function devTargetsTableHtml() {
   const isTarget = !devSummary.isBaseline;
-  const totalHeader = isTarget ? '投資總額(低減後)' : '投資總額';
   return `
-    <table class="grid-table" style="max-width:840px;">
+    <table class="grid-table" style="max-width:960px;">
       <thead><tr>
         <th>攤提落點</th>
-        ${isTarget ? '<th>投資總額(低減前)</th><th>低減金額</th>' : ''}
-        <th>${totalHeader}</th><th>單台攤提</th>
+        ${isTarget
+          ? `<th>投資總額(低減前)</th><th>低減金額</th><th>投資總額(低減後)</th>
+             <th>單台攤提(低減前)</th><th>單台攤提(低減後)</th>`
+          : '<th>投資總額</th><th>單台攤提</th>'}
       </tr></thead>
       <tbody>
         ${(devSummary.targets || []).filter(t => t.Total || t.RawTotal).map(t => `
           <tr>
             <td class="row-head">${esc(shortLineName(t.LineName))}</td>
-            ${isTarget ? `<td class="calc">${fmt(t.RawTotal)}</td><td class="calc">${fmt(t.ReductionAmount)}</td>` : ''}
-            <td class="calc">${fmt(t.Total)}</td>
-            <td class="calc">${fmt(t.PerUnit)}</td>
+            ${isTarget
+              ? `<td class="calc">${fmt(t.RawTotal)}</td><td class="calc">${fmt(t.ReductionAmount)}</td>
+                 <td class="calc">${fmt(t.Total)}</td>
+                 <td class="calc">${fmt(t.RawPerUnit)}</td><td class="calc">${fmt(t.PerUnit)}</td>`
+              : `<td class="calc">${fmt(t.Total)}</td><td class="calc">${fmt(t.PerUnit)}</td>`}
           </tr>`).join('')}
       </tbody>
-    </table>`;
+    </table>
+    ${isTarget ? '<p class="muted">實際攤進損益表的是「低減後」的單台攤提。</p>' : ''}`;
 }
 
 /**
@@ -2435,6 +2513,7 @@ function dashViewHtml_(cols, lines) {
 function tableViewHtml_(cols, lines) {
   return `
     ${dashboardToolbarHtml(cols)}
+    ${formulaWarningHtml_(cols)}
     ${subtotalCheckHtml(cols)}
     ${kpiStripHtml(cols, lines)}
     <div id="csv-output" style="display:none;"></div>
@@ -3183,6 +3262,30 @@ function matrixLineName(line) {
  * 小計驗算結果：後端把 B=Σb、C=A-B、E=C-Σd... 每一條等式都重算過，
  * 對得起來就只顯示一行綠字，對不起來才把差異列出來。
  */
+/**
+ * 自訂公式算不出來的科目：後端算損益時如果某個公式炸掉(除以 0、引用的比率被刪掉…)，
+ * 那個科目這次會被當成 0 繼續往下算，不讓整份損益表算不出來——但一定要在畫面上講清楚，
+ * 否則使用者看到的數字默默少一塊卻沒有任何提示，比整份算不出來還危險。
+ * 沒有任何警告時完全不佔版面(不像小計驗算那樣顯示一行「通過」)：公式科目是少數情況，
+ * 大部分車型根本沒用到公式，不需要每次都提醒一次。
+ */
+function formulaWarningHtml_(cols) {
+  const items = [];
+  const seen = {};
+  (cols || []).forEach(c => (c.formulaWarnings || []).forEach(w => {
+    const key = `${c.label}|${w.lineCode}|${w.message}`;
+    if (seen[key]) return;
+    seen[key] = true;
+    items.push(`<li>${esc(c.label)} — ${esc(w.lineCode)} ${esc(w.lineName || '')}：${esc(w.message)}（這次以 0 計算）</li>`);
+  }));
+  if (!items.length) return '';
+  return `<div class="check-box">
+    <strong>自訂公式沒算出來：</strong>
+    <ul>${items.join('')}</ul>
+    <p class="muted">請到「科目設定」檢查這些科目的公式，或到「稅務費用比率」確認引用的比率有沒有填值。</p>
+  </div>`;
+}
+
 function subtotalCheckHtml(cols) {
   const bad = cols.filter(c => (c.checks || []).length);
   if (!bad.length) {

@@ -19,8 +19,7 @@ var SHEETS = {
   OPERATING_EXPENSE: 'OperatingExpense',
   PARAMETERS: 'Parameters',
   CUSTOM_RATE_PARAMS: 'CustomRateParams',
-  PL_LINE_ITEMS: 'PLLineItems',
-  PL_RESULT: 'PLResult'
+  PL_LINE_ITEMS: 'PLLineItems'
 };
 
 // 每張表的欄位順序，同時作為 Sheet 標題列與 Apps Script 讀寫時的欄位對應。
@@ -61,8 +60,7 @@ var SCHEMA = {
   // (P1~P9)、其他明細科目(b*、d*、f*、h*，手動或同樣是公式的都可以)、比率/匯率參數，
   // 不能引用結構科目(A/B/C/E/G/I/K)或內建自動計算科目(b5/b8/b13/d4/f3/f4/開發總投自訂
   // 攤提落點)，避免跟既有計算鏈交錯出現循環。有值的科目視同自動計算科目，不能再手動輸入金額。
-  PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'SortOrder', 'AutoSource', 'CommodityTaxDeduct', 'DevAmortCategory', 'VehicleTypeID', 'ExcludedVehicleTypeIDs', 'ExcludedScenarioIDs', 'Formula'],
-  PLResult: ['ResultID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'PctOfRevenue', 'PctOfExFactory', 'CalcTimestamp']
+  PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'SortOrder', 'AutoSource', 'CommodityTaxDeduct', 'DevAmortCategory', 'VehicleTypeID', 'ExcludedVehicleTypeIDs', 'ExcludedScenarioIDs', 'Formula']
 };
 
 // 情境代號改用 GATE 別；同一個 GATE 底下可以有多個情境(GATE F 現況 / GATE F 目標)，
@@ -242,5 +240,5 @@ var TEXT_COLUMNS = {
   OperatingExpense: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Notes'],
   Parameters: ['ParamID', 'ScenarioID', 'VehicleID', 'ParamName', 'Currency'],
   PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'AutoSource', 'CommodityTaxDeduct', 'DevAmortCategory'],
-  PLResult: ['ResultID', 'ScenarioID', 'VehicleID', 'LineCode']
+  CustomRateParams: ['ParamName']
 };

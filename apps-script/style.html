@@ -224,6 +224,10 @@
   .row-move-group { display: inline-flex; gap: 2px; margin-left: 4px; vertical-align: middle; }
   td.row-actions .btn { margin: 1px 2px 1px 0; }
   td.row-actions .hint { display: block; color: #888; font-size: 11px; margin-top: 2px; }
+  /* 自訂公式欄位的「＋ 插入引用」選單：放在輸入框下面一行，比輸入框小一號，
+     視覺上是輸入框的輔助工具，不是另一個要填的欄位 */
+  .formula-ref-picker { display: block; margin-top: 3px; font-size: 11px; color: #555;
+    max-width: 100%; padding: 1px 2px; }
 
   /* ---- 科目設定「刪除」的範圍選擇彈窗：不依賴瀏覽器原生 confirm()，畫面/行為都更可控 ---- */
   .modal-overlay { position: fixed; inset: 0; background: rgba(26,32,44,.45); z-index: 100;

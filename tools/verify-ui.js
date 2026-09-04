@@ -17,7 +17,7 @@ const failures = [];
 function assert(cond, message) { if (!cond) failures.push(message); }
 
 /* ---- 1. 用計算引擎算出一份真實的比較結果 ---- */
-const gs = loadAppsScript(['Constants.gs', 'Utils.gs', 'DataService.gs', 'CalcEngine.gs', 'SetupSheets.gs']);
+const gs = loadAppsScript(['Constants.gs', 'Utils.gs', 'FormulaEngine.gs', 'DataService.gs', 'CalcEngine.gs', 'SetupSheets.gs']);
 gs.setupSpreadsheet();
 gs.saveVehicleType({ VehicleTypeID: 'DA' });
 gs.saveVehicle({ VehicleID: 'V1', VehicleTypeID: 'DA', VehicleCode: '3人貨車' });
@@ -220,8 +220,12 @@ assert(entityCellHtml('vehicletypes', 0, idCol, { __existing: true, VehicleTypeI
   '已建立的車型代號應該鎖住');
 assert(entityCellHtml('vehicletypes', 0, idCol, { __existing: false, VehicleTypeID: '' }).indexOf('<input') !== -1,
   '新增列的車型代號應該可以輸入');
-assert(entityRowActionHtml('lineitems', 0, { __existing: true, LineCode: 'B' }).indexOf('不可刪除') !== -1,
+// 科目設定頁有自己的列渲染(lineItemsRowActionHtml_)，不走 ENTITIES 的通用版面，
+// 所以這裡要驗真正在用的那一支，驗通用的那支等於沒驗到這一頁
+assert(api('lineItemsRowActionHtml_')(0, { __existing: true, LineCode: 'B' }).indexOf('不可刪除') !== -1,
   '結構科目不該顯示刪除按鈕');
+assert(api('lineItemsRowActionHtml_')(0, { __existing: true, LineCode: 'b1' }).indexOf('刪除') !== -1,
+  '一般明細科目應該有刪除按鈕');
 
 /* ---- 6b. 開發總投：攤提落點直接選損益科目，畫面上不出現科目代碼 ---- */
 gs.saveDevInvestmentGrid(sc.ScenarioID, [
@@ -580,12 +584,60 @@ assert(api('weightedTotalCaveat_')({
   isWeighted: true, volume: { mix: [{ pct: 80, monthlyVolume: 20 }, { pct: 20, monthlyVolume: 80 }] }
 }).indexOf('⚠') === 0, '構成比與台數比例差很多時應該提醒總額兜不攏');
 
+/* ---- 12. 科目設定：自訂公式欄位的「＋ 插入引用」選單 ---- */
+// 選項來自後端 getFormulaReferenceOptions，這裡直接拿真的後端結果餵進去，
+// 確認前端把三組來源都畫成 optgroup，而且不會把「自己」列進可引用清單
+ctx.__in.refOptions = gs.getFormulaReferenceOptions('DA', sc.ScenarioID);
+api('formulaRefOptions_ = __in.refOptions');
+const formulaCell = api('formulaCellHtml_')(0, { __existing: true, LineCode: 'b1', Formula: '' },
+  api('ENTITIES').lineitems.columns.filter(c => c.name === 'Formula')[0]);
+assert(formulaCell.indexOf('formula-ref-picker') !== -1, '自訂公式欄位應該有「插入引用」選單');
+assert(formulaCell.indexOf('id="formula-input-0"') !== -1, '公式輸入框要有 id，選單才插得進游標位置');
+assert(formulaCell.indexOf('<optgroup label="售價結構"') !== -1, '選單應該有「售價結構」分組');
+assert(formulaCell.indexOf('<optgroup label="比率/匯率參數"') !== -1, '選單應該有「比率/匯率參數」分組');
+assert(formulaCell.indexOf('貨物稅率') !== -1, '內建比率名稱應該出現在可引用選單裡');
+assert(formulaCell.indexOf('>b1 ') === -1, '正在編輯的科目自己不該出現在可引用選單裡(會變成循環引用)');
+// 鎖定的科目(結構科目/內建自動計算科目)不給公式欄位，也就不該有選單
+const lockedCell = api('formulaCellHtml_')(0, { __existing: true, LineCode: 'B' },
+  api('ENTITIES').lineitems.columns.filter(c => c.name === 'Formula')[0]);
+assert(lockedCell.indexOf('formula-ref-picker') === -1, '結構科目不該出現插入引用選單');
+
+/* ---- 13. 儀表板：自訂公式算不出來時要在畫面上講清楚 ---- */
+assert(api('formulaWarningHtml_')([{ label: 'DA', formulaWarnings: [] }]) === '',
+  '沒有公式警告時不該佔版面');
+const warnHtml = api('formulaWarningHtml_')([
+  { label: 'DA / GATE F / V1', formulaWarnings: [{ lineCode: 'b20', lineName: '關稅', message: '公式計算錯誤：除數為 0' }] }
+]);
+assert(warnHtml.indexOf('b20') !== -1 && warnHtml.indexOf('除數為 0') !== -1,
+  '公式算不出來時應該指出是哪個科目、為什麼');
+assert(warnHtml.indexOf('以 0 計算') !== -1, '應該說明這次是以 0 計算，避免使用者以為數字是對的');
+
+/* ---- 14. 開發總投：現況只給一組數字，目標情境要看得到低減前後 ---- */
+api('devSummary = __in.devBaseline');
+ctx.__in.devBaseline = {
+  isBaseline: true,
+  targets: [{ LineName: '模具費用', Total: 1000, RawTotal: 1000, ReductionAmount: 0, PerUnit: 10, RawPerUnit: 10 }]
+};
+api('devSummary = __in.devBaseline');
+const devBaselineHtml = api('devTargetsTableHtml')();
+assert(devBaselineHtml.indexOf('低減') === -1, '現況情境沒有低減，欄位標題不該出現「低減」字樣');
+ctx.__in.devTarget = {
+  isBaseline: false,
+  targets: [{ LineName: '模具費用', Total: 800, RawTotal: 1000, ReductionAmount: 200, PerUnit: 8, RawPerUnit: 10 }]
+};
+api('devSummary = __in.devTarget');
+const devTargetHtml = api('devTargetsTableHtml')();
+assert(devTargetHtml.indexOf('投資總額(低減前)') !== -1 && devTargetHtml.indexOf('投資總額(低減後)') !== -1,
+  '目標情境應該同時看得到低減前/後的投資總額');
+assert(devTargetHtml.indexOf('單台攤提(低減前)') !== -1 && devTargetHtml.indexOf('單台攤提(低減後)') !== -1,
+  '目標情境的單台攤提也要有低減前/後兩欄');
+
 if (failures.length) {
   console.log(`前端驗證失敗：${failures.length} 項`);
   failures.forEach(f => console.log('  ✗ ' + f));
   process.exit(1);
 }
-console.log('前端驗證通過：損益表結構、% 基準/差異模式、hover 提示內容、SVG 圖表、最佳/最差標示、單位換算、欄位合併、設定記憶、主檔表格鎖定與 CSV 欄數皆正確。');
+console.log('前端驗證通過：損益表結構、% 基準/差異模式、hover 提示內容、SVG 圖表、最佳/最差標示、單位換算、欄位合併、設定記憶、主檔表格鎖定、CSV 欄數、公式引用選單、公式警告與開發總投低減前後皆正確。');
 console.log('');
 console.log('損益表前 12 列的產出片段：');
 console.log(tableExFactory.split('<tr').slice(0, 13).join('<tr').replace(/\n\s+/g, ' '));

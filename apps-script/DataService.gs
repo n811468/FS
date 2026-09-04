@@ -52,6 +52,10 @@ function getBootstrap(preferredVehicleTypeId) {
 function getVehicleTypes() {
   return sheetToObjects_(SHEETS.VEHICLE_TYPES) || [];
 }
+/**
+ * 單列儲存/刪除：畫面上一律是整批儲存(saveXxxGrid)，這幾支是給 tools/ 的驗證腳本
+ * 建測試資料用的，不要因為「畫面沒呼叫」就當成沒用的程式碼刪掉。
+ */
 function saveVehicleType(rowObj) {
   return withLock_(function () { return upsertRowMerge_(SHEETS.VEHICLE_TYPES, 'VehicleTypeID', rowObj); });
 }
@@ -178,8 +182,7 @@ function renameVehicle(vehicleTypeId, oldId, newId) {
     deleteRow_(SHEETS.VEHICLES, 'VehicleID', oldId);
 
     [[SHEETS.SALES_MIX, 'RowID'], [SHEETS.COST_OF_SALES, 'RowID'],
-      [SHEETS.OPERATING_EXPENSE, 'RowID'], [SHEETS.PARAMETERS, 'ParamID'],
-      [SHEETS.PL_RESULT, 'ResultID']].forEach(function (pair) {
+      [SHEETS.OPERATING_EXPENSE, 'RowID'], [SHEETS.PARAMETERS, 'ParamID']].forEach(function (pair) {
       var sheetName = pair[0], pk = pair[1];
       (sheetToObjects_(sheetName) || []).forEach(function (r) {
         if (r.VehicleID !== oldId) return;
@@ -253,9 +256,6 @@ function getSalesMix(scenarioId) {
 function saveSalesMixRow(rowObj) {
   return withLock_(function () { return upsertRow_(SHEETS.SALES_MIX, 'RowID', rowObj); });
 }
-function deleteSalesMixRow(rowId) {
-  return withLock_(function () { return deleteRow_(SHEETS.SALES_MIX, 'RowID', rowId); });
-}
 
 /**
  * 銷售構成表格：一定會依「車系設定」把該車型底下每個車系各列一列，
@@ -292,38 +292,6 @@ function saveSalesMixGrid(scenarioId, vehicleTypeId, rows) {
   });
 }
 
-/**
- * 銷售構成雙向輸入(台數/百分比)：
- *   - recalcSalesMixPctByVolume：以目前各車系已填的「預估銷售台數(月)」，
- *     依佔比反推並回寫 SalesMixPct。
- *   - recalcSalesMixVolumeByPct：以使用者輸入的「情境總銷售台數(月)」為基準，
- *     依各車系已填的 SalesMixPct 反推並回寫 MonthlyVolume。
- * 同一情境下的所有 SalesMix 列即為同一車型底下的各車系構成。
- */
-function recalcSalesMixPctByVolume(scenarioId) {
-  return withLock_(function () {
-    var rows = getSalesMix(scenarioId);
-    var total = rows.reduce(function (s, r) { return s + toNumber_(r.MonthlyVolume); }, 0);
-    rows.forEach(function (r) {
-      // SalesMixPct 以百分比數值儲存(0~100)
-      r.SalesMixPct = total > 0 ? toNumber_(r.MonthlyVolume) / total * 100 : 0;
-    });
-    batchWriteRows_(SHEETS.SALES_MIX, 'RowID', rows, []);
-    return getSalesMix(scenarioId);
-  });
-}
-function recalcSalesMixVolumeByPct(scenarioId, totalMonthlyVolume) {
-  return withLock_(function () {
-    var rows = getSalesMix(scenarioId);
-    var total = toNumber_(totalMonthlyVolume);
-    rows.forEach(function (r) {
-      r.MonthlyVolume = Math.round(toNumber_(r.SalesMixPct) / 100 * total);
-    });
-    batchWriteRows_(SHEETS.SALES_MIX, 'RowID', rows, []);
-    return getSalesMix(scenarioId);
-  });
-}
-
 // ---- CostOfSales 銷貨成本（原材料成本頁；LP/KD 皆為成本項目，成本科目可自由增刪） ----
 function getCostOfSales(scenarioId, vehicleId) {
   var rows = sheetToObjects_(SHEETS.COST_OF_SALES) || [];
@@ -331,13 +299,6 @@ function getCostOfSales(scenarioId, vehicleId) {
     return (!scenarioId || r.ScenarioID === scenarioId) && (!vehicleId || r.VehicleID === vehicleId);
   });
 }
-function saveCostOfSalesRow(rowObj) {
-  return withLock_(function () { return upsertRow_(SHEETS.COST_OF_SALES, 'RowID', rowObj); });
-}
-function deleteCostOfSalesRow(rowId) {
-  return withLock_(function () { return deleteRow_(SHEETS.COST_OF_SALES, 'RowID', rowId); });
-}
-
 /* ------------------------------------------------------------------
  * 金額矩陣（列 = 科目、欄 = 車系）：銷貨成本與營業費用共用同一套邏輯，
  * 使用者在一張表格內把所有車系的金額一次填完、一次送出。
@@ -668,13 +629,6 @@ function getOperatingExpense(scenarioId, vehicleId) {
     return (!scenarioId || r.ScenarioID === scenarioId) && (!vehicleId || r.VehicleID === vehicleId);
   });
 }
-function saveOperatingExpenseRow(rowObj) {
-  return withLock_(function () { return upsertRow_(SHEETS.OPERATING_EXPENSE, 'RowID', rowObj); });
-}
-function deleteOperatingExpenseRow(rowId) {
-  return withLock_(function () { return deleteRow_(SHEETS.OPERATING_EXPENSE, 'RowID', rowId); });
-}
-
 // ---- Parameters ----
 function getParameters(scenarioId) {
   var rows = sheetToObjects_(SHEETS.PARAMETERS) || [];
@@ -682,9 +636,6 @@ function getParameters(scenarioId) {
 }
 function saveParameterRow(rowObj) {
   return withLock_(function () { return upsertRow_(SHEETS.PARAMETERS, 'ParamID', rowObj); });
-}
-function deleteParameterRow(paramId) {
-  return withLock_(function () { return deleteRow_(SHEETS.PARAMETERS, 'ParamID', paramId); });
 }
 
 // 「參數設定」頁面拆成兩組管理：稅務/費用比率 vs 匯率設定，各自獨立的分頁籤與表格，
@@ -998,10 +949,6 @@ function getPLLineItems(vehicleTypeId, scenarioId) {
     return true;
   });
 }
-function savePLLineItem(rowObj) {
-  return withLock_(function () { return savePLLineItem_(rowObj); });
-}
-
 /**
  * 目前對 vehicleTypeId 停用(排除)的科目清單，給「此車型科目設定」顯示「已對車型刪除」
  * 名單、讓使用者可以復原。
@@ -1113,6 +1060,39 @@ function savePLLineItem_(rowObj, vehicleTypeId, scenarioId) {
   rowObj.VehicleTypeID = '';
   validateLineItemFormula_(rowObj, existing, vehicleTypeId, scenarioId);
   return upsertRowMerge_(SHEETS.PL_LINE_ITEMS, 'LineCode', rowObj);
+}
+
+/**
+ * 「科目設定」頁自訂公式欄位的引用選單：把「這個公式現在可以引用哪些名稱」整包回傳，
+ * 讓使用者用選的、不必自己記名稱或怕打錯字(打錯字要等存檔才會被擋，體驗差)。
+ * 三組來源跟 validateLineItemFormula_ 的驗證規則一模一樣，避免「選單裡有、存檔卻被擋」：
+ *   - 售價結構 P1~P9
+ *   - 目前車型+情境範圍內、非結構且非內建自動計算的明細科目(公式科目也可以被引用)
+ *   - 比率/匯率參數(內建 + 使用者在「稅務費用比率」頁自訂的)
+ * 「正在編輯的那個科目自己」不在這裡排除：一次呼叫的結果要給整張表格的每一列共用，
+ * 由前端各列自己濾掉自己(自己引用自己一定是循環引用)。
+ */
+function getFormulaReferenceOptions(vehicleTypeId, scenarioId) {
+  var scoped = getPLLineItems(vehicleTypeId || '', scenarioId);
+  var byCode = {};
+  scoped.forEach(function (d) { byCode[d.LineCode] = d; });
+
+  var priceStructure = ['P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'P7', 'P8', 'P9']
+    .filter(function (code) { return byCode[code]; })
+    .map(function (code) { return { value: code, label: code + ' ' + byCode[code].LineName }; });
+
+  var lineItems = scoped.filter(function (d) {
+    if (PROTECTED_LINE_CODES.indexOf(d.LineCode) !== -1) return false;
+    return !d.AutoSource;
+  }).map(function (d) { return { value: d.LineCode, label: d.LineCode + ' ' + d.LineName }; });
+
+  var customNames = getCustomRateParamNames_();
+  var params = TAX_RATE_PARAM_NAMES.concat(customNames).concat(FX_PARAM_NAMES)
+    .map(function (name) {
+      return { value: name, label: name + (customNames.indexOf(name) !== -1 ? '（自訂）' : '') };
+    });
+
+  return { priceStructure: priceStructure, lineItems: lineItems, params: params };
 }
 
 /**
