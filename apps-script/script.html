@@ -639,21 +639,23 @@ function lineItemsRowHtml_(i, row, total) {
   return `<tr${row.__existing ? '' : ' class="new-row"'}>${cells}<td class="row-actions">${lineItemsRowActionHtml_(i, row)}</td></tr>`;
 }
 
+/**
+ * 科目名稱本來就能直接在「科目名稱」欄位打字改(非公式/結構科目的話)，不需要另外的
+ * 「重新命名」按鈕——科目代碼是系統自動配號的內部識別碼，使用者不需要、也不應該去改它，
+ * 所以這裡不像車型/車系那樣提供重新命名代碼的功能。
+ */
 function lineItemsRowActionHtml_(i, row) {
   if (!row.__existing) {
     return `<button type="button" class="btn secondary" onclick="removeEntityRow('lineitems', ${i})">移除</button>`;
   }
-  const renameBtn = `<button type="button" class="btn secondary" onclick="renameEntityRow('lineitems', ${i})">重新命名</button>`;
-  if (isStructuralLineItem(row)) return renameBtn + '<span class="hint">結構科目，不可刪除</span>';
+  if (isStructuralLineItem(row)) return '<span class="hint">結構科目，不可刪除</span>';
   if (isFixedLineItem(row) && !isDeletableAutoLineItem(row)) {
     if (row.VehicleTypeID === currentVehicleTypeId) {
-      return renameBtn + '<span class="hint">已是本車型專屬，如要移除請改左邊「共用/專屬」欄位</span>';
+      return '<span class="hint">已是本車型專屬，如要移除請改左邊「共用/專屬」欄位</span>';
     }
-    // 公式科目：點「刪除」彈出範圍選擇視窗，不在列上放第二顆按鈕
-    return renameBtn +
-      `<button type="button" class="btn danger" onclick="openLineItemDeleteModal_('${esc(row.LineCode)}')">刪除</button>`;
+    return `<button type="button" class="btn danger" onclick="openLineItemDeleteModal_('${esc(row.LineCode)}')">刪除</button>`;
   }
-  return renameBtn + `<button type="button" class="btn danger" onclick="deleteEntityRow('lineitems', ${i})">刪除</button>`;
+  return `<button type="button" class="btn danger" onclick="deleteEntityRow('lineitems', ${i})">刪除</button>`;
 }
 
 /**
@@ -671,14 +673,14 @@ function openLineItemDeleteModal_(lineCode) {
   overlay.innerHTML = `
     <div class="modal-box">
       <h4>刪除科目：${esc(itemLabel)}</h4>
-      <p class="muted">這個科目的公式是系統定義的，實際上刪不掉；下面選的範圍以外完全不受影響，公式本身也還在，之後可以在「科目設定」頁重新啟用。</p>
+      <p class="muted">請選擇要刪除的範圍：</p>
       <label class="modal-choice">
         <input type="radio" name="li-del-scope" value="scenario" checked>
         <div><strong>只在「${esc(scLabel)}」這個情境</strong><br><span class="muted">同一車型的其他情境不受影響</span></div>
       </label>
       <label class="modal-choice">
         <input type="radio" name="li-del-scope" value="vehicleType">
-        <div><strong>整個「${esc(currentVehicleTypeId)}」車型</strong><br><span class="muted">這個車型底下所有情境都不再套用；其他車型不受影響</span></div>
+        <div><strong>整個「${esc(currentVehicleTypeId)}」車型</strong><br><span class="muted">這個車型底下所有情境都刪除；其他車型不受影響</span></div>
       </label>
       <div class="modal-actions">
         <button type="button" class="btn secondary" data-act="cancel">取消</button>
@@ -876,22 +878,22 @@ function cloneLineItemsFromVehicleType_() {
     .cloneVehicleTypeLineItems(source, currentVehicleTypeId);
 }
 
-/** 已停用的自動計算科目：對車型停用(所有情境)、對情境停用(只有目前情境)分開列，都可以重新啟用 */
+/** 已刪除的公式科目：對車型刪除(所有情境)、對情境刪除(只有目前情境)分開列，都可以復原 */
 function disabledLineItemsToolbarHtml_() {
   const chipsOf = (list, scope) => list.map(d => `<span class="chip">${esc(d.LineName)}
     <button type="button" class="btn secondary" style="margin-left:6px;padding:1px 8px;font-size:12px;"
-      onclick="reenableLineItem_('${esc(d.LineCode)}', '${scope}')">重新啟用</button></span>`).join(' ');
+      onclick="reenableLineItem_('${esc(d.LineCode)}', '${scope}')">復原</button></span>`).join(' ');
   const blocks = [];
   if (lineItemsDisabledByType_.length) {
     blocks.push(`<div class="toolbar-block disabled-block" id="lineitems-disabled-vehicleType">
-      <div class="toolbar-block-title">⚠ 已對「${esc(currentVehicleTypeId)}」車型停用的自動計算科目(所有情境都不套用，損益表看不到)</div>
+      <div class="toolbar-block-title">⚠ 已對「${esc(currentVehicleTypeId)}」車型刪除的科目(所有情境)</div>
       <div class="toolbar">${chipsOf(lineItemsDisabledByType_, 'vehicleType')}</div>
     </div>`);
   }
   if (lineItemsDisabledByScenario_.length) {
     const scLabel = currentScenario ? scenarioLabel(currentScenario) : currentScenarioId;
     blocks.push(`<div class="toolbar-block disabled-block" id="lineitems-disabled-scenario">
-      <div class="toolbar-block-title">⚠ 已對「${esc(scLabel)}」這個情境停用的科目(同車型其他情境不受影響，損益表看不到)</div>
+      <div class="toolbar-block-title">⚠ 已對「${esc(scLabel)}」這個情境刪除的科目(同車型其他情境不受影響)</div>
       <div class="toolbar">${chipsOf(lineItemsDisabledByScenario_, 'scenario')}</div>
     </div>`);
   }
@@ -935,7 +937,7 @@ function runLineItemExclusionChange_(lineCode, scope, excluded) {
       loadEntityData('lineitems');
       loadDisabledLineItems_(scope);
       setStatus('lineitems',
-        excluded ? `已刪除${itemLabel}，${rangeText}不會再計算這個科目` : `已重新啟用${itemLabel}`, 'ok');
+        excluded ? `已刪除${itemLabel}（${rangeText}）` : `已復原${itemLabel}`, 'ok');
     }))
     .withFailureHandler(err => setStatus('lineitems', '錯誤：' + err.message, 'err'))
     [scope === 'scenario' ? 'setLineItemScenarioExclusion' : 'setLineItemExclusion']
