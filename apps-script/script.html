@@ -528,10 +528,12 @@ function drawEntityGrid(key) {
     + (key === 'lineitems' ? cloneLineItemsToolbarHtml_() + disabledLineItemsToolbarHtml_() : '');
 
   const body = rows.length
-    ? rows.map((r, i) => `<tr${r.__existing ? '' : ' class="new-row"'}>
-        ${cfg.columns.map(col => entityCellHtml(key, i, col, r)).join('')}
-        <td class="row-actions">${entityRowActionHtml(key, i, r, rows.length)}</td>
-      </tr>`).join('')
+    ? rows.map((r, i) => key === 'lineitems'
+        ? lineItemsRowHtml_(i, r, rows.length)
+        : `<tr${r.__existing ? '' : ' class="new-row"'}>
+            ${cfg.columns.map(col => entityCellHtml(key, i, col, r)).join('')}
+            <td class="row-actions">${entityRowActionHtml(key, i, r, rows.length)}</td>
+          </tr>`).join('')
     : `<tr><td class="muted" colspan="${cfg.columns.length + 1}">尚無資料</td></tr>`;
 
   document.getElementById('grid-' + key).innerHTML = `
@@ -615,26 +617,83 @@ function entityRowActionHtml(key, i, row, total) {
   const cfg = ENTITIES[key];
   const renameBtn = cfg.renameFn
     ? `<button type="button" class="btn secondary" onclick="renameEntityRow('${key}', ${i})">重新命名</button>` : '';
-  if (key === 'lineitems' && isFixedLineItem(row) && !isDeletableAutoLineItem(row)) {
-    // 結構科目(小計/毛利/淨利)每個車型、每個情境都要有，真的不能動。
-    if (isStructuralLineItem(row)) return move + renameBtn + '<span class="muted">不可刪除</span>';
-    // 公式本身(季Margin、貨物稅、開發總投攤提落點...)是程式定義的，真的刪不掉，但對使用者
-    // 來說「刪除」跟「這個車型不要套用」是同一件事，所以畫面上統一用同一顆「刪除」按鈕、
-    // 同一個動作：按下去這個車型就看不到這個科目了，底層是标記排除還是真的刪列，
-    // 使用者不需要分辨。只有已經被設成「這個車型專屬」的科目沒辦法再排除(見下方說明)，
-    // 才會退回顯示提示文字，改請使用者從「共用/專屬」欄位調整。
-    if (row.VehicleTypeID === currentVehicleTypeId) {
-      return move + renameBtn +
-        '<span class="muted">已是本車型專屬，如要移除請改左邊「共用/專屬」欄位設回共用</span>';
-    }
-    return move + renameBtn +
-      `<button type="button" class="btn danger" onclick="deleteLineItemUnified_('${esc(row.LineCode)}')"
-        title="這個車型不再套用這個科目；其他車型、其他情境不受影響">刪除</button>
-      <button type="button" class="btn secondary" style="margin-left:4px;padding:3px 8px;font-size:12px;"
-        onclick="excludeLineItemRow_('${esc(row.LineCode)}', 'scenario')"
-        title="只有目前這個情境不套用，同車型的其他情境不受影響">僅此情境</button>`;
-  }
   return move + renameBtn + `<button type="button" class="btn danger" onclick="deleteEntityRow('${key}', ${i})">刪除</button>`;
+}
+
+/**
+ * 「科目設定」頁專用的列版面，跟其他 ENTITIES 表格(車型主檔/車系設定/情境設定)分開處理：
+ *   1. 排序用的 ▲▼ 直接放進「排序值」那一格，跟它調整的資料放在一起，不會再跟後面的
+ *      「重新命名/刪除」操作擠在同一欄看起來很亂。
+ *   2. 「操作」欄只保留「重新命名」跟單一顆「刪除」——不管是使用者自建的科目還是季Margin/
+ *      貨物稅這類公式科目，一律叫「刪除」；公式科目點下去才彈出範圍選擇視窗(見
+ *      openLineItemDeleteModal_)，不在列上放兩顆按鈕讓使用者自己判斷「停用」跟「僅此情境」
+ *      是什麼意思。
+ */
+function lineItemsRowHtml_(i, row, total) {
+  const cells = ENTITIES.lineitems.columns.map(col => {
+    const html = entityCellHtml('lineitems', i, col, row);
+    if (col.name !== 'SortOrder') return html;
+    const move = moveButtonsHtml('lineitems', i, total);
+    return move ? html.replace('</td>', `<span class="row-move-group">${move}</span></td>`) : html;
+  }).join('');
+  return `<tr${row.__existing ? '' : ' class="new-row"'}>${cells}<td class="row-actions">${lineItemsRowActionHtml_(i, row)}</td></tr>`;
+}
+
+function lineItemsRowActionHtml_(i, row) {
+  if (!row.__existing) {
+    return `<button type="button" class="btn secondary" onclick="removeEntityRow('lineitems', ${i})">移除</button>`;
+  }
+  const renameBtn = `<button type="button" class="btn secondary" onclick="renameEntityRow('lineitems', ${i})">重新命名</button>`;
+  if (isStructuralLineItem(row)) return renameBtn + '<span class="hint">結構科目，不可刪除</span>';
+  if (isFixedLineItem(row) && !isDeletableAutoLineItem(row)) {
+    if (row.VehicleTypeID === currentVehicleTypeId) {
+      return renameBtn + '<span class="hint">已是本車型專屬，如要移除請改左邊「共用/專屬」欄位</span>';
+    }
+    // 公式科目：點「刪除」彈出範圍選擇視窗，不在列上放第二顆按鈕
+    return renameBtn +
+      `<button type="button" class="btn danger" onclick="openLineItemDeleteModal_('${esc(row.LineCode)}')">刪除</button>`;
+  }
+  return renameBtn + `<button type="button" class="btn danger" onclick="deleteEntityRow('lineitems', ${i})">刪除</button>`;
+}
+
+/**
+ * 刪除一個公式科目(季Margin、貨物稅、開發總投攤提落點...)前，先問清楚要刪除的範圍——
+ * 用自製彈窗取代瀏覽器原生 confirm()：一來畫面看起來一致，二來部分瀏覽器/企業安全套件
+ * 會攔截或悶掉原生 confirm() 對話框，導致按鈕看起來「按了沒反應」，改用自己畫的彈窗更可靠。
+ */
+function openLineItemDeleteModal_(lineCode) {
+ try {
+  const row = (entityRows.lineitems || []).find(r => r.LineCode === lineCode);
+  const itemLabel = row ? `${row.LineCode} ${row.LineName}` : lineCode;
+  const scLabel = currentScenario ? scenarioLabel(currentScenario) : currentScenarioId;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-box">
+      <h4>刪除科目：${esc(itemLabel)}</h4>
+      <p class="muted">這個科目的公式是系統定義的，實際上刪不掉；下面選的範圍以外完全不受影響，公式本身也還在，之後可以在「科目設定」頁重新啟用。</p>
+      <label class="modal-choice">
+        <input type="radio" name="li-del-scope" value="scenario" checked>
+        <div><strong>只在「${esc(scLabel)}」這個情境</strong><br><span class="muted">同一車型的其他情境不受影響</span></div>
+      </label>
+      <label class="modal-choice">
+        <input type="radio" name="li-del-scope" value="vehicleType">
+        <div><strong>整個「${esc(currentVehicleTypeId)}」車型</strong><br><span class="muted">這個車型底下所有情境都不再套用；其他車型不受影響</span></div>
+      </label>
+      <div class="modal-actions">
+        <button type="button" class="btn secondary" data-act="cancel">取消</button>
+        <button type="button" class="btn danger" data-act="confirm">確定刪除</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', e => { if (e.target === overlay || e.target.dataset.act === 'cancel') close(); });
+  overlay.querySelector('[data-act="confirm"]').addEventListener('click', () => {
+    const scope = overlay.querySelector('input[name="li-del-scope"]:checked').value;
+    close();
+    runLineItemExclusionChange_(lineCode, scope, true);
+  });
+ } catch (e) { showGlobalError(e); }
 }
 
 /**
@@ -862,34 +921,7 @@ function flashDisabledLineItemsBlock_(scope) {
   el.classList.add('flash');
 }
 
-/**
- * 「刪除」一個共用/公式科目：對使用者來說這就是刪除(這個車型再也看不到)，
- * 底層其實是車型層級的排除標記(公式定義本身留著，其他車型不受影響)。
- * 是 excludeLineItemRow_(lineCode, 'vehicleType') 的使用者友善包裝——文字用「刪除」，
- * 不再提「停用」這種需要多想一層的詞。
- */
-function deleteLineItemUnified_(lineCode) {
-  try {
-    const row = (entityRows.lineitems || []).find(r => r.LineCode === lineCode);
-    const itemLabel = row ? `「${row.LineCode} ${row.LineName}」` : '這個科目';
-    if (!confirm(`確定要刪除${itemLabel}嗎？\n（這個科目是系統公式定義的，實際上刪不掉，這裡是讓「${currentVehicleTypeId}」這個車型(所有情境)都不再套用它；其他車型不受影響，之後可以在下方「已停用」清單重新啟用）`)) return;
-    runLineItemExclusionChange_(lineCode, 'vehicleType', true);
-  } catch (e) { showGlobalError(e); }
-}
-
-/** 讓「這個車型」或「這個情境」不套用某個科目（公式本身刪不掉，只是不套用） */
-function excludeLineItemRow_(lineCode, scope) {
-  try {
-    const scopeLabel = scope === 'scenario' ? (currentScenario ? scenarioLabel(currentScenario) : currentScenarioId) : currentVehicleTypeId;
-    const rangeText = scope === 'scenario' ? '這個情境' : '這個車型(所有情境)';
-    const row = (entityRows.lineitems || []).find(r => r.LineCode === lineCode);
-    const itemLabel = row ? `「${row.LineCode} ${row.LineName}」` : '這個科目';
-    if (!confirm(`確定要讓「${scopeLabel}」不套用${itemLabel}嗎？\n（科目本身還在、${rangeText}以外不受影響，之後可以在這頁重新啟用）`)) return;
-    runLineItemExclusionChange_(lineCode, scope, true);
-  } catch (e) { showGlobalError(e); }
-}
-
-/** 實際送出排除/重新啟用的 RPC，delete/exclude/reenable 三個入口共用同一段邏輯，只有訊息文字不同 */
+/** 實際送出排除/重新啟用的 RPC，openLineItemDeleteModal_/reenableLineItem_ 共用同一段邏輯，只有訊息文字不同 */
 function runLineItemExclusionChange_(lineCode, scope, excluded) {
   const row = (entityRows.lineitems || []).find(r => r.LineCode === lineCode)
     || (scope === 'scenario' ? lineItemsDisabledByScenario_ : lineItemsDisabledByType_).find(r => r.LineCode === lineCode);
