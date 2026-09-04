@@ -148,7 +148,6 @@ function calculatePLCoreUncached_(scenarioId, vehicleId) {
   // 沒設定就代表這個車型不適用季Margin，不會出現在損益表裡(不是顯示成 0，是根本不算)。
   if (scopedCodes_.d4) dLines.d4 = exFactoryPrice * marginRate;
   applyDevAmortLines_(dLines, 'E', devPerUnit, lineDefsAll);
-  var totalD = sumValues_(dLines);
 
   // ---- B 銷貨成本：手動輸入的成本列 + 自動計算的成本列 ----
   var costRows = getCostOfSales(scenarioId, vehicleId);
@@ -166,6 +165,31 @@ function calculatePLCoreUncached_(scenarioId, vehicleId) {
     bLines[code] = (bLines[code] || 0) + toNumber_(r.Amount) * fxRateFor_(params, r.Currency, vehicleId);
   });
   applyDevAmortLines_(bLines, 'B', devPerUnit, lineDefsAll);
+
+  // ---- Σf 費用(f1 直接輸入 + 開發總投費用類攤提) ----
+  var fLines = pickLines_(opexRows, manualLineCodesFor_(['G'], vehicleTypeId, scenarioId));
+  applyDevAmortLines_(fLines, 'G', devPerUnit, lineDefsAll);
+
+  // ---- Σh 固定營業費用 ----
+  var hLines = pickLines_(opexRows, manualLineCodesFor_(['I'], vehicleTypeId, scenarioId));
+  applyDevAmortLines_(hLines, 'I', devPerUnit, lineDefsAll);
+
+  // 售價結構(P1~P9)理論上每個車型都通用，但跟其他自動計算科目一樣開放依車型調整顯示與否
+  // （見「科目設定」頁），所以一樣要照 scopedCodes_ 篩過，不是每個都無條件塞進去。
+  var priceStructureRaw_ = {
+    P1: listPrice, P2: accessoryPrice, P3: listPriceExAccessory, P4: scrapFee,
+    P5: actualRetailPrice, P6: salesTax, P7: commission, P8: exFactoryPrice, P9: accessoryRevenue
+  };
+
+  // ---- 科目自訂公式(見「科目設定」頁的 Formula 欄位、FormulaEngine.gs) ----
+  // 手動輸入 + 內建自動計算科目都填好之後，統一解一次公式科目，寫回對應的 b/d/f/h 字典。
+  // 一定要放在「貨物稅(b13)」計算之前：貨物稅完稅價格的扣除額會讀 dLines 裡標記
+  // CommodityTaxDeduct=Y 的科目，若那個科目本身是公式科目，扣除額要用算出來的值才對。
+  var formulaWarnings = resolveLineItemFormulas_(
+    lineDefsAll, { B: bLines, E: dLines, G: fLines, I: hLines }, priceStructureRaw_, params, vehicleId);
+
+  var totalD = sumValues_(dLines);
+
   // 貨物稅完稅價格 = (廠價 - 水平配件外移調降 - 可扣除的d科目(廣宣/促銷/批標售/季Margin)) × 完稅價格計算率
   // 貨物稅計算過程一律算出來(給 commodityTaxDetail 用)，但只有這個車型有設定 b13(貨物稅)
   // 科目才會實際計入 B 銷貨成本——沒設定就代表這個車型的損益試算不適用貨物稅。
@@ -177,27 +201,15 @@ function calculatePLCoreUncached_(scenarioId, vehicleId) {
   var grossProfitC = revenueA - totalB;     // C 生產毛利
   var grossProfitE = grossProfitC - totalD; // E 銷貨毛利
 
-  // ---- Σf 費用(f1 直接輸入 + 開發總投費用類攤提) ----
-  var fLines = pickLines_(opexRows, manualLineCodesFor_(['G'], vehicleTypeId, scenarioId));
-  applyDevAmortLines_(fLines, 'G', devPerUnit, lineDefsAll);
   var totalF = sumValues_(fLines);
   var contributionG = grossProfitE - totalF; // G 產品貢獻
 
-  // ---- Σh 固定營業費用 ----
-  var hLines = pickLines_(opexRows, manualLineCodesFor_(['I'], vehicleTypeId, scenarioId));
-  applyDevAmortLines_(hLines, 'I', devPerUnit, lineDefsAll);
   var totalH = sumValues_(hLines);
   var operatingProfitI = contributionG - totalH; // I 營業淨利(未扣前瞻)
 
   var j = pickLines_(opexRows, ['J']).J || 0;
   var operatingProfitK = operatingProfitI - j; // K 營業淨利
 
-  // 售價結構(P1~P9)理論上每個車型都通用，但跟其他自動計算科目一樣開放依車型調整顯示與否
-  // （見「科目設定」頁），所以一樣要照 scopedCodes_ 篩過，不是每個都無條件塞進去。
-  var priceStructureRaw_ = {
-    P1: listPrice, P2: accessoryPrice, P3: listPriceExAccessory, P4: scrapFee,
-    P5: actualRetailPrice, P6: salesTax, P7: commission, P8: exFactoryPrice, P9: accessoryRevenue
-  };
   var priceStructure_ = {};
   Object.keys(priceStructureRaw_).forEach(function (code) {
     if (scopedCodes_[code]) priceStructure_[code] = priceStructureRaw_[code];
@@ -222,9 +234,75 @@ function calculatePLCoreUncached_(scenarioId, vehicleId) {
     revenue: revenueA,
     exFactoryPrice: exFactoryPrice,
     commodityTaxDetail: commodityTaxBreakdown,
+    formulaWarnings: formulaWarnings,
     lineValues: lineValues,
     lines: buildResultLines_(lineValues, revenueA, exFactoryPrice)
   };
+}
+
+/**
+ * 明細科目的自訂公式：手動輸入 + 內建自動計算科目都填好之後，統一解一次。查值優先順序：
+ * P1~P9(已算好的售價結構) → 其他明細科目目前已知的值(手動輸入/內建自動計算/已算好的
+ * 其他公式科目，B/E/G/I 四個字典一起找) → 比率/匯率參數(lookupParam_；比率參數要經過
+ * pct_() 換成小數，匯率參數維持原始倍數，跟既有計算一致)。
+ *
+ * 執行期錯誤(找不到引用、除以 0)不讓整個損益算不出來：該科目這次算成 0，並收集進回傳的
+ * 警告陣列，讓前端可以標示「這個科目公式沒算出來，暫時當 0」。存檔時(見 DataService.gs
+ * 的 validateLineItemFormula_)已經擋過語法錯誤/循環引用/找不到的引用，這裡的錯誤處理
+ * 只是防禦性的最後一道防線(例如存檔後才被其他操作改動導致的邊界情況)。
+ *
+ * dictByParent: { B: bLines, E: dLines, G: fLines, I: hLines }，依科目的 ParentLine
+ * 決定要把算出來的值寫回哪個字典。
+ */
+function resolveLineItemFormulas_(lineDefsAll, dictByParent, priceStructureRaw_, params, vehicleId) {
+  var formulaItems = lineDefsAll.filter(function (d) { return d.Formula; });
+  if (!formulaItems.length) return [];
+
+  var astByCode = {};
+  var byCode = {};
+  var formulaDefs = formulaItems.map(function (d) {
+    astByCode[d.LineCode] = formulaParse_(d.Formula);
+    byCode[d.LineCode] = d;
+    return { code: d.LineCode, refs: formulaExtractRefs_(astByCode[d.LineCode]) };
+  });
+
+  var order;
+  try {
+    order = formulaTopoSort_(formulaDefs);
+  } catch (e) {
+    // 理論上存檔時已經擋過循環引用，這裡只是防禦性處理：全部公式科目都當算不出來、
+    // 預設 0，不讓整個損益算不出來。
+    return formulaItems.map(function (d) { return { lineCode: d.LineCode, lineName: d.LineName, message: e.message }; });
+  }
+
+  var taxRateParamSet = {};
+  TAX_RATE_PARAM_NAMES.forEach(function (n) { taxRateParamSet[n] = true; });
+  var fxParamSet = {};
+  FX_PARAM_NAMES.forEach(function (n) { fxParamSet[n] = true; });
+
+  function valueOf(name) {
+    if (priceStructureRaw_.hasOwnProperty(name)) return priceStructureRaw_[name];
+    for (var parent in dictByParent) {
+      if (dictByParent[parent].hasOwnProperty(name)) return dictByParent[parent][name];
+    }
+    if (taxRateParamSet[name]) return pct_(lookupParam_(params, name, vehicleId));
+    if (fxParamSet[name]) return lookupParam_(params, name, vehicleId);
+    throw new Error('找不到「' + name + '」');
+  }
+
+  var warnings = [];
+  order.forEach(function (code) {
+    var def = byCode[code];
+    var dict = def && dictByParent[def.ParentLine];
+    if (!dict) return; // 不屬於這四段的公式科目理論上存檔時已擋掉，防禦性跳過
+    try {
+      dict[code] = formulaEvaluate_(astByCode[code], valueOf);
+    } catch (e) {
+      dict[code] = 0;
+      warnings.push({ lineCode: code, lineName: def.LineName, message: e.message });
+    }
+  });
+  return warnings;
 }
 
 /**
@@ -584,14 +662,16 @@ function previewDevInvestmentSummary(scenarioId, rows) {
 }
 
 /**
- * 某個父科目底下、可以手動輸入的明細科目代碼(排除自動計算科目)。
+ * 某個父科目底下、可以手動輸入的明細科目代碼(排除自動計算科目與自訂公式科目——
+ * 公式科目的值由 resolveLineItemFormulas_() 算出來寫回同一個字典，不是從
+ * CostOfSales/OperatingExpense 頁的手動輸入列讀值)。
  * vehicleTypeId 有傳時只回傳共用科目 + 該車型專屬科目，讓其他車型專屬的科目
  * 不會被預先塞進這個車型的損益計算裡；再傳 scenarioId 的話，同一車型底下
  * 對這個情境額外停用的科目也會一併排除（見 calculatePLCoreUncached_ 的用法）。
  */
 function manualLineCodesFor_(parentCodes, vehicleTypeId, scenarioId) {
   return getPLLineItems(vehicleTypeId, scenarioId)
-    .filter(function (d) { return parentCodes.indexOf(d.ParentLine) !== -1 && !d.AutoSource; })
+    .filter(function (d) { return parentCodes.indexOf(d.ParentLine) !== -1 && !d.AutoSource && !d.Formula; })
     .map(function (d) { return d.LineCode; });
 }
 
@@ -678,7 +758,9 @@ function buildAutoLines_(scenarioId, vehicles, parentLines, vehicleTypeId) {
   // 依車型+情境篩過(跟正式損益計算同一套規則)，這個車型/情境被停用的自動科目
   // (如貨物稅、季Margin)也不該出現在這兩頁的自動計算科目區塊，不然會跟正式算出來的損益表兜不起來。
   var autoLineDefs = getPLLineItems(vehicleTypeId, scenarioId).filter(function (d) {
-    if (parentLines.indexOf(d.ParentLine) === -1 || !d.AutoSource) return false;
+    // 自訂公式科目(d.Formula)跟內建自動計算科目(d.AutoSource)一樣，金額不是手動輸入來的，
+    // 都歸類到這個唯讀區塊，不會出現在「銷貨成本」「營業費用」頁的手動輸入下拉選單。
+    if (parentLines.indexOf(d.ParentLine) === -1 || !(d.AutoSource || d.Formula)) return false;
     if (d.AutoSource === AUTO_SOURCE.DEV_AMORT && devPerUnit.perUnit[d.LineCode] === undefined) return false;
     return true;
   });

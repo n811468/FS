@@ -49,7 +49,11 @@ var SCHEMA = {
   // 不需要整個車型都停用。情境的停用只能「額外」疊加在車型範圍之上，不能反過來讓情境看到
   // 車型範圍以外的科目——新建情境預設沿用所屬車型當下的科目範圍，之後想再各自微調停用即可。
   // 兩種排除都一樣：結構科目(小計/毛利/淨利)不可以被排除，否則損益鏈會斷掉。
-  PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'SortOrder', 'AutoSource', 'CommodityTaxDeduct', 'DevAmortCategory', 'VehicleTypeID', 'ExcludedVehicleTypeIDs', 'ExcludedScenarioIDs'],
+  // Formula：選填，讓使用者自訂公式取代手動輸入(見 FormulaEngine.gs)。可以引用售價結構
+  // (P1~P9)、其他明細科目(b*、d*、f*、h*，手動或同樣是公式的都可以)、比率/匯率參數，
+  // 不能引用結構科目(A/B/C/E/G/I/K)或內建自動計算科目(b5/b8/b13/d4/f3/f4/開發總投自訂
+  // 攤提落點)，避免跟既有計算鏈交錯出現循環。有值的科目視同自動計算科目，不能再手動輸入金額。
+  PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'SortOrder', 'AutoSource', 'CommodityTaxDeduct', 'DevAmortCategory', 'VehicleTypeID', 'ExcludedVehicleTypeIDs', 'ExcludedScenarioIDs', 'Formula'],
   PLResult: ['ResultID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'PctOfRevenue', 'PctOfExFactory', 'CalcTimestamp']
 };
 

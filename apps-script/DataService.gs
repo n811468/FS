@@ -1058,8 +1058,10 @@ function cloneVehicleTypeLineItems(sourceVehicleTypeId, targetVehicleTypeId) {
  * 儲存一筆科目。沒有帶 LineCode 就視為新增，代碼與排序值由系統產生
  * （使用者只選父科目、填名稱，不必自己編碼，也不會跟既有科目撞號）。
  * 呼叫端必須已經在 withLock_ 內。
+ * vehicleTypeId/scenarioId 選填：帶了的話，Formula 欄位驗證引用的科目名稱時會依這個範圍
+ * 篩選(見 validateLineItemFormula_)；沒帶就退回用這筆科目自己的 VehicleTypeID 當範圍。
  */
-function savePLLineItem_(rowObj) {
+function savePLLineItem_(rowObj, vehicleTypeId, scenarioId) {
   if (!rowObj.LineName) throw new Error('科目名稱為必填');
 
   if (!rowObj.LineCode) {
@@ -1070,6 +1072,8 @@ function savePLLineItem_(rowObj) {
       created.SortOrder = toNumber_(rowObj.SortOrder);
     }
     created.VehicleTypeID = rowObj.VehicleTypeID || '';
+    created.Formula = rowObj.Formula || '';
+    validateLineItemFormula_(created, null, vehicleTypeId, scenarioId);
     return upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', created);
   }
 
@@ -1087,7 +1091,71 @@ function savePLLineItem_(rowObj) {
   if (existing && PROTECTED_LINE_CODES.indexOf(rowObj.LineCode) !== -1) {
     rowObj.VehicleTypeID = '';
   }
+  validateLineItemFormula_(rowObj, existing, vehicleTypeId, scenarioId);
   return upsertRowMerge_(SHEETS.PL_LINE_ITEMS, 'LineCode', rowObj);
+}
+
+/**
+ * 存檔前驗證 Formula 欄位：語法要能解析、引用到的每個名稱都要合法、不能造成循環引用，
+ * 且結構科目/內建自動計算科目不能填公式。formula 為空字串就是清空公式(合法，變回手動
+ * 輸入)，什麼都不檢查。找不到問題就直接 return，找到問題一律 throw Error 擋下存檔。
+ *
+ * vehicleTypeId/scenarioId 決定「引用的名稱要在哪個範圍內找」：優先用呼叫端傳入的目前
+ * 畫面範圍，沒有的話退回這筆科目自己的 VehicleTypeID(可能是空字串=共用科目，這時只能
+ * 看到共用科目彼此的引用，涵蓋不到各車型專屬科目，屬於已知的寬鬆邊界情況)。
+ */
+function validateLineItemFormula_(rowObj, existing, vehicleTypeId, scenarioId) {
+  if (rowObj.Formula === undefined || rowObj.Formula === null) return;
+  var formula = String(rowObj.Formula).trim();
+  rowObj.Formula = formula;
+  if (!formula) return;
+
+  var lineCode = rowObj.LineCode;
+  var label = (lineCode ? lineCode + ' ' : '') + (rowObj.LineName || '');
+  if (PROTECTED_LINE_CODES.indexOf(lineCode) !== -1) {
+    throw new Error('「' + label + '」是損益結構科目(小計/毛利/淨利)，不能填公式。');
+  }
+  var autoSource = existing ? existing.AutoSource : rowObj.AutoSource;
+  if (autoSource) {
+    throw new Error('「' + label + '」是內建自動計算科目，不能填公式。');
+  }
+
+  var ast;
+  try {
+    ast = formulaParse_(formula);
+  } catch (e) {
+    throw new Error('「' + label + '」' + e.message);
+  }
+  var refs = formulaExtractRefs_(ast);
+
+  var priceCodes = { P1: 1, P2: 1, P3: 1, P4: 1, P5: 1, P6: 1, P7: 1, P8: 1, P9: 1 };
+  var paramNames = {};
+  TAX_RATE_PARAM_NAMES.concat(FX_PARAM_NAMES).forEach(function (n) { paramNames[n] = 1; });
+
+  var scopeVehicleTypeId = vehicleTypeId || rowObj.VehicleTypeID || (existing && existing.VehicleTypeID) || '';
+  var scoped = getPLLineItems(scopeVehicleTypeId, scenarioId);
+  var validDetailCodes = {};
+  scoped.forEach(function (d) {
+    if (PROTECTED_LINE_CODES.indexOf(d.LineCode) !== -1) return;
+    if (d.AutoSource) return; // 內建自動計算科目(含開發總投攤提落點)不能被公式引用
+    validDetailCodes[d.LineCode] = true;
+  });
+
+  refs.forEach(function (name) {
+    if (priceCodes[name] || paramNames[name] || validDetailCodes[name]) return;
+    throw new Error('「' + label + '」公式引用了不存在或不能引用的名稱「' + name +
+      '」(只能引用 P1~P9、非結構/非內建自動計算的明細科目、或比率匯率參數)。');
+  });
+
+  var formulaDefs = scoped
+    .filter(function (d) { return d.Formula && d.LineCode !== lineCode; })
+    .map(function (d) { return { code: d.LineCode, refs: formulaExtractRefs_(formulaParse_(d.Formula)) }; });
+  formulaDefs.push({ code: lineCode || '(新科目)', refs: refs });
+  try {
+    formulaTopoSort_(formulaDefs);
+  } catch (e) {
+    throw new Error('「' + label + '」' + e.message);
+  }
 }
 
 /**
@@ -1116,7 +1184,7 @@ function savePLLineItemGrid(vehicleTypeId, scenarioId, rows) {
       (r.LineCode ? existingRows : newRows).push(r);
     });
 
-    newRows.forEach(function (r) { savePLLineItem_(r); });
+    newRows.forEach(function (r) { savePLLineItem_(r, vehicleTypeId, scenarioId); });
 
     if (existingRows.length) {
       var byCode = indexByPk_(getPLLineItems(), 'LineCode');
@@ -1134,6 +1202,7 @@ function savePLLineItemGrid(vehicleTypeId, scenarioId, rows) {
         if (existing && PROTECTED_LINE_CODES.indexOf(r.LineCode) !== -1) {
           r.VehicleTypeID = '';
         }
+        validateLineItemFormula_(r, existing, vehicleTypeId, scenarioId);
         return mergeRowForBatch_(SHEETS.PL_LINE_ITEMS, 'LineCode', r, byCode);
       });
       batchWriteRows_(SHEETS.PL_LINE_ITEMS, 'LineCode', upserts, []);
@@ -1176,7 +1245,7 @@ function deletePLLineItem(lineCode) {
 function lineOptionsFor_(parentCodes, extraCodes, vehicleTypeId, scenarioId) {
   var opts = getPLLineItems(vehicleTypeId, scenarioId)
     .filter(function (d) {
-      return !d.AutoSource &&
+      return !d.AutoSource && !d.Formula &&
         (parentCodes.indexOf(d.ParentLine) !== -1 || (extraCodes || []).indexOf(d.LineCode) !== -1);
     })
     .map(function (d) { return { value: d.LineCode, label: d.LineCode + ' ' + d.LineName }; });

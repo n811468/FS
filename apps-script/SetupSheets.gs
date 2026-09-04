@@ -85,16 +85,18 @@ function seedPLLineItems_() {
 }
 
 /**
- * 既有試算表升級用：舊版 PLLineItems 分頁可能沒有「VehicleTypeID(所屬車型)」「ExcludedVehicleTypeIDs
- * (排除車型清單)」這兩個較新的欄位，檢查表頭若缺少就直接補在最後面。兩者留空都是維持原本
- * 「全部共用」的語意，不需要搬遷既有資料。跟 syncCodeOwnedLineItems_() 一樣掛在 getBootstrap()
+ * 既有試算表升級用：舊版 PLLineItems 分頁可能沒有「VehicleTypeID(所屬車型)」
+ * 「ExcludedVehicleTypeIDs(排除車型清單)」「ExcludedScenarioIDs(排除情境清單)」
+ * 「Formula(自訂公式)」這幾個較新的欄位，檢查表頭若缺少就直接補在最後面。留空都是維持
+ * 原本的既有行為，不需要搬遷既有資料。跟 syncCodeOwnedLineItems_() 一樣掛在 getBootstrap()
  * 開頁流程，使用者不需要手動重跑 setupSpreadsheet()。
  */
 function ensurePLLineItemsVehicleTypeColumn_() {
   var sheet = getSheet_(SHEETS.PL_LINE_ITEMS);
   var lastCol = sheet.getLastColumn();
   var headers = lastCol ? sheet.getRange(1, 1, 1, lastCol).getValues()[0] : [];
-  var missing = ['VehicleTypeID', 'ExcludedVehicleTypeIDs'].filter(function (h) { return headers.indexOf(h) === -1; });
+  var missing = ['VehicleTypeID', 'ExcludedVehicleTypeIDs', 'ExcludedScenarioIDs', 'Formula']
+    .filter(function (h) { return headers.indexOf(h) === -1; });
   if (!missing.length) return false;
   sheet.getRange(1, lastCol + 1, 1, missing.length).setValues([missing]);
   invalidateSheetCache_(SHEETS.PL_LINE_ITEMS);

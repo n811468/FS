@@ -9,6 +9,10 @@ const GATE_OPTIONS = ['GATE F', 'GATE E', 'GATE D', 'GATE C', 'GATE B', 'GATE A'
 const SCENARIO_TYPES = ['現況', '目標'];
 // 結構科目與自動計算科目不能刪、父科目也不能改，否則損益鏈會接錯段（後端也會擋，這裡只是不畫按鈕）
 const PROTECTED_LINE_CODES = ['A', 'B', 'C', 'E', 'G', 'I', 'K'];
+// 科目「自訂公式」欄位可引用的比率/匯率參數名稱，跟 Constants.gs 的同名常數保持一致，
+// 純粹用來組出欄位說明文字（真正的驗證在後端 DataService.gs 的 validateLineItemFormula_）
+const TAX_RATE_PARAM_NAMES = ['營業稅率', '銷售佣金率', '季Margin率', '貨物稅率', '貨物稅完稅價格計算率'];
+const FX_PARAM_NAMES = ['現況匯率'];
 const PL_LINE_PARENT_OPTIONS = [
   ['B', 'B 銷貨成本'],
   ['E', 'E 銷售費用(銷貨毛利前)'],
@@ -86,7 +90,17 @@ const ENTITIES = {
         width: 170, lockIf: r => r.__existing && isStructuralLineItem(r) },
       { name: 'Category', label: '分類', width: 110 },
       { name: 'SortOrder', label: '排序值', type: 'number', width: 80 },
-      { name: 'AutoSource', label: '自動計算來源', readOnly: true, width: 150 }
+      { name: 'AutoSource', label: '自動計算來源', readOnly: true, width: 150 },
+      // 填了公式，這個科目就變成自動算出來的(不能再手動輸入金額，也不會出現在銷貨成本/
+      // 營業費用頁的下拉選單)——跟其他自動計算科目一樣，結構科目/內建自動計算科目鎖定不可填。
+      // 可引用：P1~P9(售價結構)、其他明細科目代碼(b*/d*/f*/h*，手動輸入或同樣是公式的都可以)、
+      // 比率/匯率參數名稱，全部直接寫名稱、不加任何符號，例如：P8 * 貨物稅率 * 0.85、b1 + b2。
+      { name: 'Formula', label: '自訂公式', width: 260,
+        placeholder: '留空=手動輸入；如 P8 * 貨物稅率 * 0.85',
+        title: '可引用 P1~P9、其他明細科目代碼(b*/d*/f*/h*)、比率匯率參數名稱(' +
+          TAX_RATE_PARAM_NAMES.concat(FX_PARAM_NAMES).join('、') +
+          ')，直接寫名稱、不加符號。不能引用結構科目(A/B/C/E/G/I/K)或內建自動計算科目。',
+        lockIf: r => r.__existing && isFixedLineItem(r) }
     ]
   }
 };
@@ -574,7 +588,9 @@ function entityCellHtml(key, i, col, row) {
     }).join('');
     return `<td><select${style} onchange="onEntityField('${key}', ${i}, '${col.name}', this.value)">${options}</select></td>`;
   }
-  return `<td><input type="${col.type || 'text'}" step="any" value="${esc(value)}"${style}
+  const placeholder = col.placeholder ? ` placeholder="${esc(col.placeholder)}"` : '';
+  const title = col.title ? ` title="${esc(col.title)}"` : '';
+  return `<td><input type="${col.type || 'text'}" step="any" value="${esc(value)}"${style}${placeholder}${title}
     oninput="onEntityField('${key}', ${i}, '${col.name}', this.value)"></td>`;
 }
 
