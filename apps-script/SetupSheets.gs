@@ -85,6 +85,72 @@ function seedPLLineItems_() {
 }
 
 /**
+ * 既有試算表升級用：舊版 PLLineItems 分頁可能沒有「VehicleTypeID(所屬車型)」
+ * 「ExcludedVehicleTypeIDs(排除車型清單)」「ExcludedScenarioIDs(排除情境清單)」
+ * 「Formula(自訂公式)」這幾個較新的欄位，檢查表頭若缺少就直接補在最後面。留空都是維持
+ * 原本的既有行為，不需要搬遷既有資料。跟 syncCodeOwnedLineItems_() 一樣掛在 getBootstrap()
+ * 開頁流程，使用者不需要手動重跑 setupSpreadsheet()。
+ */
+function ensurePLLineItemsVehicleTypeColumn_() {
+  var sheet = getSheet_(SHEETS.PL_LINE_ITEMS);
+  var lastCol = sheet.getLastColumn();
+  var headers = lastCol ? sheet.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+  var missing = ['VehicleTypeID', 'ExcludedVehicleTypeIDs', 'ExcludedScenarioIDs', 'Formula']
+    .filter(function (h) { return headers.indexOf(h) === -1; });
+  if (!missing.length) return false;
+  sheet.getRange(1, lastCol + 1, 1, missing.length).setValues([missing]);
+  invalidateSheetCache_(SHEETS.PL_LINE_ITEMS);
+  return true;
+}
+
+/**
+ * 既有試算表升級用：舊版沒有「CustomRateParams」分頁(使用者自訂比率參數名稱清單，
+ * 見 DataService.gs 的 addCustomRateParam)，開頁時如果還沒有這張分頁就自動建立、
+ * 只寫入標題列，使用者不需要手動重跑 setupSpreadsheet()。
+ */
+function ensureCustomRateParamsSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (ss.getSheetByName(SHEETS.CUSTOM_RATE_PARAMS)) return false;
+  var sheet = ss.insertSheet(SHEETS.CUSTOM_RATE_PARAMS);
+  sheet.getRange(1, 1, 1, SCHEMA.CustomRateParams.length).setValues([SCHEMA.CustomRateParams]);
+  sheet.setFrozenRows(1);
+  invalidateSheetCache_(SHEETS.CUSTOM_RATE_PARAMS);
+  return true;
+}
+
+/**
+ * 既有資料升級用：舊版「科目設定」頁曾經允許把科目設成某個車型專屬(PLLineItems.VehicleTypeID
+ * 直接指到那個車型)，讓其他車型完全看不到這個科目。現在簡化成單一層模型：任何科目一律先進到
+ * 全系統的科目清單(全系科目設定)，各車型再自己選擇要不要用(排除清單，此車型科目設定)——
+ * 「專屬」這個概念不再由使用者手動設定，一律透過「這個車型是否排除」表達。
+ *
+ * 既有資料裡如果還留著舊的「專屬車型」設定，換算成等效的排除清單(排除當時所有其他既有車型)
+ * 之後清空 VehicleTypeID，讓行為在轉換當下維持不變，但資料模型統一成一種。之後新增的車型
+ * 預設看得到這個科目(使用者可以再自行排除)——這正是新模型想要的行為，舊的「專屬」語意本來
+ * 就沒辦法對「以後才新增的車型」表達意見，不需要、也沒辦法完全保留。
+ * 跟 ensurePLLineItemsVehicleTypeColumn_() 一樣掛在 getBootstrap() 開頁流程，使用者不需要
+ * 手動執行維護功能；沒有殘留的舊「專屬」資料時完全不動任何東西。
+ */
+function migrateExclusiveLineItemsToShared_() {
+  var items = sheetToObjects_(SHEETS.PL_LINE_ITEMS) || [];
+  var exclusiveItems = items.filter(function (d) { return d.VehicleTypeID; });
+  if (!exclusiveItems.length) return 0;
+
+  var allTypeIds = (sheetToObjects_(SHEETS.VEHICLE_TYPES) || []).map(function (t) { return t.VehicleTypeID; });
+  exclusiveItems.forEach(function (d) {
+    var keepVisibleTo = d.VehicleTypeID;
+    var excluded = splitIdList_(d.ExcludedVehicleTypeIDs);
+    allTypeIds.forEach(function (id) {
+      if (id !== keepVisibleTo && excluded.indexOf(id) === -1) excluded.push(id);
+    });
+    d.ExcludedVehicleTypeIDs = excluded.join(',');
+    d.VehicleTypeID = '';
+    upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', d);
+  });
+  return exclusiveItems.length;
+}
+
+/**
  * 把內建科目的名稱、父科目、分類與排序值重設回程式碼中的預設值。
  * seedPLLineItems_() 只補新科目、不動既有科目(使用者可能自己改過名稱)，
  * 所以科目排序改版後要靠這支才會套用到既有的 Sheet。

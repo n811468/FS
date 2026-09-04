@@ -37,7 +37,7 @@ function normalizeCellValue_(v) {
  *      有效期內(SHEET_CACHE_TTL_)其他次執行可以直接用，不必再打一次 Sheets API。
  * 任何寫入都會兩層一起清掉，所以不會讀到過期資料；資料太大存不進 CacheService(單筆上限 100KB)
  * 就直接跳過快取，退回每次都讀 Sheet，不影響正確性，只是那張表沒有快取效果。
- * 注意：繞過 upsertRow_/deleteRow_ 直接寫 Sheet 的地方(SetupSheets、writePLResult_)
+ * 注意：繞過 upsertRow_/deleteRow_ 直接寫 Sheet 的地方(如 SetupSheets.gs 的 seed/migration)
  * 必須自己呼叫 invalidateSheetCache_()。
  */
 var SHEET_CACHE_ = {};
@@ -236,7 +236,7 @@ function deleteRow_(sheetName, pkField, pkValue) {
  * （實測 55 格：逐列寫入約 330 次 API 呼叫，整批寫入後降到個位數，見
  * tools/verify-write-batching.js）。
  *
- * 做法跟 CalcEngine.gs 的 writePLResult_ 一樣：整段資料只讀一次、只寫一次 ——
+ * 做法：整段資料只讀一次、只寫一次 ——
  *   1. 把現有資料整塊讀出來(1 次 getValues)
  *   2. 在記憶體裡套用這一批的新增/更新(找不到 PK 就當新增)與刪除
  *   3. 整段一次寫回(先 clearContent 再 setValues，避免列數變少時留下舊資料的殘影)
@@ -304,7 +304,7 @@ function batchWriteRows_(sheetName, pkField, upserts, deletePks) {
 function rowIdPrefix_(sheetName) {
   var map = {
     SalesMix: 'SM', CostOfSales: 'CS', DevInvestment: 'DI',
-    OperatingExpense: 'OE', Parameters: 'PM', PLResult: 'PR',
+    OperatingExpense: 'OE', Parameters: 'PM',
     VehicleTypes: 'VT', Vehicles: 'VH', Scenarios: 'SC'
   };
   return map[sheetName] || 'RW';

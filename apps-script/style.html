@@ -1,5 +1,7 @@
 <style>
   body { font-family: 'Segoe UI', 'Microsoft JhengHei', sans-serif; margin: 0; background: #f5f6f8; color: #222; }
+  /* 車型/情境選單 + 分頁列一起黏在視窗頂端，捲動長列表時仍看得到目前選的是哪個車型/情境/分頁 */
+  .app-top { position: sticky; top: 0; z-index: 20; }
   header { background: #1f2d3d; color: #fff; padding: 12px 20px; display: flex; align-items: center; gap: 20px; }
   header h1 { font-size: 18px; margin: 0; }
   /* 導覽列分三個主軸：車型與情境 / 損益項目與計算 / 結果呈現。
@@ -15,6 +17,25 @@
   nav button { border: none; background: transparent; padding: 7px 13px; cursor: pointer; font-size: 14px; border-radius: 4px; white-space: nowrap; }
   nav button:hover:not(.active) { background: #f0f2f5; }
   nav button.active { background: #1f2d3d; color: #fff; }
+
+  /* ---- 背景預載的狀態指示 ----
+     每個分頁名稱後面一個小圓點：實心綠=資料已備妥(切過去秒開)、空心灰=背景載入中、
+     橘色=預載失敗(點進去會自動重載，只是要多等一次)。標題列右邊另外給一個總進度。
+     只是狀態提示，不擋任何操作，所以刻意做小、不搶按鈕本身的注意力。 */
+  .preload-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-left: 6px;
+    vertical-align: middle; box-sizing: border-box; }
+  .preload-dot.ready { background: #38a169; }
+  .preload-dot.pending { background: transparent; border: 1px solid #a0aec0; animation: preload-pulse 1.2s ease-in-out infinite; }
+  .preload-dot.failed { background: #dd6b20; }
+  nav button.active .preload-dot.ready { background: #68d391; }
+  nav button.active .preload-dot.pending { border-color: #cbd5e0; }
+  @keyframes preload-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+
+  .preload-status { margin-left: auto; font-size: 12px; padding: 3px 10px; border-radius: 10px; white-space: nowrap; }
+  .preload-status:empty { display: none; }
+  .preload-status.loading { background: rgba(255,255,255,.12); color: #cbd5e0; }
+  .preload-status.done { background: rgba(56,161,105,.22); color: #9ae6b4; }
+  .preload-status.warn { background: rgba(221,107,32,.25); color: #fbd38d; }
   /* 比較欄位一多就會超出 1200px，改成撐滿視窗、由表格自己橫向捲動 */
   main { padding: 20px; max-width: 1800px; margin: 0 auto; }
   .panel { display: none; background: #fff; border-radius: 6px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
@@ -204,12 +225,41 @@
   .toolbar-block { width: 100%; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px 12px; margin-top: 8px; background: #f9fafb; }
   .toolbar-block-title { font-size: 12px; font-weight: 600; color: #4a5568; margin-bottom: 4px; }
   .toolbar-block .toolbar { margin-bottom: 6px; }
+  /* 「已停用」科目清單：用醒目的橘色調，讓使用者一眼看出這裡列的是被停用、目前不計算的科目 */
+  .toolbar-block.disabled-block { background: #fffaf0; border-color: #f6ad55; }
+  .toolbar-block.disabled-block .toolbar-block-title { color: #9c4221; }
+  .toolbar-block.disabled-block .chip { background: #feebc8; color: #7b341e; }
+  /* 剛完成停用/啟用動作時，讓「已停用」區塊短暫閃一下背景色，明確提示使用者「這裡剛變動」 */
+  @keyframes flash-block { 0%, 100% { background: #fffaf0; } 40% { background: #fbd38d; } }
+  .toolbar-block.flash { animation: flash-block 900ms ease-out 2; }
   table.entity-table td.calc { color: #4a5568; }
   table.entity-table tr.new-row td { background: #fffaf0; }
   td.row-actions { white-space: nowrap; }
   .row-move { padding: 3px 7px; font-size: 11px; line-height: 1; }
   .col-move { display: flex; justify-content: center; gap: 2px; margin-bottom: 2px; }
   .col-move .row-move { font-weight: 400; }
+  /* 排序值旁邊的上下移動鈕：跟它調整的資料放在同一格，跟右邊的刪除/重新命名操作分開，
+     視覺上才不會把「調順序」跟「刪除科目」混成一團 */
+  .row-move-group { display: inline-flex; gap: 2px; margin-left: 4px; vertical-align: middle; }
+  td.row-actions .btn { margin: 1px 2px 1px 0; }
+  td.row-actions .hint { display: block; color: #888; font-size: 11px; margin-top: 2px; }
+  /* 自訂公式欄位的「＋ 插入引用」選單：放在輸入框下面一行，比輸入框小一號，
+     視覺上是輸入框的輔助工具，不是另一個要填的欄位 */
+  .formula-ref-picker { display: block; margin-top: 3px; font-size: 11px; color: #555;
+    max-width: 100%; padding: 1px 2px; }
+
+  /* ---- 科目設定「刪除」的範圍選擇彈窗：不依賴瀏覽器原生 confirm()，畫面/行為都更可控 ---- */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(26,32,44,.45); z-index: 100;
+    display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .modal-box { background: #fff; border-radius: 8px; padding: 20px 22px; max-width: 440px; width: 100%;
+    box-shadow: 0 8px 30px rgba(0,0,0,.25); }
+  .modal-box h4 { margin: 0 0 8px; font-size: 15px; }
+  .modal-box p.muted { margin: 0 0 14px; font-size: 12.5px; line-height: 1.6; }
+  .modal-choice { display: flex; gap: 10px; align-items: flex-start; padding: 10px; border: 1px solid #e2e8f0;
+    border-radius: 6px; margin-bottom: 8px; cursor: pointer; font-size: 13px; }
+  .modal-choice:hover { border-color: #a0aec0; background: #f9fafb; }
+  .modal-choice input { margin-top: 3px; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 
   /* ---- 損益表：版面比照實際損益試算表，小計整列反白、明細縮排 ---- */
   .pl-table thead th { text-align: center; white-space: nowrap; }
@@ -262,6 +312,10 @@
   .diff-table td.negative, .diff-table th.negative { color: #c53030; }
   .diff-table td.delta { font-weight: 600; }
   .diff-chart-box { margin-top: 10px; background: #fff; border: 1px solid #eee; border-radius: 6px; padding: 6px; }
+  /* 小圓角標籤：科目歸屬差異、已停用科目清單等地方共用 */
+  .chip { display: inline-block; background: #edf2f7; border-radius: 10px; padding: 1px 8px; margin: 1px 2px; }
+  /* 科目歸屬差異：不同車型的科目集合不同時，列出「只有其中一方有」的科目名稱 */
+  .subject-diff { margin-top: 8px; font-size: 12px; line-height: 1.8; }
   /* 只有一組差異時卡片會撐滿整列，SVG 跟著放大兩倍字會太大；圖最多畫到 720px 寬、置中 */
   .diff-chart-box .chart-svg { max-width: 720px; margin: 0 auto; }
   /* 十字游標：滑鼠所在的列與欄一起變色；放在 subtotal/sticky 底色之後才蓋得過去 */

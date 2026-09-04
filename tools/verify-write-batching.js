@@ -18,7 +18,7 @@ const { loadAppsScript, resetApiCallCounts_, getApiCallCounts_, totalApiCalls_ }
 const failures = [];
 function assert(cond, message) { if (!cond) failures.push(message); }
 
-const gs = loadAppsScript(['Constants.gs', 'Utils.gs', 'DataService.gs', 'CalcEngine.gs', 'SetupSheets.gs']);
+const gs = loadAppsScript(['Constants.gs', 'Utils.gs', 'FormulaEngine.gs', 'DataService.gs', 'CalcEngine.gs', 'SetupSheets.gs']);
 gs.setupSpreadsheet();
 gs.saveVehicleType({ VehicleTypeID: 'DA' });
 gs.saveVehicle({ VehicleID: 'V1', VehicleTypeID: 'DA', VehicleCode: '3人貨車' });
@@ -114,7 +114,7 @@ assert(callsFor50 < 50, `無論如何都不該退化回「每格一次呼叫」�
 /* ---- 5. 科目設定：同一批新增好幾個科目不能撞號 ---- */
 // 新增列的代碼由 nextLineCode_() 逐一分配，整批處理最容易犯的錯就是「兩筆新增都拿到同一個代碼」
 const beforeCodes = gs.getPLLineItems().map(d => d.LineCode);
-gs.savePLLineItemGrid([
+gs.savePLLineItemGrid('DA', scSmall.ScenarioID, [
   { LineCode: '', LineName: '新科目A', ParentLine: 'B' },
   { LineCode: '', LineName: '新科目B', ParentLine: 'B' },
   { LineCode: '', LineName: '新科目C', ParentLine: 'B' },

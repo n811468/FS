@@ -24,7 +24,7 @@ function assertEqual(actual, expected, message) {
   }
 }
 
-const gs = loadAppsScript(['Constants.gs', 'Utils.gs', 'DataService.gs', 'CalcEngine.gs', 'SetupSheets.gs']);
+const gs = loadAppsScript(['Constants.gs', 'Utils.gs', 'FormulaEngine.gs', 'DataService.gs', 'CalcEngine.gs', 'SetupSheets.gs']);
 gs.setupSpreadsheet();
 gs.saveVehicleType({ VehicleTypeID: 'DA' });
 gs.saveVehicleType({ VehicleTypeID: 'DE' });
@@ -75,7 +75,7 @@ check('不能跨車型帶入（車系對不上會算出看不見的成本）', (
 check('新增科目時代碼自動編流水號', () => {
   const created = gs.addLineItemInline('B', '測試成本項目');
   assertEqual(created.LineCode, 'b15', '自動產生的成本科目代碼');   // b1~b14 已被內建科目用掉
-  const created2 = gs.savePLLineItemGrid([{ LineCode: '', LineName: '第二個測試項目', ParentLine: 'E' }])
+  const created2 = gs.savePLLineItemGrid('DA', base.ScenarioID, [{ LineCode: '', LineName: '第二個測試項目', ParentLine: 'E' }])
     .filter(d => d.LineName === '第二個測試項目')[0];
   assertEqual(created2.LineCode, 'd6', '自動產生的費用科目代碼');   // d1~d5 已被內建科目用掉
 });
@@ -83,7 +83,7 @@ check('新增科目時代碼自動編流水號', () => {
 check('科目直接改名/改排序，一次儲存就生效', () => {
   const before = gs.getPLLineItems().filter(d => d.LineCode === 'b15')[0];
   assert(before, '找不到剛新增的 b15');
-  gs.savePLLineItemGrid([
+  gs.savePLLineItemGrid('DA', base.ScenarioID, [
     { LineCode: 'b15', LineName: '改過名字的項目', ParentLine: 'B', Category: '成本明細', SortOrder: 26.5 }
   ]);
   const after = gs.getPLLineItems().filter(d => d.LineCode === 'b15')[0];
@@ -97,7 +97,7 @@ check('結構科目與自動計算科目不可刪除，父科目也改不掉', (
   try { gs.deletePLLineItem('b13'); } catch (e) { threw++; }
   assertEqual(threw, 2, '應該擋下的刪除次數');
 
-  gs.savePLLineItemGrid([{ LineCode: 'b13', LineName: '貨物稅', ParentLine: 'E', SortOrder: 34 }]);
+  gs.savePLLineItemGrid('DA', base.ScenarioID, [{ LineCode: 'b13', LineName: '貨物稅', ParentLine: 'E', SortOrder: 34 }]);
   assertEqual(gs.getPLLineItems().filter(d => d.LineCode === 'b13')[0].ParentLine, 'B',
     '自動計算科目的父科目應維持原值');
 });
@@ -133,7 +133,7 @@ check('成本矩陣帶出銷售構成比，讓畫面可以算加權平均', () =
 });
 
 check('沒填金額的成本科目仍會出現，B 才等於畫面上明細的加總', () => {
-  const result = gs.calculatePL(base.ScenarioID, 'V1');
+  const result = gs.calculatePLCore_(base.ScenarioID, 'V1');
   const codes = result.lines.map(l => l.LineCode);
   ['b3', 'b9', 'b10', 'b11', 'b12'].forEach(code => {
     assert(codes.indexOf(code) !== -1, `沒填金額的 ${code} 也應該列出來`);
@@ -183,13 +183,13 @@ check('舊版留下的科目名稱會自動對回程式碼（欄位名稱不再�
   assert(nameOf('f3').indexOf('開發總投') !== -1, `f3 名稱應說明攤提來源，實際 ${nameOf('f3')}`);
 
   // 名稱與數字必須指的是同一件事：P8 的數字就是廠價 = P5-P6-P7
-  const lines = gs.calculatePL(base.ScenarioID, 'V1').lines;
+  const lines = gs.calculatePLCore_(base.ScenarioID, 'V1').lines;
   const v = code => lines.filter(l => l.LineCode === code)[0].Amount;
   assert(Math.abs(v('P8') - (v('P5') - v('P6') - v('P7'))) < 0.01, 'P8 的數字應為 P5-P6-P7');
 });
 
 check('明細科目的名稱不會被自動修復蓋掉', () => {
-  gs.savePLLineItemGrid([{ LineCode: 'b1', LineName: '材料成本-LP(自己改的)', ParentLine: 'B', Category: '成本明細', SortOrder: 21 }]);
+  gs.savePLLineItemGrid('DA', base.ScenarioID, [{ LineCode: 'b1', LineName: '材料成本-LP(自己改的)', ParentLine: 'B', Category: '成本明細', SortOrder: 21 }]);
   gs.getBootstrap('DA');
   assertEqual(gs.getPLLineItems().filter(d => d.LineCode === 'b1')[0].LineName, '材料成本-LP(自己改的)',
     '使用者改過的明細科目名稱應該保留');
@@ -222,7 +222,7 @@ check('開發總投的攤提落點由選項決定，f4 BASE廠不再靠部門名
   assertEqual(byLine.f3, 4000, '費用-CMC 應攤到 f3');
   assertEqual(byLine.f4, 8000, '費用-BASE廠 應攤到 f4（不看部門名稱）');
 
-  const lines = gs.calculatePL(sid, 'V1').lines;
+  const lines = gs.calculatePLCore_(sid, 'V1').lines;
   const v = code => lines.filter(l => l.LineCode === code)[0].Amount;
   assert(Math.abs(v('f4') - 8000 / units) < 1e-9, `f4 單台攤提應為 ${8000 / units}，實際 ${v('f4')}`);
   assert(v('f4') > 0, 'f4 不應為 0');
@@ -299,12 +299,152 @@ check('開發總投攤提落點分成設備/模具/費用三大類，可以在�
   assert(newOpt && newOpt.category === '模具', '新科目應該出現在「模具」大類的攤提落點選項裡');
 });
 
-check('銷貨成本頁顯示自動計算科目不應該寫入 PLResult 快照(避免拖慢鎖定)', () => {
-  const before = gs.getPLResult(base.ScenarioID, 'V1').length;
-  gs.getCostOfSalesMatrix(base.ScenarioID, 'DA');
-  gs.getOperatingExpenseMatrix(base.ScenarioID, 'DA');
-  const after = gs.getPLResult(base.ScenarioID, 'V1').length;
-  assertEqual(after, before, '單純顯示自動計算科目不應該多寫 PLResult 快照');
+check('自訂比率 + 自訂公式：新增「關稅率」後可以用它算出一個新科目', () => {
+  // 使用者的實際情境：新增一個關稅科目 = 廠價 × 自己新增的比率
+  gs.addCustomRateParam('關稅率');
+  assert(gs.getRateGrid(base.ScenarioID, 'DA').rates.some(r => r.ParamName === '關稅率' && r.custom),
+    '新增的比率應該出現在稅務費用比率表格，並標記為自訂');
+  gs.saveRateGrid(base.ScenarioID, [{ ParamID: '', ParamName: '關稅率', VehicleID: '', Value: 10 }]);
+
+  const created = gs.addLineItemInline('B', '關稅');
+  gs.savePLLineItemGrid('DA', base.ScenarioID, [
+    { LineCode: created.LineCode, LineName: '關稅', ParentLine: 'B', Category: '成本明細',
+      SortOrder: created.SortOrder, Formula: 'P8 * 關稅率' }
+  ]);
+
+  const lines = gs.calculatePLCore_(base.ScenarioID, 'V1').lines;
+  const amountOf = code => lines.filter(l => l.LineCode === code)[0].Amount;
+  // 比率一律以百分比數值儲存(10 = 10%)，公式引用時要換算成 0.1
+  assert(Math.abs(amountOf(created.LineCode) - amountOf('P8') * 0.1) < 0.01,
+    `關稅應為廠價×10%，實際 ${amountOf(created.LineCode)}、廠價 ${amountOf('P8')}`);
+
+  // 公式科目視同自動計算科目：不該再出現在手動輸入的下拉選單裡
+  assert(!gs.getCostOfSalesLineOptions('DA', base.ScenarioID).some(o => o.value === created.LineCode),
+    '有公式的科目不該還能手動輸入金額');
+
+  // 引用中的自訂比率不能被刪掉，否則公式會突然找不到值
+  let blocked = '';
+  try { gs.deleteCustomRateParam('關稅率'); } catch (e) { blocked = e.message; }
+  assert(blocked.indexOf('關稅') !== -1, '還被公式引用的自訂比率應該擋下刪除，實際訊息：' + (blocked || '(沒有丟錯)'));
+});
+
+check('自訂公式的錯誤會在存檔時擋下來(打錯字/循環引用)', () => {
+  const typo = (() => {
+    try {
+      gs.savePLLineItemGrid('DA', base.ScenarioID, [
+        { LineCode: 'b1', LineName: '材料成本-LP', ParentLine: 'B', Category: '成本明細', SortOrder: 21, Formula: 'P8 * 不存在的比率' }
+      ]);
+      return '';
+    } catch (e) { return e.message; }
+  })();
+  assert(typo.indexOf('不存在的比率') !== -1, '引用不存在的名稱應該被擋下並指名，實際訊息：' + (typo || '(沒有丟錯)'));
+
+  const c1 = gs.addLineItemInline('B', '循環A');
+  const c2 = gs.addLineItemInline('B', '循環B');
+  gs.savePLLineItemGrid('DA', base.ScenarioID, [
+    { LineCode: c1.LineCode, LineName: '循環A', ParentLine: 'B', Category: '成本明細', SortOrder: c1.SortOrder, Formula: c2.LineCode + ' * 2' }
+  ]);
+  const cycle = (() => {
+    try {
+      gs.savePLLineItemGrid('DA', base.ScenarioID, [
+        { LineCode: c2.LineCode, LineName: '循環B', ParentLine: 'B', Category: '成本明細', SortOrder: c2.SortOrder, Formula: c1.LineCode + ' + 1' }
+      ]);
+      return '';
+    } catch (e) { return e.message; }
+  })();
+  assert(cycle.indexOf('循環引用') !== -1, '循環引用應該被擋下，實際訊息：' + (cycle || '(沒有丟錯)'));
+});
+
+check('同一批送出的互相引用會被擋下，不會存進去變成解不開的死結', () => {
+  // 只看 Sheet 上的舊資料判斷循環的話：這兩列會一起通過，存進去之後每一次儲存都會踩到
+  // 循環引用被擋(連要把公式改回來的那次也被擋)，使用者再也改不動 —— 一定要用「存完之後
+  // 會長什麼樣子」判斷
+  const x = gs.addLineItemInline('B', '同批A');
+  const y = gs.addLineItemInline('B', '同批B');
+  const batch = [
+    { LineCode: x.LineCode, LineName: '同批A', ParentLine: 'B', Category: '成本明細', SortOrder: x.SortOrder, Formula: y.LineCode + ' * 2' },
+    { LineCode: y.LineCode, LineName: '同批B', ParentLine: 'B', Category: '成本明細', SortOrder: y.SortOrder, Formula: x.LineCode + ' + 1' }
+  ];
+  let threw = '';
+  try { gs.savePLLineItemGrid('DA', base.ScenarioID, batch); } catch (e) { threw = e.message; }
+  assert(threw.indexOf('循環引用') !== -1, '同一批互相引用應該被擋下，實際訊息：' + (threw || '(沒有丟錯)'));
+
+  const after = gs.getPLLineItems();
+  const formulaOf = code => (after.filter(d => d.LineCode === code)[0] || {}).Formula || '';
+  assert(!formulaOf(x.LineCode) || !formulaOf(y.LineCode), '被擋下之後不該兩邊都留著互相引用的公式');
+  // 而且之後還要能正常存檔(不能因為 Sheet 上留了半套資料就永遠被循環擋住)
+  gs.savePLLineItemGrid('DA', base.ScenarioID, [
+    { LineCode: x.LineCode, LineName: '同批A', ParentLine: 'B', Category: '成本明細', SortOrder: x.SortOrder, Formula: 'P8 * 0.01' }
+  ]);
+  assertEqual(gs.getPLLineItems().filter(d => d.LineCode === x.LineCode)[0].Formula, 'P8 * 0.01',
+    '擋下之後應該還能正常改公式');
+});
+
+check('不在 B/E/G/I 底下的科目不能填公式，也不能被引用(如 J 前瞻費用)', () => {
+  let threw = '';
+  try {
+    gs.savePLLineItemGrid('DA', base.ScenarioID, [
+      { LineCode: 'J', LineName: '前瞻費用', ParentLine: '', Category: '費用', SortOrder: 71, Formula: 'P8 * 0.01' }
+    ]);
+  } catch (e) { threw = e.message; }
+  assert(threw.indexOf('不支援自訂公式') !== -1, 'J 不該能填公式，實際訊息：' + (threw || '(沒有丟錯)'));
+
+  const target = gs.addLineItemInline('B', '引用J測試');
+  let threw2 = '';
+  try {
+    gs.savePLLineItemGrid('DA', base.ScenarioID, [
+      { LineCode: target.LineCode, LineName: '引用J測試', ParentLine: 'B', Category: '成本明細', SortOrder: target.SortOrder, Formula: 'J * 2' }
+    ]);
+  } catch (e) { threw2 = e.message; }
+  assert(threw2.indexOf('J') !== -1, '引用 J 應該被擋下(計算時解不出來)，實際訊息：' + (threw2 || '(沒有丟錯)'));
+  assert(!gs.getFormulaReferenceOptions('DA', base.ScenarioID).lineItems.some(o => o.value === 'J'),
+    'J 不該出現在可引用的選單裡');
+});
+
+check('還有開發總投資料指到的攤提落點，不能靠「刪除」偷偷從損益表移除', () => {
+  // 沒擋的話：b5 從損益表消失、B 直接少掉那筆模具費用，畫面上不會有任何提示
+  const sid = base.ScenarioID;
+  gs.saveDevInvestmentGrid(sid, [
+    { RowID: '', Department: '模具測試', TargetLineCode: 'b5', Amount: 12000000, Currency: 'TWD' }
+  ]);
+  const before = gs.calculatePLCore_(sid, 'V1').lines.filter(l => l.LineCode === 'B')[0].Amount;
+
+  let byType = '';
+  try { gs.setLineItemExclusion('b5', 'DA', true); } catch (e) { byType = e.message; }
+  assert(byType.indexOf('開發總投') !== -1, '對車型刪除時應該擋下，實際訊息：' + (byType || '(沒有丟錯)'));
+
+  let byScenario = '';
+  try { gs.setLineItemScenarioExclusion('b5', sid, true); } catch (e) { byScenario = e.message; }
+  assert(byScenario.indexOf('開發總投') !== -1, '對情境刪除時也應該擋下，實際訊息：' + (byScenario || '(沒有丟錯)'));
+
+  assertEqual(gs.calculatePLCore_(sid, 'V1').lines.filter(l => l.LineCode === 'B')[0].Amount, before,
+    '被擋下之後銷貨成本不該有任何變動');
+
+  // 把這個情境的開發總投清掉之後，「只在這個情境刪除」就該放行
+  // （車型層級仍可能被同車型其他情境的資料擋住，那是對的：那些情境還在用它）
+  // saveDevInvestmentGrid 是「送出時被清空的列才刪」，所以要把既有列都送出、內容清空
+  gs.saveDevInvestmentGrid(sid, gs.getDevInvestment(sid).map(r => ({ RowID: r.RowID, Department: '', Amount: '' })));
+  gs.setLineItemScenarioExclusion('b5', sid, true);
+  assert(!gs.getPLLineItems('DA', sid).some(d => d.LineCode === 'b5'), '沒有資料指到時應該刪得掉');
+  gs.setLineItemScenarioExclusion('b5', sid, false);   // 復原，不影響後面的測試
+});
+
+check('回復內建科目預設值不會把使用者寫的公式洗掉', () => {
+  gs.savePLLineItemGrid('DA', base.ScenarioID, [
+    { LineCode: 'b1', LineName: '材料成本-LP', ParentLine: 'B', Category: '成本明細', SortOrder: 21, Formula: 'P8 * 0.02' }
+  ]);
+  gs.restoreBuiltInLineItems();
+  assertEqual(gs.getPLLineItems().filter(d => d.LineCode === 'b1')[0].Formula, 'P8 * 0.02',
+    '回復預設值只該回復名稱/排序，不該清掉使用者自己寫的公式');
+  gs.savePLLineItemGrid('DA', base.ScenarioID, [
+    { LineCode: 'b1', LineName: '材料成本-LP', ParentLine: 'B', Category: '成本明細', SortOrder: 21, Formula: '' }
+  ]);
+});
+
+check('自訂比率的名稱不能跟科目代碼撞號(撞了會永遠取不到值)', () => {
+  let threw = '';
+  try { gs.addCustomRateParam('b1'); } catch (e) { threw = e.message; }
+  assert(threw.indexOf('科目代碼') !== -1, '跟科目代碼同名應該被擋下，實際訊息：' + (threw || '(沒有丟錯)'));
 });
 
 check('車型代號重新命名會連動更新車系與情境', () => {

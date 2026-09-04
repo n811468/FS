@@ -18,8 +18,8 @@ var SHEETS = {
   DEV_INVESTMENT: 'DevInvestment',
   OPERATING_EXPENSE: 'OperatingExpense',
   PARAMETERS: 'Parameters',
-  PL_LINE_ITEMS: 'PLLineItems',
-  PL_RESULT: 'PLResult'
+  CUSTOM_RATE_PARAMS: 'CustomRateParams',
+  PL_LINE_ITEMS: 'PLLineItems'
 };
 
 // 每張表的欄位順序，同時作為 Sheet 標題列與 Apps Script 讀寫時的欄位對應。
@@ -39,8 +39,28 @@ var SCHEMA = {
     'Amount', 'Currency', 'ChallengeReductionPct', 'Notes', 'EffectiveDate', 'TargetLineCode', 'SortOrder'],
   OperatingExpense: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'Notes', 'EffectiveDate'],
   Parameters: ['ParamID', 'ScenarioID', 'VehicleID', 'ParamName', 'Currency', 'Value', 'EffectiveDate'],
-  PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'SortOrder', 'AutoSource', 'CommodityTaxDeduct', 'DevAmortCategory'],
-  PLResult: ['ResultID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'PctOfRevenue', 'PctOfExFactory', 'CalcTimestamp']
+  // 使用者在「稅務費用比率」頁自己新增的比率參數名稱清單(見 DataService.gs 的
+  // addCustomRateParam/getCustomRateParamNames_)。這裡只登記「有哪些名稱」，實際數值
+  // 還是跟內建比率參數一樣存在 Parameters 分頁(依情境/車系)。新增後可以直接在「科目設定」
+  // 頁的自訂公式裡用名稱引用，跟 TAX_RATE_PARAM_NAMES 一樣視為百分比數值(見 CalcEngine.gs
+  // 的 resolveLineItemFormulas_)。
+  CustomRateParams: ['ParamName', 'SortOrder'],
+  // VehicleTypeID：科目一律全系統共用，這個欄位新資料一律留空，只留給既有試算表的相容
+  // 轉換用途(見 SetupSheets.gs 的 migrateExclusiveLineItemsToShared_)。
+  // ExcludedVehicleTypeIDs：逗號分隔的車型代號清單，列在裡面的車型即使科目本身在範圍內，
+  // 也視為「這個車型不適用」——用來讓自動計算科目(季Margin、貨物稅、開發總投內建的模具/設備/
+  // CMC/BASE廠開發費攤提落點等)可以針對個別車型停用，而不用真的刪掉公式科目(公式是程式定義
+  // 的，刪不掉；但哪些車型要套用可以調整)。
+  // ExcludedScenarioIDs：同樣邏輯，但是針對單一情境——同一車型底下，「GATE F 現況」跟
+  // 「GATE F 目標」可能想套用不一樣的科目組合(例如目標情境計畫未來不再需要某個費用科目)，
+  // 不需要整個車型都停用。情境的停用只能「額外」疊加在車型範圍之上，不能反過來讓情境看到
+  // 車型範圍以外的科目——新建情境預設沿用所屬車型當下的科目範圍，之後想再各自微調停用即可。
+  // 兩種排除都一樣：結構科目(小計/毛利/淨利)不可以被排除，否則損益鏈會斷掉。
+  // Formula：選填，讓使用者自訂公式取代手動輸入(見 FormulaEngine.gs)。可以引用售價結構
+  // (P1~P9)、其他明細科目(b*、d*、f*、h*，手動或同樣是公式的都可以)、比率/匯率參數，
+  // 不能引用結構科目(A/B/C/E/G/I/K)或內建自動計算科目(b5/b8/b13/d4/f3/f4/開發總投自訂
+  // 攤提落點)，避免跟既有計算鏈交錯出現循環。有值的科目視同自動計算科目，不能再手動輸入金額。
+  PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'SortOrder', 'AutoSource', 'CommodityTaxDeduct', 'DevAmortCategory', 'VehicleTypeID', 'ExcludedVehicleTypeIDs', 'ExcludedScenarioIDs', 'Formula']
 };
 
 // 情境代號改用 GATE 別；同一個 GATE 底下可以有多個情境(GATE F 現況 / GATE F 目標)，
@@ -120,6 +140,9 @@ var DEV_AMORT_AUTO_SOURCES = [
 
 // 結構科目(小計/毛利/淨利)與自動計算科目不允許在「科目設定」頁面刪除，
 // 否則損益鏈會斷掉。其餘明細科目(b*/d*/f1/h*/J)皆可自由新增與刪除。
+// 這兩類科目也不可以限定車型(VehicleTypeID 必須留空)：結構科目要串起每個車型的損益鏈，
+// 自動計算科目的公式(比率/開發總投攤提)本身就不分車型，一旦限定某車型會讓其他車型的
+// 損益鏈斷掉或漏算。
 var PROTECTED_LINE_CODES = ['A', 'B', 'C', 'E', 'G', 'I', 'K'];
 
 // 科目代碼由系統自動產生流水號：父科目字首 + 目前未被使用的最小號碼(b1、b2、d1、f1、h1...)。
@@ -216,6 +239,9 @@ var TEXT_COLUMNS = {
   DevInvestment: ['RowID', 'ScenarioID', 'Department', 'AssetType', 'Currency', 'Notes', 'TargetLineCode'],
   OperatingExpense: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Notes'],
   Parameters: ['ParamID', 'ScenarioID', 'VehicleID', 'ParamName', 'Currency'],
-  PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'AutoSource', 'CommodityTaxDeduct', 'DevAmortCategory'],
-  PLResult: ['ResultID', 'ScenarioID', 'VehicleID', 'LineCode']
+  // VehicleTypeID/Excluded*/Formula 也要當純文字：車型代號若是純數字(如「2024」)，
+  // 被 Sheet 自動轉成數字之後就跟字串比對不起來，排除清單會整個失效
+  PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'AutoSource', 'CommodityTaxDeduct',
+    'DevAmortCategory', 'VehicleTypeID', 'ExcludedVehicleTypeIDs', 'ExcludedScenarioIDs', 'Formula'],
+  CustomRateParams: ['ParamName']
 };

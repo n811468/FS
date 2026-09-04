@@ -24,7 +24,7 @@ const PORT = Number(process.env.PORT) || 8787;
 
 /* ---- 示範資料：Gate F 現況(來自驗算腳本)、由它衍生的目標情境、再加一個別的車型 ---- */
 function seedDemoData() {
-  const gs = loadAppsScript(['Constants.gs', 'Utils.gs', 'DataService.gs', 'CalcEngine.gs', 'SetupSheets.gs']);
+  const gs = loadAppsScript(['Constants.gs', 'Utils.gs', 'FormulaEngine.gs', 'DataService.gs', 'CalcEngine.gs', 'SetupSheets.gs']);
   const baselineId = gatef.buildScenario(gs);
 
   // 目標情境：整批帶入現況資料，再改幾個數字讓兩個情境看得出差異
