@@ -632,12 +632,49 @@ assert(devTargetHtml.indexOf('投資總額(低減前)') !== -1 && devTargetHtml.
 assert(devTargetHtml.indexOf('單台攤提(低減前)') !== -1 && devTargetHtml.indexOf('單台攤提(低減後)') !== -1,
   '目標情境的單台攤提也要有低減前/後兩欄');
 
+/* ---- 15. 背景預載狀態：導覽列小圓點與標題列總進度 ---- */
+// 假 DOM 沒有真的導覽列按鈕，這裡只驗狀態判定與總進度文字(小圓點的 DOM 操作本身很單純)
+api('preloadState_ = {}');
+api('lastComparison = null');
+api('dashboardDirty_ = true');
+assert(api('panelPreloadState_')('salesmix') === '', '還沒開始預載時不該有任何狀態');
+api("preloadState_ = { salesmix: 'pending', costofsales: 'ready', devinvestment: 'failed' }");
+assert(api('panelPreloadState_')('salesmix') === 'pending', '送出還沒回來應該是 pending');
+assert(api('panelPreloadState_')('costofsales') === 'ready', '拿到資料應該是 ready');
+assert(api('panelPreloadState_')('devinvestment') === 'failed', '抓失敗應該是 failed');
+// 快取裡真的有資料時，即使不是預載來的也算已備妥(使用者自己點進去載過的情況)
+api("preloadState_ = {}; panelDataCache_[panelCacheKey_('salesmix')] = { rows: [] }");
+assert(api('panelPreloadState_')('salesmix') === 'ready', '自己點進去載過的分頁也該算已備妥');
+// 儀表板要看預先算好的結果還在不在(被改髒就不算)
+api('lastComparison = { columns: [], lines: [] }; dashboardDirty_ = false');
+assert(api('panelPreloadState_')('dashboard') === 'ready', '有算好且沒被改髒時儀表板算已備妥');
+api('markDashboardDirty_()');
+assert(api('panelPreloadState_')('dashboard') !== 'ready', '資料改髒之後儀表板不該還顯示已備妥');
+
+let preloadBox = { textContent: '', className: '', title: '' };
+const prevGetById = ctx.document.getElementById;
+ctx.document.getElementById = id => (id === 'preload-status' ? preloadBox : prevGetById(id));
+api('preloadState_ = {}');
+api('PRELOAD_TABS_.forEach(t => { preloadState_[t] = "ready"; })');
+api('updatePreloadStatus_()');
+assert(preloadBox.className.indexOf('done') !== -1 && preloadBox.textContent.indexOf('已預載') !== -1,
+  `全部預載完成時應該顯示完成訊息，實際「${preloadBox.textContent}」`);
+api('preloadState_.paramfx = "pending"');
+api('updatePreloadStatus_()');
+assert(preloadBox.className.indexOf('loading') !== -1 && preloadBox.textContent.indexOf('預載中') !== -1,
+  `還有分頁在載入時應該顯示進度，實際「${preloadBox.textContent}」`);
+api('preloadState_.paramfx = "failed"');
+api('updatePreloadStatus_()');
+assert(preloadBox.className.indexOf('warn') !== -1 && preloadBox.textContent.indexOf('失敗') !== -1,
+  `有分頁預載失敗時應該講出來，實際「${preloadBox.textContent}」`);
+ctx.document.getElementById = prevGetById;
+
 if (failures.length) {
   console.log(`前端驗證失敗：${failures.length} 項`);
   failures.forEach(f => console.log('  ✗ ' + f));
   process.exit(1);
 }
-console.log('前端驗證通過：損益表結構、% 基準/差異模式、hover 提示內容、SVG 圖表、最佳/最差標示、單位換算、欄位合併、設定記憶、主檔表格鎖定、CSV 欄數、公式引用選單、公式警告與開發總投低減前後皆正確。');
+console.log('前端驗證通過：損益表結構、% 基準/差異模式、hover 提示內容、SVG 圖表、最佳/最差標示、單位換算、欄位合併、設定記憶、主檔表格鎖定、CSV 欄數、公式引用選單、公式警告、開發總投低減前後與預載狀態指示皆正確。');
 console.log('');
 console.log('損益表前 12 列的產出片段：');
 console.log(tableExFactory.split('<tr').slice(0, 13).join('<tr').replace(/\n\s+/g, ' '));

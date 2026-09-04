@@ -17,6 +17,25 @@
   nav button { border: none; background: transparent; padding: 7px 13px; cursor: pointer; font-size: 14px; border-radius: 4px; white-space: nowrap; }
   nav button:hover:not(.active) { background: #f0f2f5; }
   nav button.active { background: #1f2d3d; color: #fff; }
+
+  /* ---- 背景預載的狀態指示 ----
+     每個分頁名稱後面一個小圓點：實心綠=資料已備妥(切過去秒開)、空心灰=背景載入中、
+     橘色=預載失敗(點進去會自動重載，只是要多等一次)。標題列右邊另外給一個總進度。
+     只是狀態提示，不擋任何操作，所以刻意做小、不搶按鈕本身的注意力。 */
+  .preload-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-left: 6px;
+    vertical-align: middle; box-sizing: border-box; }
+  .preload-dot.ready { background: #38a169; }
+  .preload-dot.pending { background: transparent; border: 1px solid #a0aec0; animation: preload-pulse 1.2s ease-in-out infinite; }
+  .preload-dot.failed { background: #dd6b20; }
+  nav button.active .preload-dot.ready { background: #68d391; }
+  nav button.active .preload-dot.pending { border-color: #cbd5e0; }
+  @keyframes preload-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+
+  .preload-status { margin-left: auto; font-size: 12px; padding: 3px 10px; border-radius: 10px; white-space: nowrap; }
+  .preload-status:empty { display: none; }
+  .preload-status.loading { background: rgba(255,255,255,.12); color: #cbd5e0; }
+  .preload-status.done { background: rgba(56,161,105,.22); color: #9ae6b4; }
+  .preload-status.warn { background: rgba(221,107,32,.25); color: #fbd38d; }
   /* 比較欄位一多就會超出 1200px，改成撐滿視窗、由表格自己橫向捲動 */
   main { padding: 20px; max-width: 1800px; margin: 0 auto; }
   .panel { display: none; background: #fff; border-radius: 6px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }

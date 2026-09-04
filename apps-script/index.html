@@ -19,6 +19,9 @@
       <select id="scenario-selector" onchange="onScenarioChange(this.value)"></select>
       <span id="scenario-type-badge" class="type-badge" style="display:none;"></span>
     </label>
+    <!-- 背景預載的總進度：選好車型+情境後各分頁的資料會在背景先抓回來，
+         這裡讓使用者看得出現在切過去是秒開、還是得等一下（每個分頁自己的狀態則標在導覽列上） -->
+    <span id="preload-status" class="preload-status"></span>
   </header>
   <div id="global-error" style="display:none; background:#fed7d7; color:#822727; padding:10px 20px; font-size:13px;"></div>
 

@@ -230,6 +230,7 @@ function switchTab(key) {
   document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + key));
   saveAppState_();
   renderTab(key);
+  updatePreloadStatus_();   // 剛點進去的分頁載完之後也算「資料在手上」，指示要跟著更新
 }
 
 /**
@@ -300,7 +301,6 @@ function renderScenarioOptions(scenarios, preferredId) {
 
 /** 只更新目前情境狀態與標籤，渲染交給呼叫端決定 */
 function setCurrentScenario(value) {
-  const changed = value !== currentScenarioId;
   currentScenarioId = value;
   currentScenario = scenarioCache.filter(s => s.ScenarioID === value)[0] || null;
   const badge = document.getElementById('scenario-type-badge');
@@ -309,9 +309,25 @@ function setCurrentScenario(value) {
     badge.style.display = currentScenario ? 'inline-block' : 'none';
   }
   saveAppState_();
-  // 車型+情境都選好了才背景預先載入所有分頁的資料，之後不管點哪個分頁都能秒開，
-  // 不用每一頁都自己再等一次「點了才載入」的第一次請求。
-  if (changed && currentVehicleTypeId && currentScenarioId) preloadAllPanels_();
+  maybePreloadAllPanels_();
+}
+
+/**
+ * 車型+情境都選好了才背景預先載入所有分頁的資料，之後不管點哪個分頁都能秒開，
+ * 不用每一頁都自己再等一次「點了才載入」的第一次請求。
+ *
+ * 用「這組車型+情境有沒有預載過」判斷，而不是「這次選擇有沒有變動」：整頁重新載入後
+ * (使用者自己重整，或 Apps Script 的 HtmlService 偶爾自己重整)，車型/情境會從記住的狀態
+ * 直接還原回來、值沒有變動，用「有沒有變動」判斷的話這種情況就一次都不會預載，
+ * 使用者重整完之後每一頁又要各等一次第一筆請求。
+ */
+let preloadedFor_ = '';
+function maybePreloadAllPanels_() {
+  if (!currentVehicleTypeId || !currentScenarioId) return;
+  const key = currentVehicleTypeId + '|' + currentScenarioId;
+  if (preloadedFor_ === key) return;
+  preloadedFor_ = key;
+  preloadAllPanels_();
 }
 
 /**
@@ -323,10 +339,26 @@ function setCurrentScenario(value) {
  * 失敗了就等使用者真的點進那一頁時再走正常流程重試、正常顯示錯誤，不在這裡打擾使用者。
  */
 let preloadSeq_ = 0;
+/**
+ * 每個分頁的預載狀態：'pending' 已送出還沒回來 / 'ready' 資料已經在手上 / 'failed' 這一頁抓失敗。
+ * 純粹是為了讓使用者看得到「現在哪幾頁已經備妥、可以秒切」(見 updatePreloadStatus_)，
+ * 不參與任何流程判斷 —— 真正決定要不要用快取的還是 panelDataCache_ 本身。
+ */
+let preloadState_ = {};
+/** 會被背景預載的分頁，順序照導覽列，讓進度數字跟畫面上的順序對得起來 */
+const PRELOAD_TABS_ = ['vehicles', 'scenarios', 'salesmix', 'costofsales', 'devinvestment',
+  'operatingexpense', 'lineitems', 'paramrates', 'paramfx', 'dashboard'];
+
 function preloadAllPanels_() {
   const vt = currentVehicleTypeId, sc = currentScenarioId;
   const seq = ++preloadSeq_;
   const stillCurrent = () => seq === preloadSeq_ && vt === currentVehicleTypeId && sc === currentScenarioId;
+  // 換車型/情境會重新預載一輪，狀態一起歸零，不然畫面會停在上一輪的「已完成」
+  preloadState_ = {};
+  PRELOAD_TABS_.forEach(tab => { preloadState_[tab] = 'pending'; });
+  updatePreloadStatus_();
+  /** 記錄某一頁預載完成/失敗，並即時更新畫面上的指示 */
+  const mark = (tab, state) => { preloadState_[tab] = state; updatePreloadStatus_(); };
   // 這次預先計算送出當下的「髒世代」：如果使用者在這個背景計算跑完之前，
   // 已經去別的分頁存了會影響損益的資料(例如科目設定按了「此車型/此情境停用」)，
   // 世代會跟著變，代表這次背景算出來的結果已經過時，不能拿來蓋掉 dashboardDirty_，
@@ -336,43 +368,43 @@ function preloadAllPanels_() {
   // 這批結果已經過時，寫進快取只會讓使用者看到「明明剛存檔，切頁又跳回舊資料」的錯覺——
   // 乾脆不寫，讓之後真的點進那一頁時走正常流程重新抓一次最新的。
   const freshEnough = () => stillCurrent() && dashboardDirtyGen_ === dirtyGenAtStart;
-  const noop = () => {};
+  const fail = tab => () => { if (stillCurrent()) mark(tab, 'failed'); };
 
   google.script.run.withSuccessHandler(rows => {
-    if (freshEnough()) panelDataCache_[panelCacheKey_('vehicles', 'vehicleType')] = rows;
-  }).withFailureHandler(noop).getVehicles(vt);
+    if (freshEnough()) { panelDataCache_[panelCacheKey_('vehicles', 'vehicleType')] = rows; mark('vehicles', 'ready'); }
+  }).withFailureHandler(fail('vehicles')).getVehicles(vt);
 
   google.script.run.withSuccessHandler(rows => {
-    if (freshEnough()) panelDataCache_[panelCacheKey_('scenarios', 'vehicleType')] = rows;
-  }).withFailureHandler(noop).getScenarios(vt);
+    if (freshEnough()) { panelDataCache_[panelCacheKey_('scenarios', 'vehicleType')] = rows; mark('scenarios', 'ready'); }
+  }).withFailureHandler(fail('scenarios')).getScenarios(vt);
 
   google.script.run.withSuccessHandler(rows => {
-    if (freshEnough()) panelDataCache_[panelCacheKey_('lineitems', 'both')] = rows;
-  }).withFailureHandler(noop).getPLLineItems(vt, sc);
+    if (freshEnough()) { panelDataCache_[panelCacheKey_('lineitems', 'both')] = rows; mark('lineitems', 'ready'); }
+  }).withFailureHandler(fail('lineitems')).getPLLineItems(vt, sc);
 
   google.script.run.withSuccessHandler(data => {
-    if (freshEnough()) panelDataCache_[panelCacheKey_('salesmix')] = data;
-  }).withFailureHandler(noop).getSalesMixGrid(sc, vt);
+    if (freshEnough()) { panelDataCache_[panelCacheKey_('salesmix')] = data; mark('salesmix', 'ready'); }
+  }).withFailureHandler(fail('salesmix')).getSalesMixGrid(sc, vt);
 
   google.script.run.withSuccessHandler(data => {
-    if (freshEnough()) panelDataCache_[panelCacheKey_('costofsales')] = data;
-  }).withFailureHandler(noop).getCostOfSalesMatrix(sc, vt);
+    if (freshEnough()) { panelDataCache_[panelCacheKey_('costofsales')] = data; mark('costofsales', 'ready'); }
+  }).withFailureHandler(fail('costofsales')).getCostOfSalesMatrix(sc, vt);
 
   google.script.run.withSuccessHandler(data => {
-    if (freshEnough()) panelDataCache_[panelCacheKey_('operatingexpense')] = data;
-  }).withFailureHandler(noop).getOperatingExpenseMatrix(sc, vt);
+    if (freshEnough()) { panelDataCache_[panelCacheKey_('operatingexpense')] = data; mark('operatingexpense', 'ready'); }
+  }).withFailureHandler(fail('operatingexpense')).getOperatingExpenseMatrix(sc, vt);
 
   google.script.run.withSuccessHandler(data => {
-    if (freshEnough()) panelDataCache_[panelCacheKey_('devinvestment', 'scenario')] = data;
-  }).withFailureHandler(noop).getDevInvestmentSummary(sc);
+    if (freshEnough()) { panelDataCache_[panelCacheKey_('devinvestment', 'scenario')] = data; mark('devinvestment', 'ready'); }
+  }).withFailureHandler(fail('devinvestment')).getDevInvestmentSummary(sc);
 
   google.script.run.withSuccessHandler(data => {
-    if (freshEnough()) panelDataCache_[panelCacheKey_('paramrates')] = data;
-  }).withFailureHandler(noop).getRateGrid(sc, vt);
+    if (freshEnough()) { panelDataCache_[panelCacheKey_('paramrates')] = data; mark('paramrates', 'ready'); }
+  }).withFailureHandler(fail('paramrates')).getRateGrid(sc, vt);
 
   google.script.run.withSuccessHandler(data => {
-    if (freshEnough()) panelDataCache_[panelCacheKey_('paramfx', 'scenario')] = data;
-  }).withFailureHandler(noop).getFxGrid(sc);
+    if (freshEnough()) { panelDataCache_[panelCacheKey_('paramfx', 'scenario')] = data; mark('paramfx', 'ready'); }
+  }).withFailureHandler(fail('paramfx')).getFxGrid(sc);
 
   // 儀表板：先把比較欄位選項跟目前情境的損益計算結果準備好，切過去就直接看得到，不用再等一次計算。
   google.script.run.withSuccessHandler(options => {
@@ -383,18 +415,101 @@ function preloadAllPanels_() {
     if (sc && !comparisonSelections.some(s => s.ScenarioID === sc)) {
       comparisonSelections.push({ ScenarioID: sc, VehicleID: '' });
     }
-    if (!comparisonSelections.length) return;
+    // 一個比較欄位都沒有的話，本來就沒有東西要預先算，這一頁直接算準備好了
+    if (!comparisonSelections.length) { mark('dashboard', 'ready'); return; }
     google.script.run.withSuccessHandler(result => {
       // 世代對不上：背景算的時候使用者已經把資料改髒了，這次結果過時，直接丟掉不套用，
       // 也不清 dashboardDirty_——等使用者真的點進儀表板時，refreshDashboard 會自己重算。
       if (!freshEnough()) return;
       lastComparison = reorderComparison_(result, comparisonSelections);
       dashboardDirty_ = false;
+      mark('dashboard', 'ready');
       // 如果使用者現在剛好就停在儀表板分頁，直接把預先算好的結果畫出來
       if (currentTab === 'dashboard') renderDashboard(lastComparison);
-    }).withFailureHandler(noop).calculateComparison(comparisonSelections);
-  }).withFailureHandler(noop).getComparisonOptions();
+    }).withFailureHandler(fail('dashboard')).calculateComparison(comparisonSelections);
+  }).withFailureHandler(fail('dashboard')).getComparisonOptions();
 }
+
+/**
+ * 把預載狀態畫到畫面上：導覽列每個分頁名稱後面一個小圓點(已備妥/載入中/失敗)，
+ * 標題列右邊一個總進度。使用者才知道「現在切過去是秒開，還是得等一下」，
+ * 也才看得出某一頁是不是預載失敗(點進去會自動重載，只是會多等一次)。
+ *
+ * 判定順序：
+ *   1. 正在載入中的優先 —— 換了車型/情境就會重新預載一輪，這時手上的舊快取是上一輪的內容，
+ *      顯示成「已備妥」會騙人(尤其儀表板：新情境的欄位還在算，畫面上卻說準備好了)。
+ *   2. 其次看快取裡有沒有資料 —— 使用者自己點進去載過、或存過檔重新載入的分頁，資料同樣
+ *      就在手上，沒有理由因為不是背景預載來的就顯示成沒準備好。
+ */
+function panelPreloadState_(tab) {
+  if (preloadState_[tab] === 'pending') return 'pending';
+  if (panelHasCachedData_(tab)) return 'ready';
+  return preloadState_[tab] || '';
+}
+
+/** 這個分頁的資料現在是不是已經在前端手上(不管是預載來的還是點進去載過的) */
+function panelHasCachedData_(tab) {
+  if (tab === 'dashboard') return !!lastComparison && !dashboardDirty_;
+  const cfg = ENTITIES[tab];
+  const scope = cfg ? entityCacheScope_(cfg, tab)
+    : (tab === 'devinvestment' || tab === 'paramfx') ? 'scenario' : 'both';
+  return panelDataCache_[panelCacheKey_(tab, scope)] !== undefined;
+}
+
+const PRELOAD_DOT_TITLE_ = {
+  ready: '資料已備妥，切過去會直接顯示',
+  pending: '背景載入中，切過去可能要等一下',
+  failed: '預載失敗，切過去時會自動重新載入'
+};
+
+function updatePreloadStatus_() {
+  const tabs = document.querySelectorAll('nav button[data-tab]');
+  (tabs.forEach ? tabs : []).forEach(btn => {
+    const state = panelPreloadState_(btn.dataset ? btn.dataset.tab : '');
+    let dot = btn.querySelector ? btn.querySelector('.preload-dot') : null;
+    if (!state) { if (dot && dot.remove) dot.remove(); return; }
+    if (!dot) {
+      dot = document.createElement('span');
+      btn.appendChild(dot);
+    }
+    dot.className = 'preload-dot ' + state;
+    dot.title = PRELOAD_DOT_TITLE_[state] || '';
+  });
+
+  const box = document.getElementById('preload-status');
+  if (!box) return;
+  const states = PRELOAD_TABS_.map(panelPreloadState_);
+  const ready = states.filter(s => s === 'ready').length;
+  const failed = states.filter(s => s === 'failed').length;
+  const total = PRELOAD_TABS_.length;
+  if (!states.some(s => s)) {   // 還沒選車型+情境，什麼都還沒開始預載
+    box.textContent = '';
+    box.className = 'preload-status';
+    box.title = '';
+    return;
+  }
+  if (ready === total) {
+    box.textContent = `✓ 各頁資料已預載 ${ready}/${total}`;
+    box.className = 'preload-status done';
+  } else if (failed && ready + failed === total) {
+    box.textContent = `預載 ${ready}/${total}（${failed} 頁失敗）`;
+    box.className = 'preload-status warn';
+  } else {
+    box.textContent = `預載中 ${ready}/${total}…`;
+    box.className = 'preload-status loading';
+  }
+  box.title = PRELOAD_TABS_
+    .map(tab => `${TAB_LABELS_[tab] || tab}：${PRELOAD_DOT_TITLE_[panelPreloadState_(tab)] || '尚未載入'}`)
+    .join('\n');
+}
+
+/** 分頁代碼 -> 顯示名稱，給預載狀態的提示文字用(導覽列的按鈕文字是寫在 index.html 的) */
+const TAB_LABELS_ = {
+  vehicletypes: '車型主檔', vehicles: '車系設定', scenarios: '情境設定',
+  salesmix: '銷售構成', costofsales: '銷貨成本', devinvestment: '開發總投',
+  operatingexpense: '營業費用', lineitems: '科目設定', paramrates: '稅務費用比率',
+  paramfx: '匯率設定', dashboard: '損益儀表板'
+};
 
 function onVehicleTypeChange(value) {
   currentVehicleTypeId = value;
@@ -525,7 +640,7 @@ function loadEntityData(key) {
   // 科目設定頁的「自訂公式」欄位要有可引用項目的選單，跟科目清單一起重新取
   if (key === 'lineitems') loadFormulaRefOptions_();
   google.script.run
-    .withSuccessHandler(safeHandler(rows => { panelDataCache_[cacheKey] = rows; apply(rows); }))
+    .withSuccessHandler(safeHandler(rows => { panelDataCache_[cacheKey] = rows; apply(rows); updatePreloadStatus_(); }))
     .withFailureHandler(showGlobalError)
     [cfg.getFn](...args);
 }
@@ -956,6 +1071,10 @@ function invalidateLineItemDependentCaches_() {
   delete panelDataCache_[panelCacheKey_('costofsales')];
   delete panelDataCache_[panelCacheKey_('operatingexpense')];
   delete panelDataCache_[panelCacheKey_('devinvestment', 'scenario')];
+  // 這幾頁的資料剛被丟掉，導覽列上的「已備妥」指示也要跟著收回，不然會顯示成還可以秒切
+  ['lineitems', 'costofsales', 'operatingexpense', 'devinvestment']
+    .forEach(tab => { delete preloadState_[tab]; });
+  updatePreloadStatus_();
 }
 
 /** 停用/重新啟用操作完成後，讓對應的「已停用」區塊閃一下、並捲動到看得見的地方，明確提示使用者剛剛的操作生效了 */
@@ -1139,6 +1258,7 @@ function renderSalesMixPanel() {
       panelDataCache_[cacheKey] = data;
       salesMixRows = data.rows || [];
       drawSalesMixGrid();
+      updatePreloadStatus_();
     }))
     .withFailureHandler(showGlobalError)
     .getSalesMixGrid(currentScenarioId, currentVehicleTypeId);
@@ -1311,7 +1431,7 @@ function renderMatrixPanel(key) {
   const cacheKey = panelCacheKey_(key);
   if (panelDataCache_[cacheKey]) { matrixData[key] = panelDataCache_[cacheKey]; drawMatrix(key); }
   google.script.run
-    .withSuccessHandler(safeHandler(data => { panelDataCache_[cacheKey] = data; matrixData[key] = data; drawMatrix(key); }))
+    .withSuccessHandler(safeHandler(data => { panelDataCache_[cacheKey] = data; matrixData[key] = data; drawMatrix(key); updatePreloadStatus_(); }))
     .withFailureHandler(showGlobalError)
     [cfg.getFn](currentScenarioId, currentVehicleTypeId);
 }
@@ -1570,6 +1690,7 @@ function renderDevInvestmentPanel() {
       devSummary = summary;
       devRows = summary.rows.map(r => Object.assign({}, r));
       drawDevGrid();
+      updatePreloadStatus_();
     }))
     .withFailureHandler(showGlobalError)
     .getDevInvestmentSummary(currentScenarioId);
@@ -1855,7 +1976,7 @@ function renderRatePanel() {
   const cacheKey = panelCacheKey_('paramrates');
   if (panelDataCache_[cacheKey]) { rateData = panelDataCache_[cacheKey]; drawRateGrid(); }
   google.script.run
-    .withSuccessHandler(safeHandler(data => { panelDataCache_[cacheKey] = data; rateData = data; drawRateGrid(); }))
+    .withSuccessHandler(safeHandler(data => { panelDataCache_[cacheKey] = data; rateData = data; drawRateGrid(); updatePreloadStatus_(); }))
     .withFailureHandler(showGlobalError)
     .getRateGrid(currentScenarioId, currentVehicleTypeId);
 }
@@ -1956,7 +2077,7 @@ function renderFxPanel() {
   const cacheKey = panelCacheKey_('paramfx', 'scenario');
   if (panelDataCache_[cacheKey]) { fxData = panelDataCache_[cacheKey]; drawFxGrid(); }
   google.script.run
-    .withSuccessHandler(safeHandler(data => { panelDataCache_[cacheKey] = data; fxData = data; drawFxGrid(); }))
+    .withSuccessHandler(safeHandler(data => { panelDataCache_[cacheKey] = data; fxData = data; drawFxGrid(); updatePreloadStatus_(); }))
     .withFailureHandler(showGlobalError)
     .getFxGrid(currentScenarioId);
 }
@@ -2038,7 +2159,13 @@ let lastComparison = null;
  */
 let dashboardDirty_ = true;
 let dashboardDirtyGen_ = 0;
-function markDashboardDirty_() { dashboardDirty_ = true; dashboardDirtyGen_++; }
+function markDashboardDirty_() {
+  dashboardDirty_ = true;
+  dashboardDirtyGen_++;
+  // 儀表板的預先計算結果已經過時，導覽列上就不該再顯示成「已備妥」
+  delete preloadState_.dashboard;
+  updatePreloadStatus_();
+}
 let dashPrefsLoaded_ = false;
 let dashView = 'table';               // 目前顯示哪個子頁：'columns' 比較欄位 / 'table' 損益表 / 'chart' 圖表 / 'diff' 差異比較
 // 新增比較欄位那一列還沒送出的草稿(車型/情境/車系)，跟已經加入的 comparisonSelections 分開放
