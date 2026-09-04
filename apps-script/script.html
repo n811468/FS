@@ -63,8 +63,10 @@ const ENTITIES = {
   },
   lineitems: {
     label: '科目設定', pk: 'LineCode',
+    // 跟車系設定/情境設定一樣，用畫面最上方的「車型」選單決定要看哪個車型的科目：
+    // 選 DA 就自動帶出「共用科目」+「DA 專屬科目」，不會看到跟 DA 無關的其他車型專屬科目。
     getFn: 'getPLLineItems', saveGridFn: 'savePLLineItemGrid', deleteFn: 'deletePLLineItem',
-    scopedBy: null,
+    scopedBy: 'vehicleType',
     restorable: true,
     columns: [
       { name: 'LineCode', label: '科目代碼', auto: true, width: 80 },
@@ -72,10 +74,12 @@ const ENTITIES = {
       { name: 'LineName', label: '科目名稱', width: 280, lockIf: r => r.__existing && isFixedLineItem(r) },
       { name: 'ParentLine', label: '父科目', type: 'select', options: LINE_PARENT_OPTIONS, width: 190,
         lockIf: r => r.__existing && isFixedLineItem(r) },
-      // 留空 = 全車型共用；選了某車型 = 只有那個車型看得到、算得到這個科目(見 Constants.gs 說明)。
+      // 留空 = 全車型共用(所有車型都看得到、都會算)；選了目前這個車型 = 只有這個車型專屬。
+      // 因為畫面本來就已經鎖定在目前選的車型，這裡只需要「共用」跟「本車型專屬」兩個選項，
+      // 不需要(也不應該)讓使用者從這裡把科目直接轉給別的車型，那樣容易搞混。
       // 結構科目與自動計算科目的損益鏈/公式本身就不分車型，鎖定為「(共用)」不可改。
-      { name: 'VehicleTypeID', label: '所屬車型', type: 'select', options: () => vehicleTypeLineItemOptions_(),
-        width: 130, lockIf: r => r.__existing && isFixedLineItem(r) },
+      { name: 'VehicleTypeID', label: '共用 / 專屬', type: 'select', options: () => lineItemScopeOptions_(),
+        width: 170, lockIf: r => r.__existing && isFixedLineItem(r) },
       { name: 'Category', label: '分類', width: 110 },
       { name: 'SortOrder', label: '排序值', type: 'number', width: 80 },
       { name: 'AutoSource', label: '自動計算來源', readOnly: true, width: 150 }
@@ -83,9 +87,9 @@ const ENTITIES = {
   }
 };
 
-/** 科目設定「所屬車型」欄位的下拉選項：(共用) + 目前所有車型代號 */
-function vehicleTypeLineItemOptions_() {
-  return [['', '(共用)']].concat((vehicleTypesCache_ || []).map(t => [t.VehicleTypeID, t.VehicleTypeID]));
+/** 科目設定「共用 / 專屬」欄位的下拉選項：只有「共用」跟「目前車型專屬」兩個，避免跟別的車型搞混 */
+function lineItemScopeOptions_() {
+  return [['', '(共用，所有車型可用)'], [currentVehicleTypeId, '僅「' + currentVehicleTypeId + '」專屬']];
 }
 
 /** 結構科目或自動計算科目：父科目固定、名稱不可改 */
@@ -361,7 +365,8 @@ function drawEntityGrid(key) {
     ${cfg.createUi === 'scenario' ? '' :
       `<button type="button" class="btn secondary" onclick="addEntityRow('${key}')">新增一列</button>`}
     ${cfg.restorable ? '<button type="button" class="btn secondary" onclick="restoreBuiltInLines()">恢復內建科目預設值</button>' : ''}
-  ` + (cfg.createUi === 'scenario' ? scenarioToolbarHtml() : '');
+  ` + (cfg.createUi === 'scenario' ? scenarioToolbarHtml() : '')
+    + (key === 'lineitems' ? cloneLineItemsToolbarHtml_() : '');
 
   const body = rows.length
     ? rows.map((r, i) => `<tr${r.__existing ? '' : ' class="new-row"'}>
@@ -520,6 +525,9 @@ function addEntityRow(key) {
   const row = { __existing: false };
   cfg.columns.forEach(c => { row[c.name] = ''; });
   if (cfg.pk) row[cfg.pk] = '';
+  // 科目設定頁在某個車型底下按「新增一列」，理當是要新增這個車型專屬的科目
+  // （要新增共用科目的話，存檔前把「共用 / 專屬」欄位改選「(共用)」即可）
+  if (key === 'lineitems') row.VehicleTypeID = currentVehicleTypeId;
   entityRows[key].push(row);
   drawEntityGrid(key);
 }
@@ -578,13 +586,54 @@ function restoreBuiltInLines() {
   if (!confirm('會把所有內建科目的名稱、父科目、分類與排序回復成系統預設值（自己新增的科目不受影響），確定嗎？')) return;
   setStatus('lineitems', '回復中...');
   google.script.run
-    .withSuccessHandler(safeHandler(rows => {
-      entityRows.lineitems = (rows || []).map(r => Object.assign({}, r, { __existing: true }));
-      drawEntityGrid('lineitems');
+    .withSuccessHandler(safeHandler(() => {
+      // 內建科目一律共用，回復動作影響全系統；重新用「目前車型」的範圍載入，
+      // 畫面才不會暫時混進其他車型專屬的科目列。
+      delete panelDataCache_[panelCacheKey_('lineitems', entityCacheScope_(ENTITIES.lineitems))];
+      loadEntityData('lineitems');
       setStatus('lineitems', '已回復內建科目的預設名稱與排序', 'ok');
     }))
     .withFailureHandler(err => setStatus('lineitems', '錯誤：' + err.message, 'err'))
     .restoreBuiltInLineItems();
+}
+
+/**
+ * 「沿用其他車型科目」：新車型剛建立、還沒有任何專屬科目時，可以選一個既有車型，
+ * 把它的專屬科目複製一份過來當作起點，再自己增刪調整；也可以不理會這個功能，
+ * 直接用「新增一列」從空白開始建立這個車型自己的科目。
+ * 複製出來的是全新、獨立的科目（見 cloneVehicleTypeLineItems 的說明），
+ * 之後不管怎麼改，都不會影響來源車型的資料或損益計算。
+ */
+function cloneLineItemsToolbarHtml_() {
+  if (!currentVehicleTypeId) return '';
+  const others = (vehicleTypesCache_ || []).filter(t => t.VehicleTypeID !== currentVehicleTypeId);
+  if (!others.length) return '';
+  const options = others.map(t => `<option value="${esc(t.VehicleTypeID)}">${esc(t.VehicleTypeID)}</option>`).join('');
+  return `
+    <div class="toolbar-block">
+      <div class="toolbar-block-title">沿用其他車型的專屬科目</div>
+      <div class="toolbar">
+        <span class="muted">把選定車型的專屬科目複製一份到「${esc(currentVehicleTypeId)}」，複製後兩邊各自獨立、互不影響：</span>
+        <select id="clone-lineitems-source"><option value="">-- 選擇來源車型 --</option>${options}</select>
+        <button type="button" class="btn secondary" onclick="cloneLineItemsFromVehicleType_()">套用</button>
+      </div>
+    </div>`;
+}
+
+function cloneLineItemsFromVehicleType_() {
+  const source = val('clone-lineitems-source');
+  if (!source) { setStatus('lineitems', '請先選擇要沿用的來源車型', 'err'); return; }
+  setStatus('lineitems', '複製中...');
+  google.script.run
+    .withSuccessHandler(safeHandler(result => {
+      pendingStatus = { key: 'lineitems',
+        text: result.cloned ? `已從「${source}」複製 ${result.cloned} 個科目（已存在同名科目的不重複複製）` : '沒有新科目需要複製（來源車型的專屬科目都已經複製過了）',
+        cls: 'ok' };
+      delete panelDataCache_[panelCacheKey_('lineitems', entityCacheScope_(ENTITIES.lineitems))];
+      loadEntityData('lineitems');
+    }))
+    .withFailureHandler(err => setStatus('lineitems', '錯誤：' + err.message, 'err'))
+    .cloneVehicleTypeLineItems(source, currentVehicleTypeId);
 }
 
 /** 車型/情境改動後，上方的選單也要跟著更新（但不要重畫目前這個分頁，會蓋掉剛顯示的訊息） */
@@ -919,7 +968,9 @@ function drawMatrix(key) {
     <span class="toolbar-sep"></span>
     ${parentSelect}
     <input id="${key}-new-name" type="text" placeholder="新增項目名稱" style="width:160px;">
-    <label class="chk"><input type="checkbox" id="${key}-new-scoped"> 僅本車型(${esc(currentVehicleTypeId)})專屬</label>
+    <label class="chk" title="取消勾選 = 這個科目改成所有車型共用">
+      <input type="checkbox" id="${key}-new-scoped" checked> 僅「${esc(currentVehicleTypeId)}」專屬（取消勾選 = 全車型共用）
+    </label>
     <button type="button" class="btn secondary" onclick="addMatrixLine('${key}')">新增項目</button>
   `;
 

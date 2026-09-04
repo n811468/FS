@@ -920,6 +920,40 @@ function savePLLineItem(rowObj) {
 }
 
 /**
+ * 沿用某個車型的專屬科目，複製一份掛到另一個車型底下，讓使用者可以「以現有車型為基礎調整」，
+ * 而不用從零開始一個個新增。複製出來的是全新、獨立的科目(系統重新配一組代碼)，
+ * 跟來源車型的原始科目完全脫鉤——之後不管改名、改金額、刪除都只影響新車型，
+ * 不會動到來源車型的任何資料或計算結果(科目代碼是全系統唯一的 key，兩邊從此各自獨立)。
+ * 共用科目本來就每個車型都看得到，不需要、也不應該被複製。
+ * 已經複製過的科目(同名稱+同父科目)不重複複製，避免使用者按兩次造成重複科目。
+ */
+function cloneVehicleTypeLineItems(sourceVehicleTypeId, targetVehicleTypeId) {
+  return withLock_(function () {
+    if (!sourceVehicleTypeId || !targetVehicleTypeId) throw new Error('請選擇來源車型與目標車型');
+    if (sourceVehicleTypeId === targetVehicleTypeId) throw new Error('來源車型跟目標車型不能是同一個');
+
+    var sourceItems = getPLLineItems().filter(function (d) { return d.VehicleTypeID === sourceVehicleTypeId; });
+    var existingTarget = getPLLineItems().filter(function (d) { return d.VehicleTypeID === targetVehicleTypeId; });
+    var existingKey = function (d) { return d.ParentLine + '|' + d.LineName; };
+    var already = {};
+    existingTarget.forEach(function (d) { already[existingKey(d)] = true; });
+
+    var cloned = 0;
+    sourceItems.forEach(function (src) {
+      if (already[existingKey(src)]) return; // 已經複製過同名稱的科目，跳過避免重複
+      var created = newLineItemRow_(src.ParentLine, src.LineName);
+      created.Category = src.Category || created.Category;
+      created.CommodityTaxDeduct = src.CommodityTaxDeduct || '';
+      created.VehicleTypeID = targetVehicleTypeId;
+      upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', created);
+      already[existingKey(src)] = true;
+      cloned++;
+    });
+    return { cloned: cloned, items: getPLLineItems(targetVehicleTypeId) };
+  });
+}
+
+/**
  * 儲存一筆科目。沒有帶 LineCode 就視為新增，代碼與排序值由系統產生
  * （使用者只選父科目、填名稱，不必自己編碼，也不會跟既有科目撞號）。
  * 呼叫端必須已經在 withLock_ 內。
@@ -962,7 +996,13 @@ function savePLLineItem_(rowObj) {
  * 清單，天然沒有這個問題；新增列一次通常只有幾筆，逐列處理的成本可以忽略。
  * 既有列的代碼已經固定、不會撞號，這段才整批一次寫回。
  */
-function savePLLineItemGrid(rows) {
+/**
+ * vehicleTypeId：畫面上目前選取的車型(跟車系設定的 saveVehicleGrid 同一個呼叫慣例)。
+ * 這裡不需要拿它去改寫科目的所屬車型 —— 每一列的「共用/專屬」由列本身的 VehicleTypeID
+ * 欄位決定，前端已經照使用者的選擇填好了；vehicleTypeId 只用來決定存檔後要回傳哪個車型
+ * 看得到的科目清單，讓畫面重繪時維持在目前選取的車型範圍內。
+ */
+function savePLLineItemGrid(vehicleTypeId, rows) {
   return withLock_(function () {
     var newRows = [], existingRows = [];
     (rows || []).forEach(function (r) {
@@ -991,7 +1031,7 @@ function savePLLineItemGrid(rows) {
       });
       batchWriteRows_(SHEETS.PL_LINE_ITEMS, 'LineCode', upserts, []);
     }
-    return getPLLineItems();
+    return getPLLineItems(vehicleTypeId);
   });
 }
 function deletePLLineItem(lineCode) {
