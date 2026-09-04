@@ -201,13 +201,29 @@ function gridShell(key, title) {
     <div id="grid-${key}"></div>
   `;
 }
+/**
+ * 分頁切回來時，只有第一次(或外框被換掉過，如「請先選擇車型」提示)才重建外框；
+ * 已經蓋過外框的分頁直接沿用既有 DOM，之後只靠 draw*() 更新 #toolbar-/#grid- 裡的內容。
+ * 這樣切分頁不會每次都先閃一下空殼再補內容，配合 panelDataCache_ 的舊資料先顯示，
+ * 切到看過的分頁基本上是「秒切」，不是每次都感覺整頁在重新載入。
+ */
+function ensureShell_(key, title) {
+  const panel = document.getElementById('panel-' + key);
+  if (panel.dataset.shellReady === '1') {
+    // 外框沿用，但上次離開這頁時留下的狀態訊息(如「已儲存」)不該一直留著，切回來先清掉
+    setStatus(key, '');
+    return;
+  }
+  panel.innerHTML = gridShell(key, title);
+  panel.dataset.shellReady = '1';
+}
 function scenarioLabel(s) {
   return [s.Gate, s.ScenarioName].filter(v => v).join(' ') || s.ScenarioID;
 }
 function requireScope(key, needScenario) {
   const panel = document.getElementById('panel-' + key);
-  if (!currentVehicleTypeId) { panel.innerHTML = '<p class="muted">請先在上方選擇車型</p>'; return false; }
-  if (needScenario && !currentScenarioId) { panel.innerHTML = '<p class="muted">請先在上方選擇情境</p>'; return false; }
+  if (!currentVehicleTypeId) { panel.innerHTML = '<p class="muted">請先在上方選擇車型</p>'; panel.dataset.shellReady = ''; return false; }
+  if (needScenario && !currentScenarioId) { panel.innerHTML = '<p class="muted">請先在上方選擇情境</p>'; panel.dataset.shellReady = ''; return false; }
   return true;
 }
 
@@ -342,9 +358,10 @@ function renderEntityPanel(key) {
   const panel = document.getElementById('panel-' + key);
   if (cfg.scopedBy === 'vehicleType' && !currentVehicleTypeId) {
     panel.innerHTML = '<p class="muted">請先在上方選擇車型</p>';
+    panel.dataset.shellReady = '';
     return;
   }
-  panel.innerHTML = gridShell(key, cfg.label);
+  ensureShell_(key, cfg.label);
   loadEntityData(key);
 }
 
@@ -777,8 +794,7 @@ let salesMixRows = [];
 
 function renderSalesMixPanel() {
   if (!requireScope('salesmix', true)) return;
-  const panel = document.getElementById('panel-salesmix');
-  panel.innerHTML = gridShell('salesmix', '銷售構成與售價');
+  ensureShell_('salesmix', '銷售構成與售價');
   const cacheKey = panelCacheKey_('salesmix');
   if (panelDataCache_[cacheKey]) { salesMixRows = panelDataCache_[cacheKey].rows || []; drawSalesMixGrid(); }
   google.script.run
@@ -953,7 +969,7 @@ function renderOperatingExpensePanel() { renderMatrixPanel('operatingexpense'); 
 function renderMatrixPanel(key) {
   if (!requireScope(key, true)) return;
   const cfg = MATRIX_CONFIG[key];
-  document.getElementById('panel-' + key).innerHTML = gridShell(key, cfg.title);
+  ensureShell_(key, cfg.title);
   const cacheKey = panelCacheKey_(key);
   if (panelDataCache_[cacheKey]) { matrixData[key] = panelDataCache_[cacheKey]; drawMatrix(key); }
   google.script.run
@@ -1196,7 +1212,7 @@ let devSummary = null;
 
 function renderDevInvestmentPanel() {
   if (!requireScope('devinvestment', true)) return;
-  document.getElementById('panel-devinvestment').innerHTML = gridShell('devinvestment', '開發總投');
+  ensureShell_('devinvestment', '開發總投');
 
   const cacheKey = panelCacheKey_('devinvestment', 'scenario');
   if (panelDataCache_[cacheKey]) {
@@ -1472,7 +1488,7 @@ let rateData = null;
 
 function renderRatePanel() {
   if (!requireScope('paramrates', true)) return;
-  document.getElementById('panel-paramrates').innerHTML = gridShell('paramrates', '稅務費用比率');
+  ensureShell_('paramrates', '稅務費用比率');
   const cacheKey = panelCacheKey_('paramrates');
   if (panelDataCache_[cacheKey]) { rateData = panelDataCache_[cacheKey]; drawRateGrid(); }
   google.script.run
@@ -1539,7 +1555,7 @@ let fxData = null;
 
 function renderFxPanel() {
   if (!requireScope('paramfx', true)) return;
-  document.getElementById('panel-paramfx').innerHTML = gridShell('paramfx', '匯率設定');
+  ensureShell_('paramfx', '匯率設定');
   const cacheKey = panelCacheKey_('paramfx', 'scenario');
   if (panelDataCache_[cacheKey]) { fxData = panelDataCache_[cacheKey]; drawFxGrid(); }
   google.script.run
