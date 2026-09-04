@@ -206,6 +206,13 @@
   .toolbar-block { width: 100%; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px 12px; margin-top: 8px; background: #f9fafb; }
   .toolbar-block-title { font-size: 12px; font-weight: 600; color: #4a5568; margin-bottom: 4px; }
   .toolbar-block .toolbar { margin-bottom: 6px; }
+  /* 「已停用」科目清單：用醒目的橘色調，讓使用者一眼看出這裡列的是被停用、目前不計算的科目 */
+  .toolbar-block.disabled-block { background: #fffaf0; border-color: #f6ad55; }
+  .toolbar-block.disabled-block .toolbar-block-title { color: #9c4221; }
+  .toolbar-block.disabled-block .chip { background: #feebc8; color: #7b341e; }
+  /* 剛完成停用/啟用動作時，讓「已停用」區塊短暫閃一下背景色，明確提示使用者「這裡剛變動」 */
+  @keyframes flash-block { 0%, 100% { background: #fffaf0; } 40% { background: #fbd38d; } }
+  .toolbar-block.flash { animation: flash-block 900ms ease-out 2; }
   table.entity-table td.calc { color: #4a5568; }
   table.entity-table tr.new-row td { background: #fffaf0; }
   td.row-actions { white-space: nowrap; }
