@@ -13,7 +13,6 @@
 node tools/verify-gatef.js             # 用實際 Gate F 損益試算表的數字逐格驗算（317 格）
 node tools/verify-features.js          # 情境帶入、科目自動編號、匯率精簡等行為
 node tools/verify-ui.js                # 損益表版面、% 基準、小計警示、CSV 欄數
-node tools/verify-firestore-client.js  # Firestore REST 用戶端：JWT 簽章、token 快取、CRUD 呼叫格式
 node tools/verify-write-batching.js    # 整批寫入：跨情境隔離、新增/更新/刪除混合、呼叫次數不隨格數線性成長
 ```
 
@@ -28,8 +27,3 @@ node tools/dev-server.js               # 打開 http://localhost:8787
 用同一層模擬層把後端跑在 Node 上，灌一組示範資料（Gate F 現況、由它衍生的目標情境、另一個車型），
 前端的 `google.script.run` 被換成打 `/rpc` 給這台伺服器。改完 `script.html` / `style.html` 存檔後按 F5 就看得到，
 資料只在記憶體、重啟就回到示範資料。適合調版面、看儀表板的圖表與 hover 提示。
-
-## 資料庫遷移（Google Sheets → Firestore）
-
-正在進行把資料庫從 Google Sheets 換成 Firestore 的遷移，理由與階段規劃見
-[`docs/firestore-migration.md`](docs/firestore-migration.md)。
