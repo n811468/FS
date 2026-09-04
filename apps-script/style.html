@@ -1,5 +1,7 @@
 <style>
   body { font-family: 'Segoe UI', 'Microsoft JhengHei', sans-serif; margin: 0; background: #f5f6f8; color: #222; }
+  /* 車型/情境選單 + 分頁列一起黏在視窗頂端，捲動長列表時仍看得到目前選的是哪個車型/情境/分頁 */
+  .app-top { position: sticky; top: 0; z-index: 20; }
   header { background: #1f2d3d; color: #fff; padding: 12px 20px; display: flex; align-items: center; gap: 20px; }
   header h1 { font-size: 18px; margin: 0; }
   /* 導覽列分三個主軸：車型與情境 / 損益項目與計算 / 結果呈現。

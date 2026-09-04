@@ -512,8 +512,8 @@ function devAmortTargetOf_(row) {
  * 每個選項都帶 category(設備/模具/費用)，前端先選大類、再從選中的大類裡選實際落點，
  * 避免自己新增的攤提落點越加越多之後，整個下拉選單混在一起不好找。
  */
-function getDevAmortTargetOptions() {
-  return getPLLineItems()
+function getDevAmortTargetOptions(vehicleTypeId) {
+  return getPLLineItems(vehicleTypeId)
     .filter(function (d) { return DEV_AMORT_AUTO_SOURCES.indexOf(d.AutoSource) !== -1; })
     .map(function (d) {
       return { value: d.LineCode, label: d.LineName, parentLine: d.ParentLine, category: d.DevAmortCategory || '' };
@@ -527,7 +527,11 @@ function getDevAmortTargetOptions() {
  * 新科目一律標記 AutoSource=DEV_AMORT，之後不會出現在「銷貨成本」「營業費用」的手動輸入選單裡，
  * 避免跟開發總投攤提的金額重複計列。
  */
-function addDevAmortLineItem(category, lineName) {
+/**
+ * vehicleTypeId 可選：不傳(或空白) = 共用攤提落點，所有車型都看得到；有傳 = 只有這個車型
+ * 專屬（跟銷貨成本/營業費用頁「新增項目」的邏輯一致），要調成共用可以到「科目設定」頁改。
+ */
+function addDevAmortLineItem(category, lineName, vehicleTypeId) {
   return withLock_(function () {
     if (!lineName) throw new Error('請輸入科目名稱');
     var parentLine = DEV_AMORT_CATEGORY_PARENT[category];
@@ -535,7 +539,7 @@ function addDevAmortLineItem(category, lineName) {
     var row = newLineItemRow_(parentLine, lineName);
     row.AutoSource = AUTO_SOURCE.DEV_AMORT;
     row.DevAmortCategory = category;
-    row.VehicleTypeID = ''; // 自動計算科目一律共用，不分車型
+    row.VehicleTypeID = vehicleTypeId || '';
 
     return upsertRow_(SHEETS.PL_LINE_ITEMS, 'LineCode', row);
   });
@@ -892,12 +896,19 @@ function syncCodeOwnedLineItems_() {
 /**
  * 把所有內建科目(含明細科目)的名稱、父科目、分類、排序值整個回復成程式碼中的預設值。
  * 使用者自己新增的科目不受影響。排序值會一併回到實際損益試算表的列序。
+ * 「共用/專屬」設定不算「內建預設值」的一部分(PL_LINE_ITEMS 本身不記這個)，
+ * 是使用者自己在「科目設定」頁決定的，回復預設值不應該連帶把它洗回共用。
  */
 function restoreBuiltInLineItems() {
   return withLock_(function () {
+    var existingByCode = indexByPk_(getPLLineItems(), 'LineCode');
     var upserts = PL_LINE_ITEMS.map(function (line) {
+      var existing = existingByCode[line.LineCode];
       var row = {};
-      SCHEMA.PLLineItems.forEach(function (h) { row[h] = line[h] !== undefined ? line[h] : ''; });
+      SCHEMA.PLLineItems.forEach(function (h) {
+        row[h] = line[h] !== undefined ? line[h]
+          : (h === 'VehicleTypeID' && existing) ? (existing.VehicleTypeID || '') : '';
+      });
       return row;
     });
     batchWriteRows_(SHEETS.PL_LINE_ITEMS, 'LineCode', upserts, []);
@@ -976,10 +987,14 @@ function savePLLineItem_(rowObj) {
   // 自動計算科目由 CalcEngine 產生，使用者新增的科目一律是手動輸入科目；
   // CommodityTaxDeduct(貨物稅完稅價格可扣除)等表單沒有的欄位由合併式 upsert 保留原值
   rowObj.AutoSource = existing ? (existing.AutoSource || '') : '';
-  // 結構科目(A/B/C/E/G/I/K)與自動計算科目改掉父科目會讓損益鏈接錯段，一律沿用原值；
-  // 這兩類科目的所屬車型也一律鎖定為共用(留空)，避免限定車型後在其他車型的損益鏈斷掉。
+  // 結構科目(A/B/C/E/G/I/K)與自動計算科目改掉父科目會讓損益鏈接錯段，一律沿用原值
   if (existing && (PROTECTED_LINE_CODES.indexOf(rowObj.LineCode) !== -1 || existing.AutoSource)) {
     rowObj.ParentLine = existing.ParentLine || '';
+  }
+  // 只有結構科目(小計/毛利/淨利)一定要全車型共用；自動計算科目(季Margin、貨物稅、
+  // 開發總投攤提...)雖然公式/名稱不能改，但「要不要套用在這個車型」可以調整——
+  // 有些車型可能根本不適用某個自動計算科目(見 CalcEngine.gs 如何依此決定要不要算)。
+  if (existing && PROTECTED_LINE_CODES.indexOf(rowObj.LineCode) !== -1) {
     rowObj.VehicleTypeID = '';
   }
   return upsertRowMerge_(SHEETS.PL_LINE_ITEMS, 'LineCode', rowObj);
@@ -1021,10 +1036,12 @@ function savePLLineItemGrid(vehicleTypeId, rows) {
         // 自動計算科目由 CalcEngine 產生，使用者新增的科目一律是手動輸入科目；
         // CommodityTaxDeduct(貨物稅完稅價格可扣除)等表單沒有的欄位由合併補齊、保留原值
         r.AutoSource = existing ? (existing.AutoSource || '') : '';
-        // 結構科目(A/B/C/E/G/I/K)與自動計算科目改掉父科目會讓損益鏈接錯段，一律沿用原值；
-        // 所屬車型同樣鎖定為共用(留空)
+        // 結構科目(A/B/C/E/G/I/K)與自動計算科目改掉父科目會讓損益鏈接錯段，一律沿用原值
         if (existing && (PROTECTED_LINE_CODES.indexOf(r.LineCode) !== -1 || existing.AutoSource)) {
           r.ParentLine = existing.ParentLine || '';
+        }
+        // 只有結構科目一定要全車型共用；自動計算科目可以調整要不要套用在某個車型(見上方說明)
+        if (existing && PROTECTED_LINE_CODES.indexOf(r.LineCode) !== -1) {
           r.VehicleTypeID = '';
         }
         return mergeRowForBatch_(SHEETS.PL_LINE_ITEMS, 'LineCode', r, byCode);

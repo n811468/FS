@@ -77,9 +77,12 @@ const ENTITIES = {
       // 留空 = 全車型共用(所有車型都看得到、都會算)；選了目前這個車型 = 只有這個車型專屬。
       // 因為畫面本來就已經鎖定在目前選的車型，這裡只需要「共用」跟「本車型專屬」兩個選項，
       // 不需要(也不應該)讓使用者從這裡把科目直接轉給別的車型，那樣容易搞混。
-      // 結構科目與自動計算科目的損益鏈/公式本身就不分車型，鎖定為「(共用)」不可改。
+      // 只有小計/毛利/淨利這些「結構科目」(損益鏈本身)一定要全車型共用、不能改；
+      // 售價結構、成本明細、費用明細即使是公式自動算出來的(如季Margin、貨物稅、開發總投攤提)，
+      // 也可能只有某些車型需要，所以「共用/專屬」在這裡開放調整——調整的只是「這個車型要不要
+      // 顯示/計算這個科目」，公式本身(名稱、父科目)還是鎖定不能改。
       { name: 'VehicleTypeID', label: '共用 / 專屬', type: 'select', options: () => lineItemScopeOptions_(),
-        width: 170, lockIf: r => r.__existing && isFixedLineItem(r) },
+        width: 170, lockIf: r => r.__existing && isStructuralLineItem(r) },
       { name: 'Category', label: '分類', width: 110 },
       { name: 'SortOrder', label: '排序值', type: 'number', width: 80 },
       { name: 'AutoSource', label: '自動計算來源', readOnly: true, width: 150 }
@@ -92,9 +95,13 @@ function lineItemScopeOptions_() {
   return [['', '(共用，所有車型可用)'], [currentVehicleTypeId, '僅「' + currentVehicleTypeId + '」專屬']];
 }
 
-/** 結構科目或自動計算科目：父科目固定、名稱不可改 */
+/** 結構科目或自動計算科目：父科目固定、名稱不可改(公式/損益鏈由程式決定) */
 function isFixedLineItem(row) {
   return PROTECTED_LINE_CODES.indexOf(row.LineCode) !== -1 || !!row.AutoSource;
+}
+/** 真正的結構科目(小計/毛利/淨利，A/B/C/E/G/I/K)：損益鏈本身，一定要全車型共用，不能改成專屬 */
+function isStructuralLineItem(row) {
+  return PROTECTED_LINE_CODES.indexOf(row.LineCode) !== -1;
 }
 /**
  * DEV_AMORT 是使用者自己在「開發總投」頁面新增的攤提落點，跟其他內建的自動計算科目
@@ -968,10 +975,7 @@ function drawMatrix(key) {
     <span class="toolbar-sep"></span>
     ${parentSelect}
     <input id="${key}-new-name" type="text" placeholder="新增項目名稱" style="width:160px;">
-    <label class="chk" title="取消勾選 = 這個科目改成所有車型共用">
-      <input type="checkbox" id="${key}-new-scoped" checked> 僅「${esc(currentVehicleTypeId)}」專屬（取消勾選 = 全車型共用）
-    </label>
-    <button type="button" class="btn secondary" onclick="addMatrixLine('${key}')">新增項目</button>
+    <button type="button" class="btn secondary" onclick="addMatrixLine('${key}')" title="新增的項目預設是「${esc(currentVehicleTypeId)}」專屬；要改成共用，到「科目設定」頁調整">新增項目</button>
   `;
 
   if (!data.vehicles.length) {
@@ -1151,13 +1155,13 @@ function addMatrixLine(key) {
   const name = val(`${key}-new-name`);
   if (!name) { setStatus(key, '請先輸入項目名稱', 'err'); return; }
   const parent = cfg.parentOptions ? val(`${key}-new-parent`) : cfg.parentLine;
-  const scopedEl = document.getElementById(`${key}-new-scoped`);
-  const vehicleTypeId = scopedEl && scopedEl.checked ? currentVehicleTypeId : '';
+  // 從這裡快速新增的科目一律先歸到目前車型專屬；要改成共用科目，到「科目設定」頁調整即可，
+  // 不在這裡重複問一次「共用/專屬」，減少選項、避免跟科目設定頁的設定搞混。
   setStatus(key, '新增中...');
   google.script.run
     .withSuccessHandler(() => { setStatus(key, '已新增項目', 'ok'); renderMatrixPanel(key); })
     .withFailureHandler(err => setStatus(key, '錯誤：' + err.message, 'err'))
-    .addLineItemInline(parent, name, vehicleTypeId);
+    .addLineItemInline(parent, name, currentVehicleTypeId);
 }
 
 function deleteMatrixLine(key, lineCode) {
@@ -1392,7 +1396,10 @@ function onDevCategoryChange(i, category) {
   scheduleDevTargetsPreview_();
 }
 
-/** 在開發總投頁面直接新增攤提落點科目，之後就會出現在「攤提落點」下拉選單裡 */
+/**
+ * 在開發總投頁面直接新增攤提落點科目，之後就會出現在「攤提落點」下拉選單裡。
+ * 跟銷貨成本/營業費用頁「新增項目」一致：預設歸到目前車型專屬，要改共用到「科目設定」頁調整。
+ */
 function addDevAmortTarget() {
   const category = val('dev-new-target-category');
   const name = val('dev-new-target-name');
@@ -1401,7 +1408,7 @@ function addDevAmortTarget() {
   google.script.run
     .withSuccessHandler(safeHandler(() => { setStatus('devinvestment', '已新增攤提科目', 'ok'); renderDevInvestmentPanel(); }))
     .withFailureHandler(err => setStatus('devinvestment', '錯誤：' + err.message, 'err'))
-    .addDevAmortLineItem(category, name);
+    .addDevAmortLineItem(category, name, currentVehicleTypeId);
 }
 
 /** 攤提基準台數：開發投資的攤提台數常與銷售構成的預估台數不同，可獨立設定；留空則沿用銷售構成 */

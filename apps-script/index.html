@@ -5,6 +5,9 @@
   <?!= include('style'); ?>
 </head>
 <body>
+  <!-- 車型/情境/分頁一起黏在視窗頂端：科目設定、成本/費用矩陣頁的列表拉長時，
+       捲動內容也還是看得到目前是哪個車型、哪個情境、在哪個分頁。 -->
+  <div class="app-top">
   <header>
     <h1>車型損益試算系統</h1>
     <label style="color:#fff; font-size:13px; display:flex; align-items:center; gap:6px;">
@@ -53,6 +56,7 @@
       </div>
     </div>
   </nav>
+  </div>
 
   <main>
     <div id="panel-vehicletypes" class="panel active"></div>

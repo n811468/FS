@@ -133,12 +133,20 @@ function calculatePLCoreUncached_(scenarioId, vehicleId) {
 
   // ---- 開發總投攤提：每一列自選攤提落點科目，套到損益各段時依科目所屬的父科目分組 ----
   var devPerUnit = amortizeDevInvestmentPerUnit_(scenarioId);
-  var lineDefsAll = getPLLineItems();
+  // 只留本車型可用(共用 + 本車型專屬)的科目定義：自動計算科目(季Margin、貨物稅、
+  // 開發總投攤提...)也可能只有某些車型需要，不是每個都全車型通用(見「科目設定」頁的
+  // 「共用/專屬」欄位)，所以 lineDefsAll 一律先依車型篩過，後面不管是開發總投攤提落點、
+  // 季Margin、貨物稅，都用同一份已篩過的定義去判斷「這個車型到底要不要算這個科目」。
+  var lineDefsAll = getPLLineItems(vehicleTypeId);
+  var scopedCodes_ = {};
+  lineDefsAll.forEach(function (d) { scopedCodes_[d.LineCode] = true; });
 
   // ---- Σd 銷售費用：貨物稅的完稅價格要扣廣促margin，所以 d 類要先算 ----
   var opexRows = getOperatingExpense(scenarioId, vehicleId);
   var dLines = pickLines_(opexRows, manualLineCodesFor_(['E'], vehicleTypeId));
-  dLines.d4 = exFactoryPrice * marginRate;                                 // 季Margin = 廠價(未稅) × 季Margin率
+  // 季Margin = 廠價(未稅) × 季Margin率：只有這個車型有設定 d4(季Margin)科目才計入，
+  // 沒設定就代表這個車型不適用季Margin，不會出現在損益表裡(不是顯示成 0，是根本不算)。
+  if (scopedCodes_.d4) dLines.d4 = exFactoryPrice * marginRate;
   applyDevAmortLines_(dLines, 'E', devPerUnit, lineDefsAll);
   var totalD = sumValues_(dLines);
 
@@ -159,9 +167,11 @@ function calculatePLCoreUncached_(scenarioId, vehicleId) {
   });
   applyDevAmortLines_(bLines, 'B', devPerUnit, lineDefsAll);
   // 貨物稅完稅價格 = (廠價 - 水平配件外移調降 - 可扣除的d科目(廣宣/促銷/批標售/季Margin)) × 完稅價格計算率
+  // 貨物稅計算過程一律算出來(給 commodityTaxDetail 用)，但只有這個車型有設定 b13(貨物稅)
+  // 科目才會實際計入 B 銷貨成本——沒設定就代表這個車型的損益試算不適用貨物稅。
   var commodityTaxBreakdown = commodityTaxBreakdown_(exFactoryPrice, toNumber_(salesMixRow.HorizontalPartsPriceAdj),
     dLines, commodityTaxRate, pct_(lookupParam_(params, '貨物稅完稅價格計算率', vehicleId)));
-  bLines.b13 = commodityTaxBreakdown.tax;
+  if (scopedCodes_.b13) bLines.b13 = commodityTaxBreakdown.tax;
 
   var totalB = sumValues_(bLines);
   var grossProfitC = revenueA - totalB;     // C 生產毛利
@@ -182,12 +192,20 @@ function calculatePLCoreUncached_(scenarioId, vehicleId) {
   var j = pickLines_(opexRows, ['J']).J || 0;
   var operatingProfitK = operatingProfitI - j; // K 營業淨利
 
+  // 售價結構(P1~P9)理論上每個車型都通用，但跟其他自動計算科目一樣開放依車型調整顯示與否
+  // （見「科目設定」頁），所以一樣要照 scopedCodes_ 篩過，不是每個都無條件塞進去。
+  var priceStructureRaw_ = {
+    P1: listPrice, P2: accessoryPrice, P3: listPriceExAccessory, P4: scrapFee,
+    P5: actualRetailPrice, P6: salesTax, P7: commission, P8: exFactoryPrice, P9: accessoryRevenue
+  };
+  var priceStructure_ = {};
+  Object.keys(priceStructureRaw_).forEach(function (code) {
+    if (scopedCodes_[code]) priceStructure_[code] = priceStructureRaw_[code];
+  });
+
   var lineValues = Object.assign(
-    {
-      P1: listPrice, P2: accessoryPrice, P3: listPriceExAccessory, P4: scrapFee,
-      P5: actualRetailPrice, P6: salesTax, P7: commission, P8: exFactoryPrice, P9: accessoryRevenue,
-      A: revenueA, B: totalB
-    },
+    { A: revenueA, B: totalB },
+    priceStructure_,
     bLines,
     { C: grossProfitC },
     dLines,
@@ -512,7 +530,9 @@ function getDevInvestmentSummary(scenarioId, overrideRows) {
   var isBaseline = isBaselineScenario_(scenarioId);
   var lineNames = {};
   getPLLineItems().forEach(function (d) { lineNames[d.LineCode] = d.LineName; });
-  var targetOptions = getDevAmortTargetOptions();
+  // 攤提落點的可選清單依「科目設定」的共用/專屬設定，只列出這個情境所屬車型看得到的落點，
+  // 跟銷貨成本/營業費用頁的科目下拉選單同一套規則。
+  var targetOptions = getDevAmortTargetOptions(vehicleTypeIdForScenario_(scenarioId));
 
   // 部門列的呈現順序使用者可以自己在畫面上調整(拖不動用上下移動鈕)，留白排最後、相對順序穩定
   var rows = sortByOrder_(getDevInvestment(scenarioId), 'SortOrder').map(function (r) {
