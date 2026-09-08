@@ -33,3 +33,8 @@ node tools/dev-server.js               # 打開 http://localhost:8787
 
 正在進行把資料庫從 Google Sheets 換成 Firestore 的遷移，理由與階段規劃見
 [`docs/firestore-migration.md`](docs/firestore-migration.md)。
+
+## 規劃中：現金回本點與敏感度矩陣
+
+現金口徑的損平台數／回本年，以及台數 × 匯率對回本年的雙變數敏感度矩陣，
+規格與範圍界線見 [`docs/payback-and-sensitivity.md`](docs/payback-and-sensitivity.md)（尚未實作）。
