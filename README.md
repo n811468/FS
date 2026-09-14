@@ -37,4 +37,4 @@ node tools/dev-server.js               # 打開 http://localhost:8787
 ## 規劃中：現金回本點與敏感度矩陣
 
 現金口徑的損平台數／回本年，以及台數 × 匯率對回本年的雙變數敏感度矩陣，
-規格與範圍界線見 [`docs/payback-and-sensitivity.md`](docs/payback-and-sensitivity.md)（尚未實作）。
+規格（含六項已定案決策）見 [`docs/payback-and-sensitivity.md`](docs/payback-and-sensitivity.md)（尚未實作）。
