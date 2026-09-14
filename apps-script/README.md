@@ -28,11 +28,21 @@
 
 ## 常見錯誤
 
+> **先跑 `checkInstall()`。** 這套系統是靠「把檔案一個一個貼進編輯器」安裝的，
+> 漏貼一個檔或貼到一半被截斷，得到的錯誤訊息往往指向完全無關的地方。
+> 在編輯器的函式下拉選單選 `checkInstall` 執行（或從 Google Sheet 的
+> 「車型損益試算 → 安裝檢查」），它會直接列出缺了哪個 `.gs`、哪個 HTML 檔、哪個分頁。
+
 **`ReferenceError: include is not defined (第 5 行)`**
-開啟網頁應用的網址時出現，指向 `index.html` 第 5 行的 `<?!= include('style') ?>`。
-真正的原因是 **`Code.gs` 沒有貼進 Apps Script 專案、或內容不完整** ——
-`include()` 定義在那裡，是 `index.html` 套版時唯一會用到的輔助函式。
-把 `Code.gs` 整個重貼一次（確認結尾的 `onOpen()` 也在）即可。
+指向 `index.html` 第 5 行的 `<?!= include('style') ?>`。
+`include()` 定義在 `Code.gs`，所以真正的原因是 **`Code.gs` 沒貼進專案或內容不完整**。
+
+**`Exception: Bad value`（堆疊指向 `include`）**
+`include()` 找得到、但它要讀的 HTML 檔讀不到。Apps Script 對「找不到這個 HTML 檔」
+丟的就是這個訊息，而且**不會說是哪一個檔**。通常是 `style` 或 `script` 這兩個 HTML 檔
+還沒建立，或建立成了 `.gs` 而不是 HTML。
+編輯器裡新增檔案時要選「HTML」，檔名填 `style` / `script`（**不要**自己加 `.html`，
+編輯器會自動補）。新版的 `include()` 已經改成會講出是哪一個檔名。
 
 **`找不到分頁：ScenarioYearVolume`**
 既有的 Sheet 還沒建立回本分析用的新分頁。執行一次「車型損益試算 → 初始化資料庫(建立分頁)」。
