@@ -742,3 +742,126 @@ function getPLResult(scenarioId, vehicleId) {
   var rows = sheetToObjects_(SHEETS.PL_RESULT);
   return rows.filter(function (r) { return r.ScenarioID === scenarioId && r.VehicleID === (vehicleId || ''); });
 }
+
+/* ================= 現金回本分析 =================
+ * 規格：docs/payback-and-sensitivity.md
+ *
+ * 口徑：稅前現金、不含營運資金。系統的 K 是營業淨利(沒有企業所得稅)，
+ * 也沒有應收帳款/存貨的資金占用，並假設售出當期即為現金收付。
+ * 跟財務部的正式投資回收年比對時，差異就在這兩項。
+ */
+
+/** m ≤ 0 代表每賣一台現金反而流出，永遠不回本 —— 用 null 表示，不要回傳 Infinity/負數 */
+var PAYBACK_NEVER_ = null;
+
+/**
+ * 某情境的單台現金貢獻 m 與損平台數 n*。
+ *
+ * m = K + 單台開發攤提。K 已經扣掉攤提，加回去之後：
+ *     m = (每台其他收支 − a) + a = 每台其他收支
+ * 所以 **m 與攤提基準 N 無關，n* = I / m 也與 N 無關** ——
+ * 改 Scenarios 的攤提基準覆寫只會改帳面 K，不會改損平台數。
+ * 這是規格 4.3 的核心結論，也是最容易寫錯的一條。
+ *
+ * 開發總投不綁車系(是部門別層級)，所以 I 是整個車型共用的，
+ * m 必須用加權平均 —— 單一車系的 n* 等於假設「全部台數都是這個車系」，沒有意義。
+ */
+function scenarioCashContribution_(scenarioId) {
+  var salesMix = getSalesMix(scenarioId);
+  if (!salesMix.length) throw new Error('找不到 SalesMix 資料：' + scenarioId);
+
+  var totalPct = salesMix.reduce(function (s, r) { return s + toNumber_(r.SalesMixPct); }, 0);
+  var weightedK = 0;
+  var perUnitAmort = 0;
+  var investment = 0;
+  var totalUnits = 0;
+
+  salesMix.forEach(function (row) {
+    var res = calculatePLCore_(scenarioId, row.VehicleID);
+    // 構成比全空時退回等權平均，否則整欄會變成 0、看起來像沒有資料
+    var w = totalPct > 0 ? toNumber_(row.SalesMixPct) / totalPct : 1 / salesMix.length;
+    weightedK += toNumber_(res.lineValues.K) * w;
+    perUnitAmort += toNumber_(res.devAmortPerUnit) * w;
+    investment = toNumber_(res.devInvestmentTotal);   // 情境層級，各車系相同
+    totalUnits = toNumber_(res.devTotalUnits);
+  });
+
+  var perUnitCash = weightedK + perUnitAmort;
+  return {
+    investment: investment,
+    lifeCycleUnits: totalUnits,
+    perUnitAmort: perUnitAmort,
+    perUnitProfitK: weightedK,
+    perUnitCash: perUnitCash,
+    breakEvenUnits: perUnitCash > 0 ? investment / perUnitCash : PAYBACK_NEVER_
+  };
+}
+
+/**
+ * 現金回本分析：損平台數 + 逐年現金流 + 回本落點。
+ * VehicleID 不是參數 —— 見 scenarioCashContribution_ 的說明，只在車型層級有意義。
+ */
+function getPaybackAnalysis(scenarioId) {
+  var base = scenarioCashContribution_(scenarioId);
+  var m = base.perUnitCash;
+  var invest = base.investment;
+
+  var yearRows = getScenarioYearVolume(scenarioId);
+  var years = [];
+  var cumVolume = 0;
+  var paybackYear = null;
+  var paybackYearFraction = 0;
+
+  yearRows.forEach(function (r) {
+    var vol = toNumber_(r.AnnualVolume);
+    var prevCum = cumVolume;
+    cumVolume += vol;
+    var cumCash = m * cumVolume - invest;
+    var prevCash = m * prevCum - invest;
+
+    if (paybackYear === null && cumCash >= 0 && m > 0) {
+      paybackYear = toNumber_(r.Year);
+      // 該年度內線性內插：現金流對台數是線性的，所以這個落點與
+      // 「累計台數跨過 n*」完全一致，畫圖時的穿越點就用它
+      var gain = cumCash - prevCash;
+      paybackYearFraction = gain > 0 ? (0 - prevCash) / gain : 0;
+    }
+
+    years.push({
+      year: toNumber_(r.Year),
+      volume: vol,
+      cumulativeVolume: cumVolume,
+      cashFlow: m * vol,
+      cumulativeCash: cumCash
+    });
+  });
+
+  var salesMixUnits = getSalesMixLifeCycleUnits(scenarioId);
+  var caveat = null;
+  if (years.length && salesMixUnits > 0 && Math.abs(cumVolume - salesMixUnits) > 0.5) {
+    caveat = '年度台數合計 ' + Math.round(cumVolume) + ' 台，與銷售構成推算的 '
+      + Math.round(salesMixUnits) + ' 台相差 ' + Math.round(cumVolume - salesMixUnits)
+      + ' 台。兩者描述的是同一件事(銷售預估)，請調整其中一邊。';
+  }
+
+  return {
+    scenarioId: scenarioId,
+    investment: invest,
+    lifeCycleUnits: base.lifeCycleUnits,
+    perUnitAmort: base.perUnitAmort,
+    perUnitProfitK: base.perUnitProfitK,
+    perUnitCash: m,
+    breakEvenUnits: base.breakEvenUnits,
+    breakEvenRatio: base.breakEvenUnits !== null && base.lifeCycleUnits > 0
+      ? base.breakEvenUnits / base.lifeCycleUnits : PAYBACK_NEVER_,
+    // 「回不回得了本」要拿 n* 跟實際銷售預估比，不是跟攤提基準比(規格 4.3)
+    plannedVolume: cumVolume,
+    withinPlannedVolume: base.breakEvenUnits !== null && cumVolume > 0
+      ? base.breakEvenUnits <= cumVolume : false,
+    hasYearCurve: years.length > 0,
+    years: years,
+    paybackYear: paybackYear,
+    paybackYearFraction: paybackYearFraction,
+    volumeCaveat: caveat
+  };
+}

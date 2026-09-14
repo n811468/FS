@@ -15,6 +15,7 @@ node tools/verify-features.js          # 情境帶入、科目自動編號、匯
 node tools/verify-ui.js                # 損益表版面、% 基準、小計警示、CSV 欄數
 node tools/verify-firestore-client.js  # Firestore REST 用戶端：JWT 簽章、token 快取、CRUD 呼叫格式
 node tools/verify-write-batching.js    # 整批寫入：跨情境隔離、新增/更新/刪除混合、呼叫次數不隨格數線性成長
+node tools/verify-payback.js           # 現金回本分析：損平台數、逐年現金流、攤提基準無關性等不變式
 ```
 
 `verify-gatef.js` 會順便把比較表印出來，方便跟原始試算表並排肉眼再對一次。
@@ -36,5 +37,8 @@ node tools/dev-server.js               # 打開 http://localhost:8787
 
 ## 規劃中：現金回本點與敏感度矩陣
 
-現金口徑的損平台數／回本年，以及台數 × 匯率對回本年的雙變數敏感度矩陣，
-規格（含六項已定案決策）見 [`docs/payback-and-sensitivity.md`](docs/payback-and-sensitivity.md)（尚未實作）。
+現金口徑的損平台數／回本年，以及匯率／台數／雙變數三種模式共用同一畫面的敏感度分析，
+規格（含六項已定案決策）見 [`docs/payback-and-sensitivity.md`](docs/payback-and-sensitivity.md)。
+
+實作進度：後端的 `getPaybackAnalysis(scenarioId)` 與年度台數曲線（`ScenarioYearVolume`）已完成；
+敏感度 API 與前端畫面尚未實作。
