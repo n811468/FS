@@ -766,102 +766,249 @@ var PAYBACK_NEVER_ = null;
  * 開發總投不綁車系(是部門別層級)，所以 I 是整個車型共用的，
  * m 必須用加權平均 —— 單一車系的 n* 等於假設「全部台數都是這個車系」，沒有意義。
  */
-function scenarioCashContribution_(scenarioId) {
+function loadPaybackBase_(scenarioId) {
   var salesMix = getSalesMix(scenarioId);
   if (!salesMix.length) throw new Error('找不到 SalesMix 資料：' + scenarioId);
+  return {
+    scenarioId: scenarioId,
+    salesMix: salesMix,
+    // 每個車系的輸入只讀一次，敏感度每一格再各自覆寫後重算 ——
+    // 刻意不走 calculatePLCore_，它的 PL_CORE_MEMO_ 以「情境|車系」為鍵，
+    // 敏感度每一格的情境與車系都相同，走過去會整張矩陣拿到同一個數字。
+    inputsByVehicle: salesMix.map(function (row) { return loadPLInputs_(scenarioId, row.VehicleID); }),
+    yearRows: getScenarioYearVolume(scenarioId),
+    salesMixUnits: getSalesMixLifeCycleUnits(scenarioId)
+  };
+}
 
+/**
+ * 把敏感度要試的變數套進一份 inputs，回傳新的 inputs（原本那份不動）。
+ *   fxCurrency + fxDelta：該幣別的現況匯率 × (1 + delta)，
+ *                         同時影響外幣材料成本與外幣開發投資兩條路徑。
+ *   volumeScale：攤提分母 N × k。台數整體變動時攤提基準跟著變，
+ *                單台攤提被稀釋或放大，影響帳面 K。
+ */
+function applyPLInputOverrides_(inputs, opts) {
+  var out = {};
+  Object.keys(inputs).forEach(function (key) { out[key] = inputs[key]; });
+
+  if (opts.fxCurrency && opts.fxDelta) {
+    out.params = inputs.params.map(function (p) {
+      if (p.ParamName !== COST_FX_PARAM_NAME || p.Currency !== opts.fxCurrency) return p;
+      var copy = {};
+      Object.keys(p).forEach(function (key) { copy[key] = p[key]; });
+      copy.Value = toNumber_(p.Value) * (1 + opts.fxDelta);
+      return copy;
+    });
+  }
+  if (opts.volumeScale && opts.volumeScale !== 1) {
+    out.devTotalUnits = inputs.devTotalUnits * opts.volumeScale;
+  }
+  return out;
+}
+
+/**
+ * 回本分析的計算核心：吃 loadPaybackBase_() 的產物 + 一組覆寫，全程不讀表。
+ *
+ * m = K + 單台開發攤提。K 已經扣掉攤提，加回去之後：
+ *     m = (每台其他收支 − a) + a = 每台其他收支
+ * 所以 **m 與攤提基準 N 無關，n* = I / m 也與 N 無關** ——
+ * 改攤提基準只會改帳面 K，不會改損平台數（規格 4.3，verify-payback.js 有專門的迴歸測試）。
+ *
+ * 開發總投不綁車系(是部門別層級)，所以 I 是整個車型共用的，
+ * m 必須用構成比加權 —— 單一車系的 n* 等於假設「全部台數都是這個車系」，沒有意義。
+ */
+function paybackFromBase_(base, opts) {
+  opts = opts || {};
+  var salesMix = base.salesMix;
   var totalPct = salesMix.reduce(function (s, r) { return s + toNumber_(r.SalesMixPct); }, 0);
-  var weightedK = 0;
-  var perUnitAmort = 0;
-  var investment = 0;
-  var totalUnits = 0;
 
-  salesMix.forEach(function (row) {
-    var res = calculatePLCore_(scenarioId, row.VehicleID);
-    // 構成比全空時退回等權平均，否則整欄會變成 0、看起來像沒有資料
-    var w = totalPct > 0 ? toNumber_(row.SalesMixPct) / totalPct : 1 / salesMix.length;
+  var weightedK = 0, perUnitAmort = 0, investment = 0, totalUnits = 0;
+  base.inputsByVehicle.forEach(function (inputs, idx) {
+    var res = calcFromInputs_(applyPLInputOverrides_(inputs, opts));
+    // 構成比全空時退回等權平均，否則整份結果會變成 0、看起來像沒有資料
+    var w = totalPct > 0 ? toNumber_(salesMix[idx].SalesMixPct) / totalPct : 1 / salesMix.length;
     weightedK += toNumber_(res.lineValues.K) * w;
     perUnitAmort += toNumber_(res.devAmortPerUnit) * w;
     investment = toNumber_(res.devInvestmentTotal);   // 情境層級，各車系相同
     totalUnits = toNumber_(res.devTotalUnits);
   });
 
-  var perUnitCash = weightedK + perUnitAmort;
+  var m = weightedK + perUnitAmort;
+  // m ≤ 0：每賣一台現金反而流出，永遠不回本。用 null 表示，不要回傳 Infinity 或負數
+  var breakEven = m > 0 ? investment / m : PAYBACK_NEVER_;
+
+  var scale = opts.volumeScale || 1;
+  var years = [];
+  var cumVolume = 0, paybackYear = null, paybackYearFraction = 0;
+  base.yearRows.forEach(function (r) {
+    var vol = toNumber_(r.AnnualVolume) * scale;
+    var prevCash = m * cumVolume - investment;
+    cumVolume += vol;
+    var cumCash = m * cumVolume - investment;
+
+    if (paybackYear === null && m > 0 && cumCash >= 0) {
+      paybackYear = toNumber_(r.Year);
+      // 該年度內線性內插：現金流對台數是線性的，所以這個落點與
+      // 「累計台數跨過 n*」完全一致，畫圖的穿越點就用它
+      var gain = cumCash - prevCash;
+      paybackYearFraction = gain > 0 ? (0 - prevCash) / gain : 0;
+    }
+    years.push({
+      year: toNumber_(r.Year), volume: vol, cumulativeVolume: cumVolume,
+      cashFlow: m * vol, cumulativeCash: cumCash
+    });
+  });
+
   return {
+    scenarioId: base.scenarioId,
     investment: investment,
     lifeCycleUnits: totalUnits,
     perUnitAmort: perUnitAmort,
     perUnitProfitK: weightedK,
-    perUnitCash: perUnitCash,
-    breakEvenUnits: perUnitCash > 0 ? investment / perUnitCash : PAYBACK_NEVER_
+    perUnitCash: m,
+    breakEvenUnits: breakEven,
+    breakEvenRatio: breakEven !== null && totalUnits > 0 ? breakEven / totalUnits : PAYBACK_NEVER_,
+    // 「回不回得了本」要拿 n* 跟實際銷售預估比，不是跟攤提基準比(規格 4.3)
+    plannedVolume: cumVolume,
+    withinPlannedVolume: breakEven !== null && cumVolume > 0 ? breakEven <= cumVolume : false,
+    hasYearCurve: years.length > 0,
+    years: years,
+    paybackYear: paybackYear,
+    paybackYearFraction: paybackYearFraction
   };
 }
 
 /**
  * 現金回本分析：損平台數 + 逐年現金流 + 回本落點。
- * VehicleID 不是參數 —— 見 scenarioCashContribution_ 的說明，只在車型層級有意義。
+ * VehicleID 不是參數 —— 見 paybackFromBase_ 的說明，只在車型層級有意義。
  */
 function getPaybackAnalysis(scenarioId) {
-  var base = scenarioCashContribution_(scenarioId);
-  var m = base.perUnitCash;
-  var invest = base.investment;
+  var base = loadPaybackBase_(scenarioId);
+  var result = paybackFromBase_(base, {});
 
-  var yearRows = getScenarioYearVolume(scenarioId);
-  var years = [];
-  var cumVolume = 0;
-  var paybackYear = null;
-  var paybackYearFraction = 0;
+  var caveat = null;
+  if (result.hasYearCurve && base.salesMixUnits > 0
+      && Math.abs(result.plannedVolume - base.salesMixUnits) > 0.5) {
+    caveat = '年度台數合計 ' + Math.round(result.plannedVolume) + ' 台，與銷售構成推算的 '
+      + Math.round(base.salesMixUnits) + ' 台相差 ' + Math.round(result.plannedVolume - base.salesMixUnits)
+      + ' 台。兩者描述的是同一件事(銷售預估)，請調整其中一邊。';
+  }
+  result.volumeCaveat = caveat;
+  result.salesMixLifeCycleUnits = base.salesMixUnits;
+  return result;
+}
 
-  yearRows.forEach(function (r) {
-    var vol = toNumber_(r.AnnualVolume);
-    var prevCum = cumVolume;
-    cumVolume += vol;
-    var cumCash = m * cumVolume - invest;
-    var prevCash = m * prevCum - invest;
+/* ================= 敏感度分析 =================
+ * 規格：docs/payback-and-sensitivity.md 第 8 節。
+ *
+ * 單變數與雙變數共用這一支 API —— 單變數就是其中一軸只有一個值的特例，
+ * 前端依兩軸長度決定要畫小倍數還是矩陣。不開第二支 API，
+ * 就不會有兩套算法對不起來的問題。
+ */
 
-    if (paybackYear === null && cumCash >= 0 && m > 0) {
-      paybackYear = toNumber_(r.Year);
-      // 該年度內線性內插：現金流對台數是線性的，所以這個落點與
-      // 「累計台數跨過 n*」完全一致，畫圖時的穿越點就用它
-      var gain = cumCash - prevCash;
-      paybackYearFraction = gain > 0 ? (0 - prevCash) / gain : 0;
-    }
+var SENSITIVITY_METRICS = ['paybackYear', 'breakEvenUnits', 'K'];
+var SENSITIVITY_DEFAULT_VOLUME_SCALES = [0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3];
+var SENSITIVITY_DEFAULT_FX_DELTAS = [-0.2, -0.15, -0.1, 0, 0.1, 0.15, 0.2];
 
-    years.push({
-      year: toNumber_(r.Year),
-      volume: vol,
-      cumulativeVolume: cumVolume,
-      cashFlow: m * vol,
-      cumulativeCash: cumCash
+/**
+ * 敏感度可選的匯率幣別：該情境設定過現況匯率的外幣。
+ * getConfiguredCurrencies() 會把本位幣放在第一個(那是給銷貨成本的幣別選單用的)，
+ * 這裡必須濾掉 —— 本位幣沒有匯率可調，fxRateFor_ 對它一律回傳 1，
+ * 選了只會得到一條完全平的線。
+ */
+function getSensitivityCurrencies(scenarioId) {
+  return getConfiguredCurrencies(scenarioId).filter(function (c) { return c !== BASE_CURRENCY; });
+}
+
+/**
+ * 指標與變數的有效性：n* = I / m，I 與 m 都不含台數，所以台數軸對 n* 完全無效
+ * （整排會是一模一樣的數字）。規則是 n* 只在「匯率為唯一變數」時可選。
+ * 回報無效，而不是回傳一排相同數字 —— 後者看起來像功能壞掉，不像設計。
+ */
+function sensitivityMetricInvalidReason_(metric, volumeCount) {
+  if (metric === 'breakEvenUnits' && volumeCount > 1) {
+    return '損平台數 n* = I / m，I 與 m 都不含台數，所以台數軸對它完全無效（整排會是同一個數字）。'
+      + '要看台數的影響請改選「回本年」，或把台數固定、只讓匯率變動。';
+  }
+  return '';
+}
+
+function sensitivityCellValue_(metric, r) {
+  if (metric === 'K') return r.perUnitProfitK;
+  if (metric === 'breakEvenUnits') return r.breakEvenUnits;
+  // paybackYear：把年度內的落點也算進去，否則整欄都是整數、看不出推遲了多少
+  if (r.paybackYear === null) return null;
+  return r.paybackYear - 1 + r.paybackYearFraction;
+}
+
+/**
+ * 台數 × 匯率敏感度。
+ *
+ * spec = {
+ *   volumeScales: [0.7, ..., 1.3],              // 省略用預設；[1] 代表台數不動
+ *   fx: { currency: 'JPY', deltas: [-0.2,...] },// 省略或 deltas=[0] 代表匯率不動
+ *   metric: 'paybackYear' | 'breakEvenUnits' | 'K'
+ * }
+ *
+ * 列 = 台數、欄 = 匯率。基準格(縮放 1.0、偏移 0)一定會被包含，
+ * 它必須等於現行儀表板算出的同一個數字，是使用者的定位點也是驗證點。
+ */
+function calculateSensitivity(scenarioId, spec) {
+  spec = spec || {};
+  var metric = SENSITIVITY_METRICS.indexOf(spec.metric) !== -1 ? spec.metric : 'paybackYear';
+
+  var scales = (spec.volumeScales && spec.volumeScales.length)
+    ? spec.volumeScales.map(function (v) { return toNumber_(v); }) : [1];
+  var fxSpec = spec.fx || {};
+  var currency = fxSpec.currency || '';
+  var deltas = (currency && fxSpec.deltas && fxSpec.deltas.length)
+    ? fxSpec.deltas.map(function (v) { return toNumber_(v); }) : [0];
+
+  var invalid = sensitivityMetricInvalidReason_(metric, scales.length);
+  if (invalid) return { invalid: true, reason: invalid, metric: metric };
+
+  var base = loadPaybackBase_(scenarioId);
+  var baseFxRate = currency ? fxRateFor_(base.inputsByVehicle[0].params, currency, '') : 0;
+
+  var cells = scales.map(function (k) {
+    return deltas.map(function (d) {
+      var r = paybackFromBase_(base, { volumeScale: k, fxCurrency: currency, fxDelta: d });
+      return {
+        value: sensitivityCellValue_(metric, r),
+        withinPlannedVolume: r.withinPlannedVolume,
+        breakEvenUnits: r.breakEvenUnits,
+        paybackYear: r.paybackYear,
+        paybackYearFraction: r.paybackYearFraction,
+        perUnitProfitK: r.perUnitProfitK,
+        perUnitCash: r.perUnitCash,
+        plannedVolume: r.plannedVolume
+      };
     });
   });
 
-  var salesMixUnits = getSalesMixLifeCycleUnits(scenarioId);
-  var caveat = null;
-  if (years.length && salesMixUnits > 0 && Math.abs(cumVolume - salesMixUnits) > 0.5) {
-    caveat = '年度台數合計 ' + Math.round(cumVolume) + ' 台，與銷售構成推算的 '
-      + Math.round(salesMixUnits) + ' 台相差 ' + Math.round(cumVolume - salesMixUnits)
-      + ' 台。兩者描述的是同一件事(銷售預估)，請調整其中一邊。';
-  }
-
+  var baseRow = scales.indexOf(1);
+  var baseCol = deltas.indexOf(0);
   return {
     scenarioId: scenarioId,
-    investment: invest,
-    lifeCycleUnits: base.lifeCycleUnits,
-    perUnitAmort: base.perUnitAmort,
-    perUnitProfitK: base.perUnitProfitK,
-    perUnitCash: m,
-    breakEvenUnits: base.breakEvenUnits,
-    breakEvenRatio: base.breakEvenUnits !== null && base.lifeCycleUnits > 0
-      ? base.breakEvenUnits / base.lifeCycleUnits : PAYBACK_NEVER_,
-    // 「回不回得了本」要拿 n* 跟實際銷售預估比，不是跟攤提基準比(規格 4.3)
-    plannedVolume: cumVolume,
-    withinPlannedVolume: base.breakEvenUnits !== null && cumVolume > 0
-      ? base.breakEvenUnits <= cumVolume : false,
-    hasYearCurve: years.length > 0,
-    years: years,
-    paybackYear: paybackYear,
-    paybackYearFraction: paybackYearFraction,
-    volumeCaveat: caveat
+    metric: metric,
+    rowAxis: {
+      kind: 'volume',
+      values: scales,
+      // 相對基準的偏移比絕對台數好比較，但絕對值也要給 —— 使用者要能跟銷售構成頁對起來
+      labels: scales.map(function (k) { return (k === 1 ? '基準' : (k > 1 ? '+' : '') + Math.round((k - 1) * 100) + '%'); }),
+      absolute: scales.map(function (k) { return base.salesMixUnits * k; })
+    },
+    colAxis: {
+      kind: 'fx',
+      currency: currency,
+      values: deltas,
+      labels: deltas.map(function (d) { return (d === 0 ? '基準' : (d > 0 ? '+' : '') + Math.round(d * 100) + '%'); }),
+      absolute: deltas.map(function (d) { return baseFxRate * (1 + d); })
+    },
+    baseCell: { r: baseRow, c: baseCol },
+    baseFxRate: baseFxRate,
+    hasYearCurve: base.yearRows.length > 0,
+    cells: cells
   };
 }
