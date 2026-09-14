@@ -10,6 +10,18 @@ function doGet() {
 }
 
 /**
+ * index.html 的 `<?!= include('style') ?>` / `<?!= include('script') ?>` 用的樣板輔助函式。
+ *
+ * 刻意跟 doGet() 放在同一個檔案：它只服務這個進入點，而且是整個網頁應用的必要條件。
+ * 之前放在 Utils.gs 的最後一行，只要那個檔案沒貼進 Apps Script 專案、或貼到一半被截斷，
+ * 開啟網址就會得到「ReferenceError: include is not defined (第 5 行)」——
+ * 錯誤訊息指向 index.html，完全看不出真正缺的是另一個檔案的結尾。
+ */
+function include(filename) {
+  return HtmlService.createHtmlOutputFromFile(filename).getContent();
+}
+
+/**
  * 開啟 Google Sheet 時掛上自訂選單，初始化資料庫可以從這裡一鍵執行。
  *
  * 只有「由試算表開啟」這個情境才有 UI 可以掛選單。onOpen 是本檔第一個函式，

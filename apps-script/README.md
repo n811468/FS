@@ -26,6 +26,17 @@
    - 部署後會得到一個網址，就是輸入/儀表板頁面。
 
 
+## 常見錯誤
+
+**`ReferenceError: include is not defined (第 5 行)`**
+開啟網頁應用的網址時出現，指向 `index.html` 第 5 行的 `<?!= include('style') ?>`。
+真正的原因是 **`Code.gs` 沒有貼進 Apps Script 專案、或內容不完整** ——
+`include()` 定義在那裡，是 `index.html` 套版時唯一會用到的輔助函式。
+把 `Code.gs` 整個重貼一次（確認結尾的 `onOpen()` 也在）即可。
+
+**`找不到分頁：ScenarioYearVolume`**
+既有的 Sheet 還沒建立回本分析用的新分頁。執行一次「車型損益試算 → 初始化資料庫(建立分頁)」。
+
 ## 既有 Sheet 升級（第一次安裝可略過）
 
 改版後把新的檔案內容貼回 Apps Script 編輯器，然後在 Google Sheet 的
@@ -34,6 +45,8 @@
 1. **初始化資料庫(建立分頁)** —— 補上 `PLResult` 新增的 `PctOfExFactory` 標題欄、`DevInvestment` 新增的
    `TargetLineCode` 標題欄、`Vehicles` 新增的 `SortOrder` 標題欄、`PLLineItems` 新增的
    `DevAmortCategory` 標題欄，並灌入新科目 `b14 內陸運雜`。
+   **回本分析需要的 `ScenarioYearVolume` 分頁也是在這一步建立的** —— 沒跑過這個動作，
+   「年度台數」頁會因為找不到分頁而報錯。
 2. **重設內建科目名稱與排序** —— 把內建科目的排序調成 Gate F 表的列序（自訂科目不受影響）。
 3. **清除未使用的參數** —— 刪掉舊版留下的「集團預算匯率」資料列。
 

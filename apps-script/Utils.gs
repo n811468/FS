@@ -343,7 +343,3 @@ function sortByOrder_(rows, field) {
   });
   return withIndex.map(function (x) { return x.row; });
 }
-
-function include(filename) {
-  return HtmlService.createHtmlOutputFromFile(filename).getContent();
-}
