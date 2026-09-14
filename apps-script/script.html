@@ -1543,6 +1543,13 @@ let paybackScenarioId_ = '';
 
 const PAYBACK_CAVEAT_ = '稅前現金流，未計企業所得稅與營運資金占用。';
 
+/**
+ * 「沒有值」判斷：不回本時後端回傳 null，但 google.script.run 序列化回前端時
+ * 會把 null 的屬性變成 undefined。用 === null 比對的話，不回本的格子會渲染成
+ * 「第 undefined 年」、基準值算出 NaN（畫面顯示「非數值」）。一律走這個函式。
+ */
+function isNone_(v) { return v === null || v === undefined || (typeof v === 'number' && !isFinite(v)); }
+
 function paybackViewHtml_() {
   if (!currentScenarioId) return '<p class="muted">請先在上方選擇情境。</p>';
   if (paybackScenarioId_ !== currentScenarioId) {
@@ -1570,14 +1577,14 @@ function loadPayback_() {
 }
 
 function paybackBodyHtml_(d) {
-  const never = d.breakEvenUnits === null;
+  const never = isNone_(d.breakEvenUnits);
   const units = never ? '不回本' : fmt(d.breakEvenUnits) + ' 台';
-  const ratio = never || d.breakEvenRatio === null ? '' :
+  const ratio = never || isNone_(d.breakEvenRatio) ? '' :
     `佔攤提基準 ${fmt(d.breakEvenRatio * 100, 1)}%` + (d.breakEvenRatio < 1 ? `（安全邊際 ${fmt((1 - d.breakEvenRatio) * 100, 1)}%）` : '');
 
   let payLabel = '—', paySub = '尚未建立年度台數曲線';
   if (d.hasYearCurve) {
-    if (d.paybackYear === null) {
+    if (isNone_(d.paybackYear)) {
       payLabel = '不回本';
       paySub = never ? '每台現金貢獻 ≤ 0' : `需 ${fmt(d.breakEvenUnits)} 台，計畫只賣 ${fmt(d.plannedVolume)} 台`;
     } else {
@@ -1594,9 +1601,9 @@ function paybackBodyHtml_(d) {
         <span class="pk-num${never ? ' negative' : ''}">${esc(units)}</span>
         <span class="pk-sub">${esc(ratio)}</span>
       </div>
-      <div class="payback-kpi${d.hasYearCurve && d.paybackYear === null ? ' bad' : ''}">
+      <div class="payback-kpi${d.hasYearCurve && isNone_(d.paybackYear) ? ' bad' : ''}">
         <span class="pk-label">回本年（現金）</span>
-        <span class="pk-num${d.paybackYear === null ? ' negative' : ''}">${esc(payLabel)}</span>
+        <span class="pk-num${isNone_(d.paybackYear) ? ' negative' : ''}">${esc(payLabel)}</span>
         <span class="pk-sub">${esc(paySub)}</span>
       </div>
       <div class="payback-kpi">
@@ -1626,7 +1633,7 @@ function paybackBodyHtml_(d) {
  * 兩個判準給出不同答案時一定要講清楚，否則使用者會以為算錯。
  */
 function paybackReadingHtml_(d) {
-  if (d.breakEvenUnits === null) {
+  if (isNone_(d.breakEvenUnits)) {
     return '<p class="sens-invalid"><b>每賣一台現金反而流出</b>單台現金貢獻 m ≤ 0，' +
       '再多的台數也回不了本。要先改善單台損益，台數幫不上忙。</p>';
   }
@@ -1661,7 +1668,7 @@ function paybackChartHtml_(d) {
       `年度現金流 ${signed_(y.cashFlow)}\n累計現金 ${signed_(y.cumulativeCash)}`));
 
   let marker = null;
-  if (d.paybackYear !== null) {
+  if (!isNone_(d.paybackYear)) {
     // xLabels 的索引 0 是 SOP，所以第 N 年在索引 N；年度內的落點再加上 fraction
     marker = {
       at: d.paybackYear - 1 + d.paybackYearFraction,
@@ -1833,7 +1840,7 @@ function setSensMetric(metric) { sensMetric = metric; saveDashPrefs_(); rerender
 function setSensCurrency(c) { sensCurrency = c; saveDashPrefs_(); rerenderCurrentView_(); }
 
 function sensFormat_(v) {
-  if (v === null || v === undefined) return '不回本';
+  if (isNone_(v)) return '不回本';
   const meta = SENS_METRICS_[sensMetric];
   if (sensMetric === 'paybackYear') return fmt(v + 1, meta.digits) + ' 年';
   return fmt(v, meta.digits);
@@ -1850,12 +1857,12 @@ function sensMatrixHtml_(d) {
   // 「不回本」是狀態不是色階的延伸：把它排除在值域外，
   // 否則一格無限大會把整個色階壓平，其餘格子全部看起來一樣。
   const finite = [];
-  d.cells.forEach(row => row.forEach(c => { if (c.value !== null && isFinite(c.value)) finite.push(c.value); }));
+  d.cells.forEach(row => row.forEach(c => { if (!isNone_(c.value)) finite.push(c.value); }));
   const lo = finite.length ? Math.min.apply(null, finite) : 0;
   const hi = finite.length ? Math.max.apply(null, finite) : 1;
 
   const shade = v => {
-    if (v === null || !isFinite(v) || hi === lo) return '';
+    if (isNone_(v) || hi === lo) return '';
     // sequential 單一色相，淺 → 深；越「差」越深
     let t = (v - lo) / (hi - lo);
     if (!meta.betterLow) t = 1 - t;
@@ -1881,7 +1888,7 @@ function sensMatrixHtml_(d) {
                 <span class="sens-axis-sub">${fmt(d.rowAxis.absolute[r])} 台</span></th>
               ${row.map((c, ci) => {
                 const isBase = r === d.baseCell.r && ci === d.baseCell.c;
-                const never = c.value === null;
+                const never = isNone_(c.value);
                 return `<td class="cell${never ? ' never' : ''}${isBase ? ' base-cell' : ''}"
                   style="${never ? '' : shade(c.value)}"
                   data-tip="${esc(sensCellTip_(d, r, ci))}">${esc(sensFormat_(c.value))}</td>`;
@@ -1901,8 +1908,8 @@ function sensCellTip_(d, r, c) {
     `台數 ${d.rowAxis.labels[r]}（${fmt(d.rowAxis.absolute[r])} 台）`,
     `${d.colAxis.currency} ${d.colAxis.labels[c]}（${fmt(d.colAxis.absolute[c], 4)}）`,
     '',
-    '損平台數 ' + (cell.breakEvenUnits === null ? '不回本' : fmt(cell.breakEvenUnits) + ' 台'),
-    '回本年 ' + (cell.paybackYear === null ? '不回本' : '第 ' + cell.paybackYear + ' 年'),
+    '損平台數 ' + (isNone_(cell.breakEvenUnits) ? '不回本' : fmt(cell.breakEvenUnits) + ' 台'),
+    '回本年 ' + (isNone_(cell.paybackYear) ? '不回本' : '第 ' + cell.paybackYear + ' 年'),
     '單台 K ' + fmt(cell.perUnitProfitK),
     '單台現金貢獻 m ' + fmt(cell.perUnitCash)
   ];
@@ -1924,19 +1931,24 @@ function sensSmallMultiplesHtml_(d) {
       const c = cellAt(i);
       if (k === 'K') return c.perUnitProfitK;
       if (k === 'breakEvenUnits') return c.breakEvenUnits;
-      return c.paybackYear === null ? null : c.paybackYear - 1 + c.paybackYearFraction;
+      return isNone_(c.paybackYear) ? null : c.paybackYear - 1 + c.paybackYearFraction;
     });
     const tips = axis.values.map((_, i) => sensCellTip_(d, byVolume ? i : 0, byVolume ? 0 : i));
     const fmtV = k === 'paybackYear' ? (v => fmt(v + 1, 1) + ' 年')
       : (v => fmt(v, meta.digits));
     const baseVal = values[baseIdx];
+    // 整排都沒有值(全都不回本)時畫不出趨勢，但原因不是「資料不足」——
+    // 直接說明是哪一種情況，不然使用者會以為自己漏建了資料
+    const body = values.every(isNone_)
+      ? `<p class="sens-invalid">${esc(sensAllNoneReason_(d, k))}</p>`
+      : svgLineChart_({ width: 900, height: 190, xLabels, values, tips,
+          valueFormat: fmtV, xTitle: byVolume ? '台數相對現況' : sensCurrency + ' 匯率相對現況',
+          lineColor: '#2b6cb0' });
     return `
       <div class="sens-panel">
         <h5>${esc(meta.label)}</h5>
-        <p class="sens-panel-sub">基準 ${baseVal === null ? '不回本' : esc(fmtV(baseVal))}　·　單位：${esc(meta.unit)}</p>
-        ${svgLineChart_({ width: 900, height: 190, xLabels, values, tips,
-          valueFormat: fmtV, xTitle: byVolume ? '台數相對現況' : sensCurrency + ' 匯率相對現況',
-          lineColor: '#2b6cb0' })}
+        <p class="sens-panel-sub">基準 ${isNone_(baseVal) ? '不回本' : esc(fmtV(baseVal))}　·　單位：${esc(meta.unit)}</p>
+        ${body}
       </div>`;
   }).join('');
 
@@ -1945,6 +1957,27 @@ function sensSmallMultiplesHtml_(d) {
     ${sensSingleTableHtml_(d, axis, cellAt)}
     <p class="muted">三個指標單位不同（台／年／元），所以各自一張圖、各自一條 y 軸 ——
       共用 y 軸會製造看起來有意義、實際上不存在的交叉點。${PAYBACK_CAVEAT_}</p>`;
+}
+
+/**
+ * 某個指標整排都沒有值時的說明。「回本年」全空只有兩種可能，兩者的處置完全不同：
+ * 沒建年度台數曲線(去建)，或是這個情境在整個範圍內都回不了本(數字本來就是這樣)。
+ */
+function sensAllNoneReason_(d, metric) {
+  if (metric !== 'paybackYear') return '這個指標在目前的設定下算不出數值。';
+  if (!d.hasYearCurve) {
+    return '還沒建立年度台數曲線，所以算不出回本年。到「年度台數」頁按一次「依銷售構成填滿」就有了。';
+  }
+  const cell = d.cells[d.baseCell.r] && d.cells[d.baseCell.r][d.baseCell.c];
+  if (cell && isNone_(cell.breakEvenUnits)) {
+    return '單台現金貢獻 m ≤ 0（每賣一台現金反而流出），再多的台數也回不了本。';
+  }
+  if (cell) {
+    return `在這個範圍內都回不了本：損平台數 ${fmt(cell.breakEvenUnits)} 台，`
+      + `但計畫只賣 ${fmt(cell.plannedVolume)} 台，短少 ${fmt(cell.breakEvenUnits - cell.plannedVolume)} 台。`
+      + '這不是資料沒建，是這個情境的數字本來就回不了本。';
+  }
+  return '在這個範圍內都回不了本。';
 }
 
 function sensSingleTableHtml_(d, axis, cellAt) {
@@ -1964,8 +1997,8 @@ function sensSingleTableHtml_(d, axis, cellAt) {
           return `<tr${isBase ? ' class="total-row"' : ''}>
             <td class="row-head">${esc(label)}${isBase ? '（基準）' : ''}</td>
             <td class="calc">${byVolume ? fmt(axis.absolute[i]) + ' 台' : fmt(axis.absolute[i], 4)}</td>
-            <td class="calc">${c.breakEvenUnits === null ? '不回本' : fmt(c.breakEvenUnits)}</td>
-            <td class="calc">${c.paybackYear === null ? '—' : '第 ' + c.paybackYear + ' 年'}</td>
+            <td class="calc">${isNone_(c.breakEvenUnits) ? '不回本' : fmt(c.breakEvenUnits)}</td>
+            <td class="calc">${isNone_(c.paybackYear) ? '不回本' : '第 ' + c.paybackYear + ' 年'}</td>
             <td class="calc${c.perUnitProfitK < 0 ? ' negative' : ''}">${fmt(c.perUnitProfitK)}</td>
             <td class="calc${c.perUnitCash < 0 ? ' negative' : ''}">${fmt(c.perUnitCash)}</td>
           </tr>`;
