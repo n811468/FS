@@ -19,7 +19,8 @@ var SHEETS = {
   OPERATING_EXPENSE: 'OperatingExpense',
   PARAMETERS: 'Parameters',
   PL_LINE_ITEMS: 'PLLineItems',
-  PL_RESULT: 'PLResult'
+  PL_RESULT: 'PLResult',
+  SCENARIO_YEAR_VOLUME: 'ScenarioYearVolume'
 };
 
 // 每張表的欄位順序，同時作為 Sheet 標題列與 Apps Script 讀寫時的欄位對應。
@@ -40,7 +41,10 @@ var SCHEMA = {
   OperatingExpense: ['RowID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'Notes', 'EffectiveDate'],
   Parameters: ['ParamID', 'ScenarioID', 'VehicleID', 'ParamName', 'Currency', 'Value', 'EffectiveDate'],
   PLLineItems: ['LineCode', 'LineName', 'ParentLine', 'Category', 'SortOrder', 'AutoSource', 'CommodityTaxDeduct', 'DevAmortCategory'],
-  PLResult: ['ResultID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'PctOfRevenue', 'PctOfExFactory', 'CalcTimestamp']
+  PLResult: ['ResultID', 'ScenarioID', 'VehicleID', 'LineCode', 'Amount', 'PctOfRevenue', 'PctOfExFactory', 'CalcTimestamp'],
+  // 年度台數曲線：車型層級(一情境一條)，各車系用 SalesMixPct 分攤。
+  // 只服務回本分析的「時序」——單台損益完全不讀它，攤提分母仍是 getLifeCycleUnits()。
+  ScenarioYearVolume: ['RowID', 'ScenarioID', 'Year', 'AnnualVolume', 'Notes']
 };
 
 // 情境代號改用 GATE 別；同一個 GATE 底下可以有多個情境(GATE F 現況 / GATE F 目標)，

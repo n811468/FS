@@ -26,6 +26,27 @@
    - 部署後會得到一個網址，就是輸入/儀表板頁面。
 
 
+## 常見錯誤
+
+> **先跑 `checkInstall()`。** 這套系統是靠「把檔案一個一個貼進編輯器」安裝的，
+> 漏貼一個檔或貼到一半被截斷，得到的錯誤訊息往往指向完全無關的地方。
+> 在編輯器的函式下拉選單選 `checkInstall` 執行（或從 Google Sheet 的
+> 「車型損益試算 → 安裝檢查」），它會直接列出缺了哪個 `.gs`、哪個 HTML 檔、哪個分頁。
+
+**`ReferenceError: include is not defined (第 5 行)`**
+指向 `index.html` 第 5 行的 `<?!= include('style') ?>`。
+`include()` 定義在 `Code.gs`，所以真正的原因是 **`Code.gs` 沒貼進專案或內容不完整**。
+
+**`Exception: Bad value`（堆疊指向 `include`）**
+`include()` 找得到、但它要讀的 HTML 檔讀不到。Apps Script 對「找不到這個 HTML 檔」
+丟的就是這個訊息，而且**不會說是哪一個檔**。通常是 `style` 或 `script` 這兩個 HTML 檔
+還沒建立，或建立成了 `.gs` 而不是 HTML。
+編輯器裡新增檔案時要選「HTML」，檔名填 `style` / `script`（**不要**自己加 `.html`，
+編輯器會自動補）。新版的 `include()` 已經改成會講出是哪一個檔名。
+
+**`找不到分頁：ScenarioYearVolume`**
+既有的 Sheet 還沒建立回本分析用的新分頁。執行一次「車型損益試算 → 初始化資料庫(建立分頁)」。
+
 ## 既有 Sheet 升級（第一次安裝可略過）
 
 改版後把新的檔案內容貼回 Apps Script 編輯器，然後在 Google Sheet 的
@@ -34,6 +55,8 @@
 1. **初始化資料庫(建立分頁)** —— 補上 `PLResult` 新增的 `PctOfExFactory` 標題欄、`DevInvestment` 新增的
    `TargetLineCode` 標題欄、`Vehicles` 新增的 `SortOrder` 標題欄、`PLLineItems` 新增的
    `DevAmortCategory` 標題欄，並灌入新科目 `b14 內陸運雜`。
+   **回本分析需要的 `ScenarioYearVolume` 分頁也是在這一步建立的** —— 沒跑過這個動作，
+   「年度台數」頁會因為找不到分頁而報錯。
 2. **重設內建科目名稱與排序** —— 把內建科目的排序調成 Gate F 表的列序（自訂科目不受影響）。
 3. **清除未使用的參數** —— 刪掉舊版留下的「集團預算匯率」資料列。
 

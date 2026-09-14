@@ -270,4 +270,38 @@
   .pl-table tbody tr.hl-row > td.hl-col { background: #d6e6f8; }
   .pl-table tr.subtotal.hl-row > td { background: #f6efc3; }
   .pl-table td.amt, .pl-table td.pct { cursor: default; }
+
+  /* ---- 年度台數 / 回本分析 / 敏感度 ---- */
+  .grid-table tr.row-muted td { color: #a0aec0; background: #fafafa; }
+  .grid-table tr.total-row td { background: #f7fafc; font-weight: 600; }
+  .warn-text { color: #c53030; font-weight: 600; }
+  .payback-kpis { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+  .payback-kpi { flex: 1 1 168px; border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px 12px; background: #fff; }
+  .payback-kpi .pk-label { font-size: 11px; color: #718096; display: block; margin-bottom: 2px; }
+  .payback-kpi .pk-num { font-size: 20px; font-weight: 600; color: #2d3748; }
+  .payback-kpi .pk-num.negative { color: #c53030; }
+  .payback-kpi .pk-sub { font-size: 11px; color: #718096; display: block; margin-top: 2px; }
+  .payback-kpi.highlight { border-color: #2b6cb0; box-shadow: inset 3px 0 0 #2b6cb0; }
+  .payback-kpi.bad { border-color: #c53030; box-shadow: inset 3px 0 0 #c53030; }
+  .sens-controls { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 10px; }
+  .sens-mode { display: inline-flex; border: 1px solid #cbd5e0; border-radius: 5px; overflow: hidden; }
+  .sens-mode button { border: 0; background: #fff; padding: 5px 12px; font-size: 12px; cursor: pointer; color: #4a5568; }
+  .sens-mode button.active { background: #2b6cb0; color: #fff; }
+  .sens-mode button + button { border-left: 1px solid #cbd5e0; }
+  .sens-matrix { border-collapse: collapse; font-size: 12px; }
+  .sens-matrix th, .sens-matrix td { border: 1px solid #e2e8f0; padding: 6px 9px; text-align: right; white-space: nowrap; }
+  .sens-matrix thead th { background: #f7fafc; color: #4a5568; font-weight: 600; text-align: center; }
+  .sens-matrix th.corner { background: #edf2f7; }
+  .sens-matrix td.cell { color: #1a202c; font-variant-numeric: tabular-nums; }
+  /* 不回本是「狀態」不是色階的延伸：一格無限大會把整個色階壓平，其餘格子全部看起來一樣 */
+  .sens-matrix td.never { background: #fff5f0 !important; color: #b4530f; font-weight: 600; }
+  .sens-matrix td.base-cell { outline: 2px solid #2b6cb0; outline-offset: -2px; font-weight: 700; }
+  .sens-axis-sub { display: block; font-size: 10px; color: #a0aec0; font-weight: 400; }
+  .sens-small-multiples { display: flex; flex-direction: column; gap: 14px; }
+  .sens-panel { border: 1px solid #e2e8f0; border-radius: 6px; background: #fff; padding: 10px 12px; }
+  .sens-panel h5 { margin: 0 0 4px; font-size: 13px; color: #2d3748; }
+  .sens-panel .sens-panel-sub { font-size: 11px; color: #718096; margin: 0 0 6px; }
+  .sens-invalid { border: 1px solid #f6ad55; background: #fffaf0; border-radius: 6px; padding: 12px 14px; font-size: 13px; color: #744210; }
+  .sens-invalid b { display: block; margin-bottom: 4px; color: #975a16; }
+  .chart-card h4.chart-title { margin: 0 0 8px; font-size: 14px; color: #2d3748; }
 </style>

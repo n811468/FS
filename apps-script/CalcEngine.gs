@@ -41,8 +41,8 @@ function fxRateFor_(params, currency, vehicleId) {
  * 回傳完整的計算過程(不只是稅額)，讓「銷貨成本」頁可以把每一步都攤開顯示，
  * 使用者才看得到「廠價調整」實際上就是這些 d 科目扣除的加總，不是憑空跑出來的數字。
  */
-function commodityTaxBreakdown_(exFactoryPrice, horizontalPartsAdj, dLines, taxRate, calcRate) {
-  var deductCodes = commodityTaxDeductCodes_();
+function commodityTaxBreakdown_(exFactoryPrice, horizontalPartsAdj, dLines, taxRate, calcRate, lineDefs) {
+  var deductCodes = commodityTaxDeductCodes_(lineDefs);
   var deduct = Object.keys(dLines).reduce(function (sum, code) {
     return sum + (deductCodes.indexOf(code) !== -1 ? dLines[code] : 0);
   }, 0);
@@ -55,8 +55,9 @@ function commodityTaxBreakdown_(exFactoryPrice, horizontalPartsAdj, dLines, taxR
   };
 }
 
-function commodityTaxDeductCodes_() {
-  return getPLLineItems()
+/** lineDefs 可選：計算流程會把已讀好的科目表傳進來，避免在純計算中再讀一次表 */
+function commodityTaxDeductCodes_(lineDefs) {
+  return (lineDefs || getPLLineItems())
     .filter(function (d) { return String(d.CommodityTaxDeduct || '').toUpperCase() === 'Y'; })
     .map(function (d) { return d.LineCode; });
 }
@@ -97,11 +98,44 @@ function calculatePLCore_(scenarioId, vehicleId) {
   return PL_CORE_MEMO_[key];
 }
 
-function calculatePLCoreUncached_(scenarioId, vehicleId) {
+/**
+ * 讀取一份損益計算所需的全部輸入，不做任何計算。
+ *
+ * 把「讀表」跟「算」分開，是為了讓敏感度分析能「不存檔就試算」——
+ * 先讀一次真實資料，再把要試的變數(匯率、台數)覆寫掉，重新丟給 calcFromInputs_()。
+ * 同樣的模式在 amortizeDevInvestmentPerUnit_(scenarioId, overrideRows) /
+ * previewDevInvestmentSummary() 已經用過，開發總投頁面的即時預覽就是這樣做的。
+ *
+ * 回傳的物件刻意只放「原始輸入」，不放任何算出來的中間值 ——
+ * 覆寫其中一項之後重算，結果才會跟「改了資料再算一次」完全一致。
+ */
+function loadPLInputs_(scenarioId, vehicleId) {
   var salesMixRow = getSalesMix(scenarioId).filter(function (r) { return r.VehicleID === vehicleId; })[0];
   if (!salesMixRow) throw new Error('找不到 SalesMix 資料：' + scenarioId + ' / ' + vehicleId);
 
-  var params = getParameters(scenarioId);
+  return {
+    scenarioId: scenarioId,
+    vehicleId: vehicleId,
+    salesMixRow: salesMixRow,
+    params: getParameters(scenarioId),
+    costRows: getCostOfSales(scenarioId, vehicleId),
+    opexRows: getOperatingExpense(scenarioId, vehicleId),
+    lineDefs: getPLLineItems(),
+    // 開發總投攤提的分子(投入金額)與分母(LC 總台數)都可能被敏感度覆寫，所以兩者都帶出來
+    devRows: getDevInvestment(scenarioId),
+    devTotalUnits: getLifeCycleUnits(scenarioId),
+    isBaselineScenario: isBaselineScenario_(scenarioId)
+  };
+}
+
+/**
+ * 損益計算本體：只吃 loadPLInputs_() 的產物，全程不碰任何表。
+ * 公式鏈對應 Gate F 損益試算表，逐步說明見 docs/architecture.md 第 4 節。
+ */
+function calcFromInputs_(inputs) {
+  var salesMixRow = inputs.salesMixRow;
+  var params = inputs.params;
+  var vehicleId = inputs.vehicleId;
   var taxRate = pct_(lookupParam_(params, '營業稅率', vehicleId));
   var commissionRate = pct_(lookupParam_(params, '銷售佣金率', vehicleId));
   var marginRate = pct_(lookupParam_(params, '季Margin率', vehicleId));
@@ -128,23 +162,23 @@ function calculatePLCoreUncached_(scenarioId, vehicleId) {
   var revenueA = exFactoryPrice + accessoryRevenue;                        // A 收入(未稅,含強配)
 
   // ---- 開發總投攤提：每一列自選攤提落點科目，套到損益各段時依科目所屬的父科目分組 ----
-  var devPerUnit = amortizeDevInvestmentPerUnit_(scenarioId);
-  var lineDefsAll = getPLLineItems();
+  var devPerUnit = amortizeDevInvestmentFromInputs_(inputs);
+  var lineDefsAll = inputs.lineDefs;
 
   // ---- Σd 銷售費用：貨物稅的完稅價格要扣廣促margin，所以 d 類要先算 ----
-  var opexRows = getOperatingExpense(scenarioId, vehicleId);
-  var dLines = pickLines_(opexRows, manualLineCodesFor_(['E']));
+  var opexRows = inputs.opexRows;
+  var dLines = pickLines_(opexRows, manualLineCodesFrom_(lineDefsAll, ['E']));
   dLines.d4 = exFactoryPrice * marginRate;                                 // 季Margin = 廠價(未稅) × 季Margin率
   applyDevAmortLines_(dLines, 'E', devPerUnit, lineDefsAll);
   var totalD = sumValues_(dLines);
 
   // ---- B 銷貨成本：手動輸入的成本列 + 自動計算的成本列 ----
-  var costRows = getCostOfSales(scenarioId, vehicleId);
+  var costRows = inputs.costRows;
   var knownCodes = lineDefsAll.map(function (d) { return d.LineCode; });
   // 先把所有可手動輸入的成本科目都放進來(值 0)，沒填金額的科目才不會整列從儀表板消失 ——
   // 少了幾列的話，畫面上看到的 b 科目加起來會對不上 B 銷貨成本合計，看起來就像加總算錯。
   var bLines = {};
-  manualLineCodesFor_(['B']).forEach(function (code) { bLines[code] = 0; });
+  manualLineCodesFrom_(lineDefsAll, ['B']).forEach(function (code) { bLines[code] = 0; });
   costRows.forEach(function (r) {
     var code = r.LineCode;
     // 科目已被刪除的殘留金額不計入，否則 B 會跟畫面上列出的 b 科目合計對不起來
@@ -155,7 +189,7 @@ function calculatePLCoreUncached_(scenarioId, vehicleId) {
   applyDevAmortLines_(bLines, 'B', devPerUnit, lineDefsAll);
   // 貨物稅完稅價格 = (廠價 - 水平配件外移調降 - 可扣除的d科目(廣宣/促銷/批標售/季Margin)) × 完稅價格計算率
   var commodityTaxBreakdown = commodityTaxBreakdown_(exFactoryPrice, toNumber_(salesMixRow.HorizontalPartsPriceAdj),
-    dLines, commodityTaxRate, pct_(lookupParam_(params, '貨物稅完稅價格計算率', vehicleId)));
+    dLines, commodityTaxRate, pct_(lookupParam_(params, '貨物稅完稅價格計算率', vehicleId)), lineDefsAll);
   bLines.b13 = commodityTaxBreakdown.tax;
 
   var totalB = sumValues_(bLines);
@@ -163,13 +197,13 @@ function calculatePLCoreUncached_(scenarioId, vehicleId) {
   var grossProfitE = grossProfitC - totalD; // E 銷貨毛利
 
   // ---- Σf 費用(f1 直接輸入 + 開發總投費用類攤提) ----
-  var fLines = pickLines_(opexRows, manualLineCodesFor_(['G']));
+  var fLines = pickLines_(opexRows, manualLineCodesFrom_(lineDefsAll, ['G']));
   applyDevAmortLines_(fLines, 'G', devPerUnit, lineDefsAll);
   var totalF = sumValues_(fLines);
   var contributionG = grossProfitE - totalF; // G 產品貢獻
 
   // ---- Σh 固定營業費用 ----
-  var hLines = pickLines_(opexRows, manualLineCodesFor_(['I']));
+  var hLines = pickLines_(opexRows, manualLineCodesFrom_(lineDefsAll, ['I']));
   applyDevAmortLines_(hLines, 'I', devPerUnit, lineDefsAll);
   var totalH = sumValues_(hLines);
   var operatingProfitI = contributionG - totalH; // I 營業淨利(未扣前瞻)
@@ -194,14 +228,23 @@ function calculatePLCoreUncached_(scenarioId, vehicleId) {
   );
 
   return {
-    scenarioId: scenarioId,
+    scenarioId: inputs.scenarioId,
     vehicleId: vehicleId,
     revenue: revenueA,
     exFactoryPrice: exFactoryPrice,
     commodityTaxDetail: commodityTaxBreakdown,
+    // 回本分析要把單台開發攤提加回 K 才是單台現金貢獻 m
+    // (見 docs/payback-and-sensitivity.md 4.1)；順帶帶出投資總額與攤提基準台數
+    devAmortPerUnit: sumValues_(devPerUnit.perUnit),
+    devInvestmentTotal: sumValues_(devPerUnit.totalsByLine),
+    devTotalUnits: devPerUnit.totalUnits,
     lineValues: lineValues,
     lines: buildResultLines_(lineValues, revenueA, exFactoryPrice)
   };
+}
+
+function calculatePLCoreUncached_(scenarioId, vehicleId) {
+  return calcFromInputs_(loadPLInputs_(scenarioId, vehicleId));
 }
 
 /**
@@ -413,14 +456,26 @@ function getComparisonOptions() {
  * 不傳就照原本行為讀 Sheet 上已儲存的資料（損益計算/儀表板一律用這個，確保跟儲存的資料一致）。
  */
 function amortizeDevInvestmentPerUnit_(scenarioId, overrideRows) {
-  var devRows = overrideRows || getDevInvestment(scenarioId);
-  var totalUnits = getLifeCycleUnits(scenarioId);
+  return amortizeDevAmounts_(
+    overrideRows || getDevInvestment(scenarioId),
+    getLifeCycleUnits(scenarioId),
+    // 現況情境沒有挑戰低減目標，一律用原始金額；目標情境才套用低減率。
+    isBaselineScenario_(scenarioId),
+    getParameters(scenarioId));
+}
+
+/** loadPLInputs_() 已經把攤提需要的四項輸入讀好了，直接算，不再回頭讀表 */
+function amortizeDevInvestmentFromInputs_(inputs) {
+  return amortizeDevAmounts_(inputs.devRows, inputs.devTotalUnits, inputs.isBaselineScenario, inputs.params);
+}
+
+/**
+ * 開發總投攤提的純計算核心：只吃參數、不讀表。
+ * 敏感度分析靠覆寫 devRows(金額)或 totalUnits(台數)來試算，不必先存檔。
+ */
+function amortizeDevAmounts_(devRows, totalUnits, isBaseline, params) {
   var empty = { perUnit: {}, totalsByLine: {}, totalUnits: totalUnits };
   if (totalUnits <= 0) return empty;
-
-  // 現況情境沒有挑戰低減目標，一律用原始金額；目標情境才套用低減率。
-  var isBaseline = isBaselineScenario_(scenarioId);
-  var params = getParameters(scenarioId);
 
   var totals = {};
   devRows.forEach(function (r) {
@@ -554,7 +609,12 @@ function previewDevInvestmentSummary(scenarioId, rows) {
 
 /** 某個父科目底下、可以手動輸入的明細科目代碼(排除自動計算科目) */
 function manualLineCodesFor_(parentCodes) {
-  return getPLLineItems()
+  return manualLineCodesFrom_(getPLLineItems(), parentCodes);
+}
+
+/** 同上，但吃已經讀好的科目表 —— 純計算流程用這個，不再重複讀表 */
+function manualLineCodesFrom_(lineDefs, parentCodes) {
+  return lineDefs
     .filter(function (d) { return parentCodes.indexOf(d.ParentLine) !== -1 && !d.AutoSource; })
     .map(function (d) { return d.LineCode; });
 }
@@ -681,4 +741,274 @@ function getOperatingExpenseAutoLines(scenarioId, vehicles) {
 function getPLResult(scenarioId, vehicleId) {
   var rows = sheetToObjects_(SHEETS.PL_RESULT);
   return rows.filter(function (r) { return r.ScenarioID === scenarioId && r.VehicleID === (vehicleId || ''); });
+}
+
+/* ================= 現金回本分析 =================
+ * 規格：docs/payback-and-sensitivity.md
+ *
+ * 口徑：稅前現金、不含營運資金。系統的 K 是營業淨利(沒有企業所得稅)，
+ * 也沒有應收帳款/存貨的資金占用，並假設售出當期即為現金收付。
+ * 跟財務部的正式投資回收年比對時，差異就在這兩項。
+ */
+
+/** m ≤ 0 代表每賣一台現金反而流出，永遠不回本 —— 用 null 表示，不要回傳 Infinity/負數 */
+var PAYBACK_NEVER_ = null;
+
+/**
+ * 某情境的單台現金貢獻 m 與損平台數 n*。
+ *
+ * m = K + 單台開發攤提。K 已經扣掉攤提，加回去之後：
+ *     m = (每台其他收支 − a) + a = 每台其他收支
+ * 所以 **m 與攤提基準 N 無關，n* = I / m 也與 N 無關** ——
+ * 改 Scenarios 的攤提基準覆寫只會改帳面 K，不會改損平台數。
+ * 這是規格 4.3 的核心結論，也是最容易寫錯的一條。
+ *
+ * 開發總投不綁車系(是部門別層級)，所以 I 是整個車型共用的，
+ * m 必須用加權平均 —— 單一車系的 n* 等於假設「全部台數都是這個車系」，沒有意義。
+ */
+function loadPaybackBase_(scenarioId) {
+  var salesMix = getSalesMix(scenarioId);
+  if (!salesMix.length) throw new Error('找不到 SalesMix 資料：' + scenarioId);
+  return {
+    scenarioId: scenarioId,
+    salesMix: salesMix,
+    // 每個車系的輸入只讀一次，敏感度每一格再各自覆寫後重算 ——
+    // 刻意不走 calculatePLCore_，它的 PL_CORE_MEMO_ 以「情境|車系」為鍵，
+    // 敏感度每一格的情境與車系都相同，走過去會整張矩陣拿到同一個數字。
+    inputsByVehicle: salesMix.map(function (row) { return loadPLInputs_(scenarioId, row.VehicleID); }),
+    yearRows: getScenarioYearVolume(scenarioId),
+    salesMixUnits: getSalesMixLifeCycleUnits(scenarioId)
+  };
+}
+
+/**
+ * 把敏感度要試的變數套進一份 inputs，回傳新的 inputs（原本那份不動）。
+ *   fxCurrency + fxDelta：該幣別的現況匯率 × (1 + delta)，
+ *                         同時影響外幣材料成本與外幣開發投資兩條路徑。
+ *   volumeScale：攤提分母 N × k。台數整體變動時攤提基準跟著變，
+ *                單台攤提被稀釋或放大，影響帳面 K。
+ */
+function applyPLInputOverrides_(inputs, opts) {
+  var out = {};
+  Object.keys(inputs).forEach(function (key) { out[key] = inputs[key]; });
+
+  if (opts.fxCurrency && opts.fxDelta) {
+    out.params = inputs.params.map(function (p) {
+      if (p.ParamName !== COST_FX_PARAM_NAME || p.Currency !== opts.fxCurrency) return p;
+      var copy = {};
+      Object.keys(p).forEach(function (key) { copy[key] = p[key]; });
+      copy.Value = toNumber_(p.Value) * (1 + opts.fxDelta);
+      return copy;
+    });
+  }
+  if (opts.volumeScale && opts.volumeScale !== 1) {
+    out.devTotalUnits = inputs.devTotalUnits * opts.volumeScale;
+  }
+  return out;
+}
+
+/**
+ * 回本分析的計算核心：吃 loadPaybackBase_() 的產物 + 一組覆寫，全程不讀表。
+ *
+ * m = K + 單台開發攤提。K 已經扣掉攤提，加回去之後：
+ *     m = (每台其他收支 − a) + a = 每台其他收支
+ * 所以 **m 與攤提基準 N 無關，n* = I / m 也與 N 無關** ——
+ * 改攤提基準只會改帳面 K，不會改損平台數（規格 4.3，verify-payback.js 有專門的迴歸測試）。
+ *
+ * 開發總投不綁車系(是部門別層級)，所以 I 是整個車型共用的，
+ * m 必須用構成比加權 —— 單一車系的 n* 等於假設「全部台數都是這個車系」，沒有意義。
+ */
+function paybackFromBase_(base, opts) {
+  opts = opts || {};
+  var salesMix = base.salesMix;
+  var totalPct = salesMix.reduce(function (s, r) { return s + toNumber_(r.SalesMixPct); }, 0);
+
+  var weightedK = 0, perUnitAmort = 0, investment = 0, totalUnits = 0;
+  base.inputsByVehicle.forEach(function (inputs, idx) {
+    var res = calcFromInputs_(applyPLInputOverrides_(inputs, opts));
+    // 構成比全空時退回等權平均，否則整份結果會變成 0、看起來像沒有資料
+    var w = totalPct > 0 ? toNumber_(salesMix[idx].SalesMixPct) / totalPct : 1 / salesMix.length;
+    weightedK += toNumber_(res.lineValues.K) * w;
+    perUnitAmort += toNumber_(res.devAmortPerUnit) * w;
+    investment = toNumber_(res.devInvestmentTotal);   // 情境層級，各車系相同
+    totalUnits = toNumber_(res.devTotalUnits);
+  });
+
+  var m = weightedK + perUnitAmort;
+  // m ≤ 0：每賣一台現金反而流出，永遠不回本。用 null 表示，不要回傳 Infinity 或負數
+  var breakEven = m > 0 ? investment / m : PAYBACK_NEVER_;
+
+  var scale = opts.volumeScale || 1;
+  var years = [];
+  var cumVolume = 0, paybackYear = null, paybackYearFraction = 0;
+  base.yearRows.forEach(function (r) {
+    var vol = toNumber_(r.AnnualVolume) * scale;
+    var prevCash = m * cumVolume - investment;
+    cumVolume += vol;
+    var cumCash = m * cumVolume - investment;
+
+    if (paybackYear === null && m > 0 && cumCash >= 0) {
+      paybackYear = toNumber_(r.Year);
+      // 該年度內線性內插：現金流對台數是線性的，所以這個落點與
+      // 「累計台數跨過 n*」完全一致，畫圖的穿越點就用它
+      var gain = cumCash - prevCash;
+      paybackYearFraction = gain > 0 ? (0 - prevCash) / gain : 0;
+    }
+    years.push({
+      year: toNumber_(r.Year), volume: vol, cumulativeVolume: cumVolume,
+      cashFlow: m * vol, cumulativeCash: cumCash
+    });
+  });
+
+  return {
+    scenarioId: base.scenarioId,
+    investment: investment,
+    lifeCycleUnits: totalUnits,
+    perUnitAmort: perUnitAmort,
+    perUnitProfitK: weightedK,
+    perUnitCash: m,
+    breakEvenUnits: breakEven,
+    breakEvenRatio: breakEven !== null && totalUnits > 0 ? breakEven / totalUnits : PAYBACK_NEVER_,
+    // 「回不回得了本」要拿 n* 跟實際銷售預估比，不是跟攤提基準比(規格 4.3)
+    plannedVolume: cumVolume,
+    withinPlannedVolume: breakEven !== null && cumVolume > 0 ? breakEven <= cumVolume : false,
+    hasYearCurve: years.length > 0,
+    years: years,
+    paybackYear: paybackYear,
+    paybackYearFraction: paybackYearFraction
+  };
+}
+
+/**
+ * 現金回本分析：損平台數 + 逐年現金流 + 回本落點。
+ * VehicleID 不是參數 —— 見 paybackFromBase_ 的說明，只在車型層級有意義。
+ */
+function getPaybackAnalysis(scenarioId) {
+  var base = loadPaybackBase_(scenarioId);
+  var result = paybackFromBase_(base, {});
+
+  var caveat = null;
+  if (result.hasYearCurve && base.salesMixUnits > 0
+      && Math.abs(result.plannedVolume - base.salesMixUnits) > 0.5) {
+    caveat = '年度台數合計 ' + Math.round(result.plannedVolume) + ' 台，與銷售構成推算的 '
+      + Math.round(base.salesMixUnits) + ' 台相差 ' + Math.round(result.plannedVolume - base.salesMixUnits)
+      + ' 台。兩者描述的是同一件事(銷售預估)，請調整其中一邊。';
+  }
+  result.volumeCaveat = caveat;
+  result.salesMixLifeCycleUnits = base.salesMixUnits;
+  return result;
+}
+
+/* ================= 敏感度分析 =================
+ * 規格：docs/payback-and-sensitivity.md 第 8 節。
+ *
+ * 單變數與雙變數共用這一支 API —— 單變數就是其中一軸只有一個值的特例，
+ * 前端依兩軸長度決定要畫小倍數還是矩陣。不開第二支 API，
+ * 就不會有兩套算法對不起來的問題。
+ */
+
+var SENSITIVITY_METRICS = ['paybackYear', 'breakEvenUnits', 'K'];
+var SENSITIVITY_DEFAULT_VOLUME_SCALES = [0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3];
+var SENSITIVITY_DEFAULT_FX_DELTAS = [-0.2, -0.15, -0.1, 0, 0.1, 0.15, 0.2];
+
+/**
+ * 敏感度可選的匯率幣別：該情境設定過現況匯率的外幣。
+ * getConfiguredCurrencies() 會把本位幣放在第一個(那是給銷貨成本的幣別選單用的)，
+ * 這裡必須濾掉 —— 本位幣沒有匯率可調，fxRateFor_ 對它一律回傳 1，
+ * 選了只會得到一條完全平的線。
+ */
+function getSensitivityCurrencies(scenarioId) {
+  return getConfiguredCurrencies(scenarioId).filter(function (c) { return c !== BASE_CURRENCY; });
+}
+
+/**
+ * 指標與變數的有效性：n* = I / m，I 與 m 都不含台數，所以台數軸對 n* 完全無效
+ * （整排會是一模一樣的數字）。規則是 n* 只在「匯率為唯一變數」時可選。
+ * 回報無效，而不是回傳一排相同數字 —— 後者看起來像功能壞掉，不像設計。
+ */
+function sensitivityMetricInvalidReason_(metric, volumeCount) {
+  if (metric === 'breakEvenUnits' && volumeCount > 1) {
+    return '損平台數 n* = I / m，I 與 m 都不含台數，所以台數軸對它完全無效（整排會是同一個數字）。'
+      + '要看台數的影響請改選「回本年」，或把台數固定、只讓匯率變動。';
+  }
+  return '';
+}
+
+function sensitivityCellValue_(metric, r) {
+  if (metric === 'K') return r.perUnitProfitK;
+  if (metric === 'breakEvenUnits') return r.breakEvenUnits;
+  // paybackYear：把年度內的落點也算進去，否則整欄都是整數、看不出推遲了多少
+  if (r.paybackYear === null) return null;
+  return r.paybackYear - 1 + r.paybackYearFraction;
+}
+
+/**
+ * 台數 × 匯率敏感度。
+ *
+ * spec = {
+ *   volumeScales: [0.7, ..., 1.3],              // 省略用預設；[1] 代表台數不動
+ *   fx: { currency: 'JPY', deltas: [-0.2,...] },// 省略或 deltas=[0] 代表匯率不動
+ *   metric: 'paybackYear' | 'breakEvenUnits' | 'K'
+ * }
+ *
+ * 列 = 台數、欄 = 匯率。基準格(縮放 1.0、偏移 0)一定會被包含，
+ * 它必須等於現行儀表板算出的同一個數字，是使用者的定位點也是驗證點。
+ */
+function calculateSensitivity(scenarioId, spec) {
+  spec = spec || {};
+  var metric = SENSITIVITY_METRICS.indexOf(spec.metric) !== -1 ? spec.metric : 'paybackYear';
+
+  var scales = (spec.volumeScales && spec.volumeScales.length)
+    ? spec.volumeScales.map(function (v) { return toNumber_(v); }) : [1];
+  var fxSpec = spec.fx || {};
+  var currency = fxSpec.currency || '';
+  var deltas = (currency && fxSpec.deltas && fxSpec.deltas.length)
+    ? fxSpec.deltas.map(function (v) { return toNumber_(v); }) : [0];
+
+  var invalid = sensitivityMetricInvalidReason_(metric, scales.length);
+  if (invalid) return { invalid: true, reason: invalid, metric: metric };
+
+  var base = loadPaybackBase_(scenarioId);
+  var baseFxRate = currency ? fxRateFor_(base.inputsByVehicle[0].params, currency, '') : 0;
+
+  var cells = scales.map(function (k) {
+    return deltas.map(function (d) {
+      var r = paybackFromBase_(base, { volumeScale: k, fxCurrency: currency, fxDelta: d });
+      return {
+        value: sensitivityCellValue_(metric, r),
+        withinPlannedVolume: r.withinPlannedVolume,
+        breakEvenUnits: r.breakEvenUnits,
+        paybackYear: r.paybackYear,
+        paybackYearFraction: r.paybackYearFraction,
+        perUnitProfitK: r.perUnitProfitK,
+        perUnitCash: r.perUnitCash,
+        plannedVolume: r.plannedVolume
+      };
+    });
+  });
+
+  var baseRow = scales.indexOf(1);
+  var baseCol = deltas.indexOf(0);
+  return {
+    scenarioId: scenarioId,
+    metric: metric,
+    rowAxis: {
+      kind: 'volume',
+      values: scales,
+      // 相對基準的偏移比絕對台數好比較，但絕對值也要給 —— 使用者要能跟銷售構成頁對起來
+      labels: scales.map(function (k) { return (k === 1 ? '基準' : (k > 1 ? '+' : '') + Math.round((k - 1) * 100) + '%'); }),
+      absolute: scales.map(function (k) { return base.salesMixUnits * k; })
+    },
+    colAxis: {
+      kind: 'fx',
+      currency: currency,
+      values: deltas,
+      labels: deltas.map(function (d) { return (d === 0 ? '基準' : (d > 0 ? '+' : '') + Math.round(d * 100) + '%'); }),
+      absolute: deltas.map(function (d) { return baseFxRate * (1 + d); })
+    },
+    baseCell: { r: baseRow, c: baseCol },
+    baseFxRate: baseFxRate,
+    hasYearCurve: base.yearRows.length > 0,
+    cells: cells
+  };
 }

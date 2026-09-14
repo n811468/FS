@@ -305,7 +305,7 @@ function rowIdPrefix_(sheetName) {
   var map = {
     SalesMix: 'SM', CostOfSales: 'CS', DevInvestment: 'DI',
     OperatingExpense: 'OE', Parameters: 'PM', PLResult: 'PR',
-    VehicleTypes: 'VT', Vehicles: 'VH', Scenarios: 'SC'
+    VehicleTypes: 'VT', Vehicles: 'VH', Scenarios: 'SC', ScenarioYearVolume: 'YV'
   };
   return map[sheetName] || 'RW';
 }
@@ -342,8 +342,4 @@ function sortByOrder_(rows, field) {
     return av !== bv ? av - bv : a.i - b.i;
   });
   return withIndex.map(function (x) { return x.row; });
-}
-
-function include(filename) {
-  return HtmlService.createHtmlOutputFromFile(filename).getContent();
 }

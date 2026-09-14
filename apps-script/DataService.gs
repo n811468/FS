@@ -1017,3 +1017,94 @@ function getOperatingExpenseLineOptions() {
   return lineOptionsFor_(['E', 'G', 'I'], ['J']);
 }
 
+
+/* ================= 年度台數曲線（回本分析用） =================
+ *
+ * 車型層級：一個情境一條「每年總台數」曲線，各車系需要時用 SalesMixPct 分攤
+ * （見 docs/payback-and-sensitivity.md 第 5 節，方案 B）。
+ *
+ * 這張表只服務回本分析的「時序」——單台損益完全不讀它。攤提分母仍然是
+ * getLifeCycleUnits()（情境的攤提基準，沒填才用銷售構成推算），兩者是不同用途的數字，
+ * 不是重複：攤提基準決定帳面 K 怎麼分攤，年度台數決定何時累計到損平台數。
+ */
+function getScenarioYearVolume(scenarioId) {
+  var rows = sheetToObjects_(SHEETS.SCENARIO_YEAR_VOLUME) || [];
+  return rows
+    .filter(function (r) { return r.ScenarioID === scenarioId; })
+    .sort(function (a, b) { return toNumber_(a.Year) - toNumber_(b.Year); });
+}
+
+/**
+ * 年度台數表格：依 LC 年限列出第 1~N 年，沒有資料的年份留白。
+ * 年數取「銷售構成裡最長的 LC 年限」，這樣使用者一打開就看到完整的年度範圍，
+ * 不必自己一列一列新增。
+ */
+function getYearVolumeGrid(scenarioId) {
+  var existing = getScenarioYearVolume(scenarioId);
+  var byYear = {};
+  existing.forEach(function (r) { byYear[String(toNumber_(r.Year))] = r; });
+
+  var years = getSalesMix(scenarioId).map(function (r) { return toNumber_(r.LifeCycleYears); });
+  var lcYears = years.length ? Math.max.apply(null, years) : 0;
+  // 已經填過、但超出目前 LC 年限的年份仍要顯示，否則使用者會看不到也刪不掉那些資料
+  var maxExisting = existing.reduce(function (m, r) { return Math.max(m, toNumber_(r.Year)); }, 0);
+  var total = Math.max(lcYears, maxExisting);
+
+  var rows = [];
+  for (var y = 1; y <= total; y++) {
+    var row = byYear[String(y)] || {};
+    rows.push({
+      RowID: row.RowID || '',
+      Year: y,
+      AnnualVolume: row.AnnualVolume === undefined || row.AnnualVolume === '' ? '' : toNumber_(row.AnnualVolume),
+      Notes: row.Notes || '',
+      beyondLifeCycle: y > lcYears
+    });
+  }
+
+  var salesMixUnits = getSalesMixLifeCycleUnits(scenarioId);
+  var entered = rows.reduce(function (sum, r) { return sum + toNumber_(r.AnnualVolume); }, 0);
+  return {
+    rows: rows,
+    lifeCycleYears: lcYears,
+    // 對照基準是「銷售構成推算的 LC 總台數」，不是 getLifeCycleUnits() ——
+    // 後者在有攤提基準覆寫時本來就該與銷售預估不同，拿去比只會製造假警報。
+    salesMixLifeCycleUnits: salesMixUnits,
+    enteredTotal: entered,
+    diffFromSalesMix: entered - salesMixUnits
+  };
+}
+
+/** 年度台數整批儲存：留白的年份代表沒資料，會刪掉既有列 */
+function saveYearVolumeGrid(scenarioId, rows) {
+  return withLock_(function () {
+    var upserts = [];
+    var deletes = [];
+    (rows || []).forEach(function (r) {
+      var hasValue = r.AnnualVolume !== '' && r.AnnualVolume !== null && r.AnnualVolume !== undefined;
+      if (hasValue) {
+        upserts.push({
+          RowID: r.RowID || '', ScenarioID: scenarioId,
+          Year: toNumber_(r.Year), AnnualVolume: toNumber_(r.AnnualVolume), Notes: r.Notes || ''
+        });
+      } else if (r.RowID) {
+        deletes.push(r.RowID);
+      }
+    });
+    batchWriteRows_(SHEETS.SCENARIO_YEAR_VOLUME, 'RowID', upserts, deletes);
+    return getYearVolumeGrid(scenarioId);
+  });
+}
+
+/**
+ * 用銷售構成把年度台數填滿：每年都放「Σ月銷量 × 12」。
+ * 使用者通常只想微調爬坡與衰退那幾年，從一條平的曲線開始改比從空白開始快。
+ */
+function seedYearVolumeFromSalesMix(scenarioId) {
+  var grid = getYearVolumeGrid(scenarioId);
+  var monthly = getSalesMix(scenarioId).reduce(function (s, r) { return s + toNumber_(r.MonthlyVolume); }, 0);
+  var rows = grid.rows.map(function (r) {
+    return { RowID: r.RowID, Year: r.Year, AnnualVolume: r.beyondLifeCycle ? '' : monthly * 12, Notes: r.Notes };
+  });
+  return saveYearVolumeGrid(scenarioId, rows);
+}
