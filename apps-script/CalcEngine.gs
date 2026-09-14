@@ -41,8 +41,8 @@ function fxRateFor_(params, currency, vehicleId) {
  * 回傳完整的計算過程(不只是稅額)，讓「銷貨成本」頁可以把每一步都攤開顯示，
  * 使用者才看得到「廠價調整」實際上就是這些 d 科目扣除的加總，不是憑空跑出來的數字。
  */
-function commodityTaxBreakdown_(exFactoryPrice, horizontalPartsAdj, dLines, taxRate, calcRate) {
-  var deductCodes = commodityTaxDeductCodes_();
+function commodityTaxBreakdown_(exFactoryPrice, horizontalPartsAdj, dLines, taxRate, calcRate, lineDefs) {
+  var deductCodes = commodityTaxDeductCodes_(lineDefs);
   var deduct = Object.keys(dLines).reduce(function (sum, code) {
     return sum + (deductCodes.indexOf(code) !== -1 ? dLines[code] : 0);
   }, 0);
@@ -55,8 +55,9 @@ function commodityTaxBreakdown_(exFactoryPrice, horizontalPartsAdj, dLines, taxR
   };
 }
 
-function commodityTaxDeductCodes_() {
-  return getPLLineItems()
+/** lineDefs 可選：計算流程會把已讀好的科目表傳進來，避免在純計算中再讀一次表 */
+function commodityTaxDeductCodes_(lineDefs) {
+  return (lineDefs || getPLLineItems())
     .filter(function (d) { return String(d.CommodityTaxDeduct || '').toUpperCase() === 'Y'; })
     .map(function (d) { return d.LineCode; });
 }
@@ -97,11 +98,44 @@ function calculatePLCore_(scenarioId, vehicleId) {
   return PL_CORE_MEMO_[key];
 }
 
-function calculatePLCoreUncached_(scenarioId, vehicleId) {
+/**
+ * 讀取一份損益計算所需的全部輸入，不做任何計算。
+ *
+ * 把「讀表」跟「算」分開，是為了讓敏感度分析能「不存檔就試算」——
+ * 先讀一次真實資料，再把要試的變數(匯率、台數)覆寫掉，重新丟給 calcFromInputs_()。
+ * 同樣的模式在 amortizeDevInvestmentPerUnit_(scenarioId, overrideRows) /
+ * previewDevInvestmentSummary() 已經用過，開發總投頁面的即時預覽就是這樣做的。
+ *
+ * 回傳的物件刻意只放「原始輸入」，不放任何算出來的中間值 ——
+ * 覆寫其中一項之後重算，結果才會跟「改了資料再算一次」完全一致。
+ */
+function loadPLInputs_(scenarioId, vehicleId) {
   var salesMixRow = getSalesMix(scenarioId).filter(function (r) { return r.VehicleID === vehicleId; })[0];
   if (!salesMixRow) throw new Error('找不到 SalesMix 資料：' + scenarioId + ' / ' + vehicleId);
 
-  var params = getParameters(scenarioId);
+  return {
+    scenarioId: scenarioId,
+    vehicleId: vehicleId,
+    salesMixRow: salesMixRow,
+    params: getParameters(scenarioId),
+    costRows: getCostOfSales(scenarioId, vehicleId),
+    opexRows: getOperatingExpense(scenarioId, vehicleId),
+    lineDefs: getPLLineItems(),
+    // 開發總投攤提的分子(投入金額)與分母(LC 總台數)都可能被敏感度覆寫，所以兩者都帶出來
+    devRows: getDevInvestment(scenarioId),
+    devTotalUnits: getLifeCycleUnits(scenarioId),
+    isBaselineScenario: isBaselineScenario_(scenarioId)
+  };
+}
+
+/**
+ * 損益計算本體：只吃 loadPLInputs_() 的產物，全程不碰任何表。
+ * 公式鏈對應 Gate F 損益試算表，逐步說明見 docs/architecture.md 第 4 節。
+ */
+function calcFromInputs_(inputs) {
+  var salesMixRow = inputs.salesMixRow;
+  var params = inputs.params;
+  var vehicleId = inputs.vehicleId;
   var taxRate = pct_(lookupParam_(params, '營業稅率', vehicleId));
   var commissionRate = pct_(lookupParam_(params, '銷售佣金率', vehicleId));
   var marginRate = pct_(lookupParam_(params, '季Margin率', vehicleId));
@@ -128,23 +162,23 @@ function calculatePLCoreUncached_(scenarioId, vehicleId) {
   var revenueA = exFactoryPrice + accessoryRevenue;                        // A 收入(未稅,含強配)
 
   // ---- 開發總投攤提：每一列自選攤提落點科目，套到損益各段時依科目所屬的父科目分組 ----
-  var devPerUnit = amortizeDevInvestmentPerUnit_(scenarioId);
-  var lineDefsAll = getPLLineItems();
+  var devPerUnit = amortizeDevInvestmentFromInputs_(inputs);
+  var lineDefsAll = inputs.lineDefs;
 
   // ---- Σd 銷售費用：貨物稅的完稅價格要扣廣促margin，所以 d 類要先算 ----
-  var opexRows = getOperatingExpense(scenarioId, vehicleId);
-  var dLines = pickLines_(opexRows, manualLineCodesFor_(['E']));
+  var opexRows = inputs.opexRows;
+  var dLines = pickLines_(opexRows, manualLineCodesFrom_(lineDefsAll, ['E']));
   dLines.d4 = exFactoryPrice * marginRate;                                 // 季Margin = 廠價(未稅) × 季Margin率
   applyDevAmortLines_(dLines, 'E', devPerUnit, lineDefsAll);
   var totalD = sumValues_(dLines);
 
   // ---- B 銷貨成本：手動輸入的成本列 + 自動計算的成本列 ----
-  var costRows = getCostOfSales(scenarioId, vehicleId);
+  var costRows = inputs.costRows;
   var knownCodes = lineDefsAll.map(function (d) { return d.LineCode; });
   // 先把所有可手動輸入的成本科目都放進來(值 0)，沒填金額的科目才不會整列從儀表板消失 ——
   // 少了幾列的話，畫面上看到的 b 科目加起來會對不上 B 銷貨成本合計，看起來就像加總算錯。
   var bLines = {};
-  manualLineCodesFor_(['B']).forEach(function (code) { bLines[code] = 0; });
+  manualLineCodesFrom_(lineDefsAll, ['B']).forEach(function (code) { bLines[code] = 0; });
   costRows.forEach(function (r) {
     var code = r.LineCode;
     // 科目已被刪除的殘留金額不計入，否則 B 會跟畫面上列出的 b 科目合計對不起來
@@ -155,7 +189,7 @@ function calculatePLCoreUncached_(scenarioId, vehicleId) {
   applyDevAmortLines_(bLines, 'B', devPerUnit, lineDefsAll);
   // 貨物稅完稅價格 = (廠價 - 水平配件外移調降 - 可扣除的d科目(廣宣/促銷/批標售/季Margin)) × 完稅價格計算率
   var commodityTaxBreakdown = commodityTaxBreakdown_(exFactoryPrice, toNumber_(salesMixRow.HorizontalPartsPriceAdj),
-    dLines, commodityTaxRate, pct_(lookupParam_(params, '貨物稅完稅價格計算率', vehicleId)));
+    dLines, commodityTaxRate, pct_(lookupParam_(params, '貨物稅完稅價格計算率', vehicleId)), lineDefsAll);
   bLines.b13 = commodityTaxBreakdown.tax;
 
   var totalB = sumValues_(bLines);
@@ -163,13 +197,13 @@ function calculatePLCoreUncached_(scenarioId, vehicleId) {
   var grossProfitE = grossProfitC - totalD; // E 銷貨毛利
 
   // ---- Σf 費用(f1 直接輸入 + 開發總投費用類攤提) ----
-  var fLines = pickLines_(opexRows, manualLineCodesFor_(['G']));
+  var fLines = pickLines_(opexRows, manualLineCodesFrom_(lineDefsAll, ['G']));
   applyDevAmortLines_(fLines, 'G', devPerUnit, lineDefsAll);
   var totalF = sumValues_(fLines);
   var contributionG = grossProfitE - totalF; // G 產品貢獻
 
   // ---- Σh 固定營業費用 ----
-  var hLines = pickLines_(opexRows, manualLineCodesFor_(['I']));
+  var hLines = pickLines_(opexRows, manualLineCodesFrom_(lineDefsAll, ['I']));
   applyDevAmortLines_(hLines, 'I', devPerUnit, lineDefsAll);
   var totalH = sumValues_(hLines);
   var operatingProfitI = contributionG - totalH; // I 營業淨利(未扣前瞻)
@@ -194,14 +228,23 @@ function calculatePLCoreUncached_(scenarioId, vehicleId) {
   );
 
   return {
-    scenarioId: scenarioId,
+    scenarioId: inputs.scenarioId,
     vehicleId: vehicleId,
     revenue: revenueA,
     exFactoryPrice: exFactoryPrice,
     commodityTaxDetail: commodityTaxBreakdown,
+    // 回本分析要把單台開發攤提加回 K 才是單台現金貢獻 m
+    // (見 docs/payback-and-sensitivity.md 4.1)；順帶帶出投資總額與攤提基準台數
+    devAmortPerUnit: sumValues_(devPerUnit.perUnit),
+    devInvestmentTotal: sumValues_(devPerUnit.totalsByLine),
+    devTotalUnits: devPerUnit.totalUnits,
     lineValues: lineValues,
     lines: buildResultLines_(lineValues, revenueA, exFactoryPrice)
   };
+}
+
+function calculatePLCoreUncached_(scenarioId, vehicleId) {
+  return calcFromInputs_(loadPLInputs_(scenarioId, vehicleId));
 }
 
 /**
@@ -413,14 +456,26 @@ function getComparisonOptions() {
  * 不傳就照原本行為讀 Sheet 上已儲存的資料（損益計算/儀表板一律用這個，確保跟儲存的資料一致）。
  */
 function amortizeDevInvestmentPerUnit_(scenarioId, overrideRows) {
-  var devRows = overrideRows || getDevInvestment(scenarioId);
-  var totalUnits = getLifeCycleUnits(scenarioId);
+  return amortizeDevAmounts_(
+    overrideRows || getDevInvestment(scenarioId),
+    getLifeCycleUnits(scenarioId),
+    // 現況情境沒有挑戰低減目標，一律用原始金額；目標情境才套用低減率。
+    isBaselineScenario_(scenarioId),
+    getParameters(scenarioId));
+}
+
+/** loadPLInputs_() 已經把攤提需要的四項輸入讀好了，直接算，不再回頭讀表 */
+function amortizeDevInvestmentFromInputs_(inputs) {
+  return amortizeDevAmounts_(inputs.devRows, inputs.devTotalUnits, inputs.isBaselineScenario, inputs.params);
+}
+
+/**
+ * 開發總投攤提的純計算核心：只吃參數、不讀表。
+ * 敏感度分析靠覆寫 devRows(金額)或 totalUnits(台數)來試算，不必先存檔。
+ */
+function amortizeDevAmounts_(devRows, totalUnits, isBaseline, params) {
   var empty = { perUnit: {}, totalsByLine: {}, totalUnits: totalUnits };
   if (totalUnits <= 0) return empty;
-
-  // 現況情境沒有挑戰低減目標，一律用原始金額；目標情境才套用低減率。
-  var isBaseline = isBaselineScenario_(scenarioId);
-  var params = getParameters(scenarioId);
 
   var totals = {};
   devRows.forEach(function (r) {
@@ -554,7 +609,12 @@ function previewDevInvestmentSummary(scenarioId, rows) {
 
 /** 某個父科目底下、可以手動輸入的明細科目代碼(排除自動計算科目) */
 function manualLineCodesFor_(parentCodes) {
-  return getPLLineItems()
+  return manualLineCodesFrom_(getPLLineItems(), parentCodes);
+}
+
+/** 同上，但吃已經讀好的科目表 —— 純計算流程用這個，不再重複讀表 */
+function manualLineCodesFrom_(lineDefs, parentCodes) {
+  return lineDefs
     .filter(function (d) { return parentCodes.indexOf(d.ParentLine) !== -1 && !d.AutoSource; })
     .map(function (d) { return d.LineCode; });
 }
