@@ -96,6 +96,7 @@ function isDeletableAutoLineItem(row) {
 // 表格編輯頁：key -> 渲染函式名稱
 const GRID_PANELS = {
   salesmix: 'renderSalesMixPanel',
+  yearvolume: 'renderYearVolumePanel',
   costofsales: 'renderCostOfSalesPanel',
   operatingexpense: 'renderOperatingExpensePanel',
   devinvestment: 'renderDevInvestmentPanel',
@@ -268,6 +269,9 @@ function renderScenarioOptions(scenarios, preferredId) {
 function setCurrentScenario(value) {
   currentScenarioId = value;
   currentScenario = scenarioCache.filter(s => s.ScenarioID === value)[0] || null;
+  // 回本分析與敏感度只看目前情境，換情境就得重算 —— 留著舊結果會把別的情境的數字
+  // 顯示在新情境底下，而且看不出來是舊的
+  resetScenarioAnalysis_();
   const badge = document.getElementById('scenario-type-badge');
   if (badge) {
     badge.textContent = currentScenario ? (currentScenario.ScenarioType || '現況') : '';
@@ -280,6 +284,7 @@ function onVehicleTypeChange(value) {
   currentVehicleTypeId = value;
   currentScenarioId = '';
   currentScenario = null;
+  resetScenarioAnalysis_();
   saveAppState_();
   // 車型換了之後情境清單也要換，換完才渲染一次，避免同一個分頁畫兩遍
   loadScenarioSelector();
@@ -1529,6 +1534,574 @@ function saveFxGrid() {
     .saveFxGrid(currentScenarioId, cells);
 }
 
+/* ================= 回本分析（儀表板子頁籤） =================
+ * 規格：docs/payback-and-sensitivity.md
+ * 口徑：稅前現金、不含營運資金 —— 這句話一定要顯示在畫面上。
+ */
+let paybackData = null;
+let paybackScenarioId_ = '';
+
+const PAYBACK_CAVEAT_ = '稅前現金流，未計企業所得稅與營運資金占用。';
+
+function paybackViewHtml_() {
+  if (!currentScenarioId) return '<p class="muted">請先在上方選擇情境。</p>';
+  if (paybackScenarioId_ !== currentScenarioId) {
+    loadPayback_();
+    return '<p class="muted">計算中...</p>';
+  }
+  if (!paybackData) return '<p class="muted">計算中...</p>';
+  return paybackBodyHtml_(paybackData);
+}
+
+function loadPayback_() {
+  const wanted = currentScenarioId;
+  google.script.run
+    .withSuccessHandler(safeHandler(data => {
+      if (wanted !== currentScenarioId) return;   // 使用者已經切走了，別用舊結果蓋畫面
+      paybackData = data; paybackScenarioId_ = wanted;
+      if (dashView === 'payback') rerenderCurrentView_();
+    }))
+    .withFailureHandler(err => {
+      if (wanted !== currentScenarioId) return;
+      paybackData = null; paybackScenarioId_ = wanted;
+      setDashViewHtml_('<p class="status-msg err">回本分析失敗：' + esc(err && err.message ? err.message : err) + '</p>');
+    })
+    .getPaybackAnalysis(wanted);
+}
+
+function paybackBodyHtml_(d) {
+  const never = d.breakEvenUnits === null;
+  const units = never ? '不回本' : fmt(d.breakEvenUnits) + ' 台';
+  const ratio = never || d.breakEvenRatio === null ? '' :
+    `佔攤提基準 ${fmt(d.breakEvenRatio * 100, 1)}%` + (d.breakEvenRatio < 1 ? `（安全邊際 ${fmt((1 - d.breakEvenRatio) * 100, 1)}%）` : '');
+
+  let payLabel = '—', paySub = '尚未建立年度台數曲線';
+  if (d.hasYearCurve) {
+    if (d.paybackYear === null) {
+      payLabel = '不回本';
+      paySub = never ? '每台現金貢獻 ≤ 0' : `需 ${fmt(d.breakEvenUnits)} 台，計畫只賣 ${fmt(d.plannedVolume)} 台`;
+    } else {
+      const at = d.paybackYear - 1 + d.paybackYearFraction;
+      payLabel = '第 ' + d.paybackYear + ' 年';
+      paySub = `SOP 後約 ${fmt(at, 1)} 年`;
+    }
+  }
+
+  return `
+    <div class="payback-kpis">
+      <div class="payback-kpi highlight">
+        <span class="pk-label">損平台數 n*</span>
+        <span class="pk-num${never ? ' negative' : ''}">${esc(units)}</span>
+        <span class="pk-sub">${esc(ratio)}</span>
+      </div>
+      <div class="payback-kpi${d.hasYearCurve && d.paybackYear === null ? ' bad' : ''}">
+        <span class="pk-label">回本年（現金）</span>
+        <span class="pk-num${d.paybackYear === null ? ' negative' : ''}">${esc(payLabel)}</span>
+        <span class="pk-sub">${esc(paySub)}</span>
+      </div>
+      <div class="payback-kpi">
+        <span class="pk-label">單台現金貢獻 m</span>
+        <span class="pk-num${d.perUnitCash < 0 ? ' negative' : ''}">${fmt(d.perUnitCash)}</span>
+        <span class="pk-sub">= 單台 K ${fmt(d.perUnitProfitK)} + 攤提 ${fmt(d.perUnitAmort)}</span>
+      </div>
+      <div class="payback-kpi">
+        <span class="pk-label">開發總投 I（低減後）</span>
+        <span class="pk-num">${fmt(d.investment)}</span>
+        <span class="pk-sub">攤提基準 ${fmt(d.lifeCycleUnits)} 台</span>
+      </div>
+    </div>
+
+    ${paybackReadingHtml_(d)}
+    ${d.volumeCaveat ? `<p class="status-msg err">${esc(d.volumeCaveat)}</p>` : ''}
+    ${paybackChartHtml_(d)}
+    ${paybackTableHtml_(d)}
+    <p class="muted">口徑：${PAYBACK_CAVEAT_} 損平台數與回本年只在車型層級有意義
+      —— 開發總投是部門別層級、不綁車系，所以 m 用銷售構成比加權。</p>
+  `;
+}
+
+/**
+ * 「回不回得了本」要拿 n* 跟實際銷售預估比，不是跟攤提基準比。
+ * 攤提基準低於銷售預估時 K 會被低估，K < 0 仍然可能在現金上回本 ——
+ * 兩個判準給出不同答案時一定要講清楚，否則使用者會以為算錯。
+ */
+function paybackReadingHtml_(d) {
+  if (d.breakEvenUnits === null) {
+    return '<p class="sens-invalid"><b>每賣一台現金反而流出</b>單台現金貢獻 m ≤ 0，' +
+      '再多的台數也回不了本。要先改善單台損益，台數幫不上忙。</p>';
+  }
+  if (!d.hasYearCurve) {
+    return '<p class="muted">還沒有年度台數曲線，所以只算得出損平台數、算不出回本年。' +
+      '到「年度台數」頁按一次「依銷售構成填滿」就有了。</p>';
+  }
+  const bookSaysNo = d.perUnitProfitK < 0;
+  const cashSaysYes = d.withinPlannedVolume;
+  if (bookSaysNo && cashSaysYes) {
+    return '<p class="sens-invalid"><b>帳面虧損，但現金回得了本</b>' +
+      `單台 K 為 ${fmt(d.perUnitProfitK)}（負），代表以「攤提基準 ${fmt(d.lifeCycleUnits)} 台」衡量帳面打不平；` +
+      `但實際銷售預估是 ${fmt(d.plannedVolume)} 台，超過損平台數 ${fmt(d.breakEvenUnits)} 台，現金仍然回得來。` +
+      '兩個數字的分母不同，不是算錯。</p>';
+  }
+  if (!cashSaysYes) {
+    return '<p class="sens-invalid"><b>依目前的銷售預估回不了本</b>' +
+      `損平台數 ${fmt(d.breakEvenUnits)} 台，年度台數合計只有 ${fmt(d.plannedVolume)} 台，` +
+      `短少 ${fmt(d.breakEvenUnits - d.plannedVolume)} 台。</p>`;
+  }
+  return '';
+}
+
+function paybackChartHtml_(d) {
+  if (!d.hasYearCurve) return '';
+  // 第 0 點 = SOP，投資已經花掉、還沒開始賣，所以累計現金是 −I
+  const xLabels = ['0'].concat(d.years.map(y => String(y.year)));
+  const values = [-d.investment].concat(d.years.map(y => y.cumulativeCash));
+  const tips = ['第 0 年（SOP）\n投資已投入，尚未開始銷售\n累計現金 ' + fmt(-d.investment)]
+    .concat(d.years.map(y =>
+      `第 ${y.year} 年\n台數 ${fmt(y.volume)}（累計 ${fmt(y.cumulativeVolume)}）\n` +
+      `年度現金流 ${signed_(y.cashFlow)}\n累計現金 ${signed_(y.cumulativeCash)}`));
+
+  let marker = null;
+  if (d.paybackYear !== null) {
+    // xLabels 的索引 0 是 SOP，所以第 N 年在索引 N；年度內的落點再加上 fraction
+    marker = {
+      at: d.paybackYear - 1 + d.paybackYearFraction,
+      label: '回本點 · 第 ' + d.paybackYear + ' 年',
+      sub: '累計 ' + fmt(d.breakEvenUnits) + ' 台 = n*'
+    };
+  }
+  return `
+    <div class="chart-card">
+      <h4 class="chart-title">累計現金流（從 −I 起跳，穿越 0 就是回本點）</h4>
+      ${svgLineChart_({ width: 960, height: 320, xLabels, values, tips, marker,
+        zeroSplit: true, xTitle: 'SOP 後年度' })}
+      <p class="muted">${PAYBACK_CAVEAT_}</p>
+    </div>`;
+}
+
+function paybackTableHtml_(d) {
+  if (!d.hasYearCurve) return '';
+  return `
+    <div class="grid-scroll">
+    <table class="grid-table">
+      <thead><tr>
+        <th>年度</th><th>台數</th><th>累計台數</th><th>年度現金流</th><th>累計現金流</th>
+      </tr></thead>
+      <tbody>
+        <tr><td class="row-head">0（SOP）</td><td class="calc">—</td><td class="calc">—</td>
+          <td class="calc">${fmt(-d.investment)}</td><td class="calc negative">${fmt(-d.investment)}</td></tr>
+        ${d.years.map(y => `
+          <tr${y.year === d.paybackYear ? ' class="total-row"' : ''}>
+            <td class="row-head">第 ${y.year} 年</td>
+            <td class="calc">${fmt(y.volume)}</td>
+            <td class="calc">${fmt(y.cumulativeVolume)}</td>
+            <td class="calc">${signed_(y.cashFlow)}</td>
+            <td class="calc${y.cumulativeCash < 0 ? ' negative' : ''}">${signed_(y.cumulativeCash)}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>
+    </div>`;
+}
+
+/* ================= 敏感度分析（儀表板子頁籤） =================
+ * 規格：docs/payback-and-sensitivity.md 第 8 節。
+ *
+ * 三種模式共用同一支後端 API（單變數 = 其中一軸只有一個值），
+ * 前端依兩軸長度決定畫小倍數還是矩陣。
+ */
+const SENS_VOLUME_SCALES_ = [0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3];
+const SENS_FX_DELTAS_ = [-0.2, -0.15, -0.1, 0, 0.1, 0.15, 0.2];
+const SENS_METRICS_ = {
+  paybackYear: { label: '回本年', unit: '年', digits: 2, betterLow: true },
+  breakEvenUnits: { label: '損平台數 n*', unit: '台', digits: 0, betterLow: true },
+  K: { label: '單台營業淨利 K', unit: '元', digits: 0, betterLow: false }
+};
+
+let sensMode = 'fx';              // 'fx' 匯率單變數 / 'volume' 台數單變數 / 'both' 雙變數
+let sensMetric = 'paybackYear';
+let sensCurrency = '';
+let sensCurrencies = null;
+let sensData = null;
+let sensKey_ = '';                // 目前畫面上的結果對應哪一組(情境+模式+指標+幣別)
+
+/** 換車型/情境時清掉回本與敏感度的結果，下次進到那兩頁會重新跟後端要 */
+function resetScenarioAnalysis_() {
+  paybackData = null; paybackScenarioId_ = '';
+  sensData = null; sensKey_ = ''; sensCurrencies = null;
+}
+
+/** n* 只在「匯率為唯一變數」時可選 —— 台數軸對它完全無效(整排同一個數字) */
+function sensMetricDisabled_(metric, mode) {
+  return metric === 'breakEvenUnits' && mode !== 'fx';
+}
+function sensRequestKey_() {
+  return [currentScenarioId, sensMode, sensMetric, sensCurrency].join('|');
+}
+
+function sensitivityViewHtml_() {
+  if (!currentScenarioId) return '<p class="muted">請先在上方選擇情境。</p>';
+  if (sensCurrencies === null) { loadSensCurrencies_(); return '<p class="muted">載入中...</p>'; }
+  if (!sensCurrencies.length && sensMode !== 'volume') {
+    return sensControlsHtml_() + '<p class="sens-invalid"><b>這個情境沒有外幣曝險</b>' +
+      '「匯率設定」頁還沒有設定任何外幣的現況匯率，或成本與開發總投都以本位幣計價，' +
+      '所以匯率動了也不會影響損益。可以改看「台數」單變數。</p>';
+  }
+  if (sensKey_ !== sensRequestKey_()) { loadSensitivity_(); return sensControlsHtml_() + '<p class="muted">計算中...</p>'; }
+  if (!sensData) return sensControlsHtml_() + '<p class="muted">計算中...</p>';
+  if (sensData.invalid) {
+    return sensControlsHtml_() + `<p class="sens-invalid"><b>這個指標在目前的變數組合下沒有意義</b>${esc(sensData.reason)}</p>`;
+  }
+  return sensControlsHtml_() + sensResultHtml_(sensData);
+}
+
+function loadSensCurrencies_() {
+  const wanted = currentScenarioId;
+  google.script.run
+    .withSuccessHandler(safeHandler(list => {
+      if (wanted !== currentScenarioId) return;
+      sensCurrencies = list || [];
+      if (!sensCurrency || sensCurrencies.indexOf(sensCurrency) === -1) sensCurrency = sensCurrencies[0] || '';
+      if (!sensCurrencies.length) sensMode = 'volume';
+      if (dashView === 'sensitivity') rerenderCurrentView_();
+    }))
+    .withFailureHandler(showGlobalError)
+    .getSensitivityCurrencies(wanted);
+}
+
+function loadSensitivity_() {
+  const key = sensRequestKey_();
+  const spec = {
+    metric: sensMetric,
+    volumeScales: sensMode === 'fx' ? [1] : SENS_VOLUME_SCALES_,
+    fx: { currency: sensCurrency, deltas: sensMode === 'volume' ? [0] : SENS_FX_DELTAS_ }
+  };
+  google.script.run
+    .withSuccessHandler(safeHandler(data => {
+      if (key !== sensRequestKey_()) return;   // 使用者已經改過設定了，別用舊結果蓋畫面
+      sensData = data; sensKey_ = key;
+      if (dashView === 'sensitivity') rerenderCurrentView_();
+    }))
+    .withFailureHandler(err => {
+      if (key !== sensRequestKey_()) return;
+      sensData = null; sensKey_ = key;
+      setDashViewHtml_('<p class="status-msg err">敏感度計算失敗：' + esc(err && err.message ? err.message : err) + '</p>');
+    })
+    .calculateSensitivity(currentScenarioId, spec);
+}
+
+function sensControlsHtml_() {
+  const modeBtn = (key, label, tip) =>
+    `<button type="button" class="${sensMode === key ? 'active' : ''}" onclick="setSensMode('${key}')"
+       data-tip="${esc(tip)}">${esc(label)}</button>`;
+  const metricOpts = Object.keys(SENS_METRICS_).map(k => {
+    const off = sensMetricDisabled_(k, sensMode);
+    return `<option value="${k}"${sensMetric === k ? ' selected' : ''}${off ? ' disabled' : ''}>` +
+      esc(SENS_METRICS_[k].label + (off ? '（台數為變數時不適用）' : '')) + '</option>';
+  }).join('');
+
+  return `
+    <div class="sens-controls">
+      <div class="sens-mode">
+        ${modeBtn('fx', '匯率', '只讓匯率變動，台數固定在現況')}
+        ${modeBtn('volume', '台數', '只讓台數變動，匯率固定在現況')}
+        ${modeBtn('both', '雙變數', '台數 × 匯率，看兩者一起變動的結果')}
+      </div>
+      <label>指標
+        <select onchange="setSensMetric(this.value)">${metricOpts}</select>
+      </label>
+      ${sensMode === 'volume' ? '' : `<label>幣別
+        <select onchange="setSensCurrency(this.value)">
+          ${(sensCurrencies || []).map(c => `<option value="${esc(c)}"${sensCurrency === c ? ' selected' : ''}>${esc(c)}</option>`).join('')}
+        </select></label>`}
+      <span class="chart-hint">${esc(sensFixedNote_())}</span>
+    </div>`;
+}
+
+function sensFixedNote_() {
+  if (sensMode === 'fx') return '台數固定在現況；只有 ' + sensCurrency + ' 匯率變動。';
+  if (sensMode === 'volume') return '匯率固定在現況；只有台數整體縮放。';
+  return '台數與 ' + sensCurrency + ' 匯率同時變動。';
+}
+
+function setSensMode(mode) {
+  sensMode = mode;
+  // 切到台數相關模式時，n* 會變成無效指標，自動換成回本年而不是留在一個選不動的選項上
+  if (sensMetricDisabled_(sensMetric, sensMode)) sensMetric = 'paybackYear';
+  saveDashPrefs_();
+  rerenderCurrentView_();
+}
+function setSensMetric(metric) { sensMetric = metric; saveDashPrefs_(); rerenderCurrentView_(); }
+function setSensCurrency(c) { sensCurrency = c; saveDashPrefs_(); rerenderCurrentView_(); }
+
+function sensFormat_(v) {
+  if (v === null || v === undefined) return '不回本';
+  const meta = SENS_METRICS_[sensMetric];
+  if (sensMetric === 'paybackYear') return fmt(v + 1, meta.digits) + ' 年';
+  return fmt(v, meta.digits);
+}
+
+function sensResultHtml_(d) {
+  const twoD = d.rowAxis.values.length > 1 && d.colAxis.values.length > 1;
+  return twoD ? sensMatrixHtml_(d) : sensSmallMultiplesHtml_(d);
+}
+
+/* ---- 雙變數：色階矩陣 ---- */
+function sensMatrixHtml_(d) {
+  const meta = SENS_METRICS_[sensMetric];
+  // 「不回本」是狀態不是色階的延伸：把它排除在值域外，
+  // 否則一格無限大會把整個色階壓平，其餘格子全部看起來一樣。
+  const finite = [];
+  d.cells.forEach(row => row.forEach(c => { if (c.value !== null && isFinite(c.value)) finite.push(c.value); }));
+  const lo = finite.length ? Math.min.apply(null, finite) : 0;
+  const hi = finite.length ? Math.max.apply(null, finite) : 1;
+
+  const shade = v => {
+    if (v === null || !isFinite(v) || hi === lo) return '';
+    // sequential 單一色相，淺 → 深；越「差」越深
+    let t = (v - lo) / (hi - lo);
+    if (!meta.betterLow) t = 1 - t;
+    return `background: rgba(17,104,181,${(0.06 + t * 0.34).toFixed(3)});`;
+  };
+
+  return `
+    <div class="chart-card">
+      <h4 class="chart-title">${esc(meta.label)}：台數 × ${esc(d.colAxis.currency)} 匯率</h4>
+      <div class="grid-scroll">
+      <table class="sens-matrix">
+        <thead>
+          <tr>
+            <th class="corner">台數 ＼ 匯率</th>
+            ${d.colAxis.labels.map((l, c) => `<th>${esc(l)}
+              <span class="sens-axis-sub">${esc(d.colAxis.currency)} ${fmt(d.colAxis.absolute[c], 4)}</span></th>`).join('')}
+          </tr>
+        </thead>
+        <tbody>
+          ${d.cells.map((row, r) => `
+            <tr>
+              <th>${esc(d.rowAxis.labels[r])}
+                <span class="sens-axis-sub">${fmt(d.rowAxis.absolute[r])} 台</span></th>
+              ${row.map((c, ci) => {
+                const isBase = r === d.baseCell.r && ci === d.baseCell.c;
+                const never = c.value === null;
+                return `<td class="cell${never ? ' never' : ''}${isBase ? ' base-cell' : ''}"
+                  style="${never ? '' : shade(c.value)}"
+                  data-tip="${esc(sensCellTip_(d, r, ci))}">${esc(sensFormat_(c.value))}</td>`;
+              }).join('')}
+            </tr>`).join('')}
+        </tbody>
+      </table>
+      </div>
+      <p class="muted">藍底越深代表越差；<b>粗框</b>是基準格（台數與匯率都在現況），
+        它等於「回本分析」頁上的數字。${PAYBACK_CAVEAT_}</p>
+    </div>`;
+}
+
+function sensCellTip_(d, r, c) {
+  const cell = d.cells[r][c];
+  const lines = [
+    `台數 ${d.rowAxis.labels[r]}（${fmt(d.rowAxis.absolute[r])} 台）`,
+    `${d.colAxis.currency} ${d.colAxis.labels[c]}（${fmt(d.colAxis.absolute[c], 4)}）`,
+    '',
+    '損平台數 ' + (cell.breakEvenUnits === null ? '不回本' : fmt(cell.breakEvenUnits) + ' 台'),
+    '回本年 ' + (cell.paybackYear === null ? '不回本' : '第 ' + cell.paybackYear + ' 年'),
+    '單台 K ' + fmt(cell.perUnitProfitK),
+    '單台現金貢獻 m ' + fmt(cell.perUnitCash)
+  ];
+  return lines.join('\n');
+}
+
+/* ---- 單變數：小倍數。三個指標單位不同(台/年/元)，
+       絕不可以共用一個 y 軸 —— 那會製造假的交叉點。 ---- */
+function sensSmallMultiplesHtml_(d) {
+  const byVolume = d.rowAxis.values.length > 1;
+  const axis = byVolume ? d.rowAxis : d.colAxis;
+  const xLabels = axis.labels.map((l, i) => byVolume ? l : l);
+  const cellAt = i => byVolume ? d.cells[i][0] : d.cells[0][i];
+  const baseIdx = byVolume ? d.baseCell.r : d.baseCell.c;
+
+  const panels = Object.keys(SENS_METRICS_).filter(k => !sensMetricDisabled_(k, sensMode)).map(k => {
+    const meta = SENS_METRICS_[k];
+    const values = axis.values.map((_, i) => {
+      const c = cellAt(i);
+      if (k === 'K') return c.perUnitProfitK;
+      if (k === 'breakEvenUnits') return c.breakEvenUnits;
+      return c.paybackYear === null ? null : c.paybackYear - 1 + c.paybackYearFraction;
+    });
+    const tips = axis.values.map((_, i) => sensCellTip_(d, byVolume ? i : 0, byVolume ? 0 : i));
+    const fmtV = k === 'paybackYear' ? (v => fmt(v + 1, 1) + ' 年')
+      : (v => fmt(v, meta.digits));
+    const baseVal = values[baseIdx];
+    return `
+      <div class="sens-panel">
+        <h5>${esc(meta.label)}</h5>
+        <p class="sens-panel-sub">基準 ${baseVal === null ? '不回本' : esc(fmtV(baseVal))}　·　單位：${esc(meta.unit)}</p>
+        ${svgLineChart_({ width: 900, height: 190, xLabels, values, tips,
+          valueFormat: fmtV, xTitle: byVolume ? '台數相對現況' : sensCurrency + ' 匯率相對現況',
+          lineColor: '#2b6cb0' })}
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="sens-small-multiples">${panels}</div>
+    ${sensSingleTableHtml_(d, axis, cellAt)}
+    <p class="muted">三個指標單位不同（台／年／元），所以各自一張圖、各自一條 y 軸 ——
+      共用 y 軸會製造看起來有意義、實際上不存在的交叉點。${PAYBACK_CAVEAT_}</p>`;
+}
+
+function sensSingleTableHtml_(d, axis, cellAt) {
+  const byVolume = d.rowAxis.values.length > 1;
+  return `
+    <div class="grid-scroll">
+    <table class="grid-table">
+      <thead><tr>
+        <th>${byVolume ? '台數' : sensCurrency + ' 匯率'}</th>
+        <th>${byVolume ? '總台數' : '匯率'}</th>
+        <th>損平台數</th><th>回本年</th><th>單台 K</th><th>單台現金貢獻 m</th>
+      </tr></thead>
+      <tbody>
+        ${axis.labels.map((label, i) => {
+          const c = cellAt(i);
+          const isBase = i === (byVolume ? d.baseCell.r : d.baseCell.c);
+          return `<tr${isBase ? ' class="total-row"' : ''}>
+            <td class="row-head">${esc(label)}${isBase ? '（基準）' : ''}</td>
+            <td class="calc">${byVolume ? fmt(axis.absolute[i]) + ' 台' : fmt(axis.absolute[i], 4)}</td>
+            <td class="calc">${c.breakEvenUnits === null ? '不回本' : fmt(c.breakEvenUnits)}</td>
+            <td class="calc">${c.paybackYear === null ? '—' : '第 ' + c.paybackYear + ' 年'}</td>
+            <td class="calc${c.perUnitProfitK < 0 ? ' negative' : ''}">${fmt(c.perUnitProfitK)}</td>
+            <td class="calc${c.perUnitCash < 0 ? ' negative' : ''}">${fmt(c.perUnitCash)}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+    </div>`;
+}
+
+/* ================= 年度台數（回本分析用） =================
+ *
+ * 車型層級：一個情境一條「每年總台數」曲線。這張表只服務回本分析的「時序」——
+ * 單台損益完全不讀它，攤提分母仍然是情境的攤提基準。
+ */
+let yearVolumeData = null;
+
+function renderYearVolumePanel() {
+  if (!requireScope('yearvolume', true)) return;
+  document.getElementById('panel-yearvolume').innerHTML = gridShell('yearvolume', '年度台數');
+  const cacheKey = panelCacheKey_('yearvolume', 'scenario');
+  if (panelDataCache_[cacheKey]) { yearVolumeData = panelDataCache_[cacheKey]; drawYearVolumeGrid(); }
+  google.script.run
+    .withSuccessHandler(safeHandler(data => { panelDataCache_[cacheKey] = data; yearVolumeData = data; drawYearVolumeGrid(); }))
+    .withFailureHandler(showGlobalError)
+    .getYearVolumeGrid(currentScenarioId);
+}
+
+function drawYearVolumeGrid() {
+  const d = yearVolumeData;
+  document.getElementById('toolbar-yearvolume').innerHTML = `
+    <button type="button" class="btn" onclick="saveYearVolumeGrid()">儲存</button>
+    <button type="button" class="btn secondary" onclick="seedYearVolume()"
+      data-tip="用銷售構成的月銷量填一條平的曲線當起點，之後再自己調爬坡與衰退那幾年">依銷售構成填滿</button>
+  `;
+
+  if (!d.rows.length) {
+    document.getElementById('grid-yearvolume').innerHTML =
+      '<p class="muted">這個情境的「銷售構成」還沒有填 LC 年限，先去銷售構成頁填好年限，這裡才知道要列幾年。</p>';
+    return;
+  }
+
+  const entered = d.rows.reduce((s, r) => s + (Number(r.AnnualVolume) || 0), 0);
+  const diff = entered - Number(d.salesMixLifeCycleUnits || 0);
+  const off = Math.abs(diff) > 0.5;
+
+  document.getElementById('grid-yearvolume').innerHTML = `
+    <div class="grid-scroll">
+    <table class="grid-table">
+      <thead><tr>
+        <th>年度</th><th>台數</th><th>累計台數</th><th>備註</th>
+      </tr></thead>
+      <tbody>
+        ${d.rows.map((r, i) => `
+          <tr${r.beyondLifeCycle ? ' class="row-muted"' : ''}>
+            <td class="row-head">第 ${r.Year} 年${r.Year === 1 ? '（SOP）' : ''}${
+              r.beyondLifeCycle ? '<span class="th-sub">超出目前 LC 年限</span>' : ''}</td>
+            <td><input type="number" step="any" class="yv-cell" data-rowid="${esc(r.RowID)}"
+              data-year="${r.Year}" data-idx="${i}" value="${esc(r.AnnualVolume)}"
+              oninput="onYearVolumeInput()"></td>
+            <td class="calc" id="yv-cum-${i}">—</td>
+            <td><input type="text" class="yv-note" data-idx="${i}" value="${esc(r.Notes)}"></td>
+          </tr>`).join('')}
+        <tr class="total-row">
+          <td class="row-head">合計</td>
+          <td class="calc" id="yv-total">—</td>
+          <td class="calc"></td><td></td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="muted" id="yv-caveat">${yearVolumeCaveatHtml_(entered, d.salesMixLifeCycleUnits, off)}</p>
+    <p class="muted">
+      這條曲線只用來決定「何時累計到損平台數」。單台損益不讀它 ——
+      開發攤提的分母仍然是情境的攤提基準（沒填才用銷售構成推算），兩者是不同用途的數字。
+    </p>`;
+  onYearVolumeInput();
+}
+
+function yearVolumeCaveatHtml_(entered, salesMixUnits, off) {
+  const base = `合計 ${fmt(entered)} 台，銷售構成推算的 LC 總台數 ${fmt(salesMixUnits)} 台`;
+  if (!off) return base + '，兩者一致。';
+  const diff = entered - Number(salesMixUnits || 0);
+  return `<span class="warn-text">${base}，相差 ${signed_(diff)} 台。</span>` +
+    ' 兩者描述的是同一件事（銷售預估），請調整其中一邊。系統不會自動改寫任何一邊。';
+}
+
+/** 台數欄位一改就即時更新累計與合計，不必存檔才看得到 */
+function onYearVolumeInput() {
+  let cum = 0;
+  document.querySelectorAll('#grid-yearvolume .yv-cell').forEach(inp => {
+    cum += Number(inp.value) || 0;
+    const cell = document.getElementById('yv-cum-' + inp.dataset.idx);
+    if (cell) cell.textContent = cum ? fmt(cum) : '—';
+  });
+  const total = document.getElementById('yv-total');
+  if (total) total.textContent = fmt(cum);
+  const caveat = document.getElementById('yv-caveat');
+  if (caveat && yearVolumeData) {
+    const units = Number(yearVolumeData.salesMixLifeCycleUnits || 0);
+    caveat.innerHTML = yearVolumeCaveatHtml_(cum, units, Math.abs(cum - units) > 0.5);
+  }
+}
+
+function collectYearVolumeRows_() {
+  const notes = {};
+  document.querySelectorAll('#grid-yearvolume .yv-note').forEach(inp => { notes[inp.dataset.idx] = inp.value; });
+  return Array.from(document.querySelectorAll('#grid-yearvolume .yv-cell')).map(inp => ({
+    RowID: inp.dataset.rowid || '',
+    Year: Number(inp.dataset.year),
+    AnnualVolume: inp.value === '' ? '' : num(inp.value),
+    Notes: notes[inp.dataset.idx] || ''
+  }));
+}
+
+function saveYearVolumeGrid() {
+  setStatus('yearvolume', '儲存中...');
+  google.script.run
+    .withSuccessHandler(safeHandler(data => {
+      panelDataCache_[panelCacheKey_('yearvolume', 'scenario')] = data;
+      yearVolumeData = data; drawYearVolumeGrid(); setStatus('yearvolume', '已儲存', 'ok');
+    }))
+    .withFailureHandler(err => setStatus('yearvolume', '錯誤：' + err.message, 'err'))
+    .saveYearVolumeGrid(currentScenarioId, collectYearVolumeRows_());
+}
+
+function seedYearVolume() {
+  setStatus('yearvolume', '填入中...');
+  google.script.run
+    .withSuccessHandler(safeHandler(data => {
+      panelDataCache_[panelCacheKey_('yearvolume', 'scenario')] = data;
+      yearVolumeData = data; drawYearVolumeGrid(); setStatus('yearvolume', '已依銷售構成填滿', 'ok');
+    }))
+    .withFailureHandler(err => setStatus('yearvolume', '錯誤：' + err.message, 'err'))
+    .seedYearVolumeFromSalesMix(currentScenarioId);
+}
+
 /* ================= 儀表板：多車型 / 多情境比較 ================= */
 let comparisonOptions = [];
 let comparisonSelections = [];
@@ -1772,7 +2345,8 @@ function dashPrefsSnapshot_() {
   return {
     selections: comparisonSelections, diffPairs, pctBase, showPriceStructure, chartLineCodes,
     baselineKey, amountUnit, volumeBasis, highlightBest, showKpi, chartType, chartValue, chartLabels,
-    dashView, collapsed: Array.from(collapsedGroups)
+    dashView, collapsed: Array.from(collapsedGroups),
+    sensMode, sensMetric, sensCurrency
   };
 }
 function saveDashPrefs_() {
@@ -1795,8 +2369,14 @@ function loadDashPrefs_() {
   if (['byLine', 'byColumn', 'structure', 'waterfall'].indexOf(p.chartType) !== -1) chartType = p.chartType;
   if (p.chartValue === 'amount' || p.chartValue === 'pct') chartValue = p.chartValue;
   if (typeof p.chartLabels === 'boolean') chartLabels = p.chartLabels;
-  if (['columns', 'table', 'chart', 'diff'].indexOf(p.dashView) !== -1) dashView = p.dashView;
+  if (['columns', 'table', 'chart', 'diff', 'payback', 'sensitivity'].indexOf(p.dashView) !== -1) dashView = p.dashView;
   if (Array.isArray(p.collapsed)) collapsedGroups = new Set(p.collapsed.map(String));
+  if (['fx', 'volume', 'both'].indexOf(p.sensMode) !== -1) sensMode = p.sensMode;
+  if (SENS_METRICS_[p.sensMetric]) sensMetric = p.sensMetric;
+  if (typeof p.sensCurrency === 'string') sensCurrency = p.sensCurrency;
+  // 存進去之後才改過規則的組合(例如舊版存了「台數 + n*」)不能留著，
+  // 否則一打開就停在一個選不動的指標上
+  if (sensMetricDisabled_(sensMetric, sensMode)) sensMetric = 'paybackYear';
 }
 
 /** 工具列上的每一個開關都走這裡：改狀態 → 記住 → 重畫（不重算） */
@@ -1967,7 +2547,9 @@ function dashSubNavHtml(cols) {
     ['columns', '比較欄位' + (cols.length ? `（${cols.length}）` : '')],
     ['table', '損益表'],
     ['chart', '圖表'],
-    ['diff', '差異比較']
+    ['diff', '差異比較'],
+    ['payback', '回本分析'],
+    ['sensitivity', '敏感度']
   ];
   return `
     <div class="dash-subnav">
@@ -1986,6 +2568,10 @@ function setDashView(key) {
 
 function dashViewHtml_(cols, lines) {
   if (dashView === 'columns') return comparisonBuilderHtml_();
+  // 回本分析與敏感度看的是「目前上方選的情境」，跟比較欄位無關，
+  // 所以要排在「沒有比較欄位就擋下來」這道檢查前面，否則會被誤擋。
+  if (dashView === 'payback') return paybackViewHtml_();
+  if (dashView === 'sensitivity') return sensitivityViewHtml_();
   if (!cols.length) return '<p class="muted">請先切到「比較欄位」加入至少一個比較欄位。</p>';
   if (dashView === 'chart') return chartSectionHtml(cols, lines);
   if (dashView === 'diff') return diffSectionHtml_(cols, lines);
@@ -2374,6 +2960,101 @@ function colChartLabel_(col) {
  * }
  * 每根長條帶 data-tip，hover 走跟表格同一套提示。
  */
+/**
+ * 單數列折線圖：回本 J 曲線與敏感度小倍數共用。
+ *
+ * svgBarChart_ 是浮動長條(y0→y1)的產生器，畫不出連續趨勢；這裡沿用它的
+ * niceTicks_/textWidth_ 與 data-tip 慣例，只換成折線。
+ *
+ * spec = {
+ *   width, height,
+ *   xLabels: [...], values: [...],        // 等長；values 可含 null(該點不畫)
+ *   valueFormat, xTitle,
+ *   zeroSplit: true,                      // 以 0 為界，線與 0 之間上下分別填色
+ *   marker: { at, label, sub },           // at = 連續的 x 索引(可有小數)，畫垂直虛線與圓點
+ *   tips: [...]                           // 每點的 hover 文字
+ * }
+ */
+function svgLineChart_(spec) {
+  const W = spec.width || 960, H = spec.height || 300;
+  const xs = spec.xLabels || [], vals = spec.values || [];
+  const fmtV = spec.valueFormat || shortAmount_;
+  const present = vals.filter(v => v !== null && v !== undefined && isFinite(v));
+  if (xs.length < 2 || !present.length) {
+    return `<svg class="chart-svg" viewBox="0 0 ${W} ${H}" width="100%"><text x="${W / 2}" y="${H / 2}" text-anchor="middle" fill="#a0aec0" font-size="13">資料不足，畫不出趨勢</text></svg>`;
+  }
+
+  const pool = present.slice();
+  if (spec.zeroSplit) pool.push(0);
+  let vMin = Math.min.apply(null, pool), vMax = Math.max.apply(null, pool);
+  const span = (vMax - vMin) || Math.abs(vMax) || 1;
+  vMin -= span * 0.08; vMax += span * 0.08;
+  const axis = niceTicks_(vMin, vMax, 5);
+
+  const tickFont = 11;
+  const leftPad = Math.max.apply(null, axis.ticks.map(t => textWidth_(fmtV(t), tickFont))) + 14;
+  const m = { l: Math.max(48, leftPad), r: 16, t: 18, b: spec.xTitle ? 50 : 34 };
+  const plotW = W - m.l - m.r, plotH = H - m.t - m.b;
+  const y = v => m.t + plotH - (v - axis.lo) / (axis.hi - axis.lo) * plotH;
+  const x = i => m.l + (xs.length === 1 ? plotW / 2 : (i / (xs.length - 1)) * plotW);
+  const yZero = y(0);
+
+  let out = `<svg class="chart-svg" viewBox="0 0 ${W} ${H}" width="100%" role="img">`;
+  axis.ticks.forEach(t => {
+    const yy = y(t);
+    out += `<line x1="${m.l}" x2="${W - m.r}" y1="${yy.toFixed(1)}" y2="${yy.toFixed(1)}" stroke="${t === 0 ? '#718096' : '#e2e8f0'}" stroke-width="${t === 0 ? 1.2 : 1}"/>`;
+    out += `<text x="${m.l - 6}" y="${(yy + 4).toFixed(1)}" text-anchor="end" font-size="${tickFont}" fill="#718096">${esc(fmtV(t))}</text>`;
+  });
+
+  const pts = [];
+  vals.forEach((v, i) => { if (v !== null && v !== undefined && isFinite(v)) pts.push({ i, v, px: x(i), py: y(v) }); });
+
+  if (spec.zeroSplit) {
+    // 線與 0 之間填色，用 clipPath 以 0 為界切成上下兩塊：
+    // 未回收(負)鏽橙、已回收(正)藍。位置本身已經說明正負，色彩只是加強。
+    const area = `M${pts[0].px.toFixed(1)},${yZero.toFixed(1)} `
+      + pts.map(p => `L${p.px.toFixed(1)},${p.py.toFixed(1)}`).join(' ')
+      + ` L${pts[pts.length - 1].px.toFixed(1)},${yZero.toFixed(1)} Z`;
+    const id = 'lc' + Math.random().toString(36).slice(2, 8);
+    out += `<defs>`
+      + `<clipPath id="${id}b"><rect x="${m.l}" y="${yZero.toFixed(1)}" width="${plotW}" height="${Math.max(0, m.t + plotH - yZero).toFixed(1)}"/></clipPath>`
+      + `<clipPath id="${id}a"><rect x="${m.l}" y="${m.t}" width="${plotW}" height="${Math.max(0, yZero - m.t).toFixed(1)}"/></clipPath>`
+      + `</defs>`;
+    out += `<path d="${area}" fill="#b4530f" opacity=".12" clip-path="url(#${id}b)"/>`;
+    out += `<path d="${area}" fill="#1168b5" opacity=".12" clip-path="url(#${id}a)"/>`;
+  }
+
+  out += `<polyline fill="none" stroke="${spec.lineColor || '#2d3748'}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" points="`
+    + pts.map(p => `${p.px.toFixed(1)},${p.py.toFixed(1)}`).join(' ') + '"/>';
+
+  pts.forEach(p => {
+    out += `<circle class="bar" cx="${p.px.toFixed(1)}" cy="${p.py.toFixed(1)}" r="4.5" fill="${spec.lineColor || '#2d3748'}" stroke="#fff" stroke-width="1.5" data-tip="${esc((spec.tips && spec.tips[p.i]) || '')}"/>`;
+  });
+
+  if (spec.marker && spec.marker.at >= 0 && xs.length > 1) {
+    const mx = m.l + (spec.marker.at / (xs.length - 1)) * plotW;
+    out += `<line x1="${mx.toFixed(1)}" x2="${mx.toFixed(1)}" y1="${m.t}" y2="${(m.t + plotH).toFixed(1)}" stroke="#1168b5" stroke-width="1" stroke-dasharray="3 4" opacity=".65"/>`;
+    out += `<circle cx="${mx.toFixed(1)}" cy="${yZero.toFixed(1)}" r="5.5" fill="#1168b5" stroke="#fff" stroke-width="2"/>`;
+    // 標籤靠左或靠右，看穿越點落在圖的哪一半，避免被右邊界壓掉
+    const anchor = mx > m.l + plotW * 0.6 ? 'end' : 'start';
+    const tx = anchor === 'end' ? mx - 8 : mx + 8;
+    out += `<text x="${tx.toFixed(1)}" y="${(m.t + 12)}" text-anchor="${anchor}" font-size="12" font-weight="600" fill="#1168b5">${esc(spec.marker.label || '')}</text>`;
+    if (spec.marker.sub) {
+      out += `<text x="${tx.toFixed(1)}" y="${(m.t + 27)}" text-anchor="${anchor}" font-size="11" fill="#718096">${esc(spec.marker.sub)}</text>`;
+    }
+  }
+
+  const every = Math.ceil(xs.length / 14);   // 年份多時隔幾個標一次，標籤才不會疊在一起
+  xs.forEach((label, i) => {
+    if (i % every !== 0 && i !== xs.length - 1) return;
+    out += `<text x="${x(i).toFixed(1)}" y="${(m.t + plotH + 16)}" text-anchor="middle" font-size="11" fill="#718096">${esc(label)}</text>`;
+  });
+  if (spec.xTitle) {
+    out += `<text x="${(m.l + plotW / 2).toFixed(1)}" y="${H - 12}" text-anchor="middle" font-size="11" fill="#a0aec0">${esc(spec.xTitle)}</text>`;
+  }
+  return out + '</svg>';
+}
+
 function svgBarChart_(spec) {
   const W = spec.width || 960, H = spec.height || 340;
   const groups = spec.groups || [], series = spec.series || [], bars = spec.bars || [];

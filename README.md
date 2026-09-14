@@ -40,5 +40,6 @@ node tools/dev-server.js               # 打開 http://localhost:8787
 現金口徑的損平台數／回本年，以及匯率／台數／雙變數三種模式共用同一畫面的敏感度分析，
 規格（含六項已定案決策）見 [`docs/payback-and-sensitivity.md`](docs/payback-and-sensitivity.md)。
 
-實作進度：後端的 `getPaybackAnalysis(scenarioId)` 與年度台數曲線（`ScenarioYearVolume`）已完成；
-敏感度 API 與前端畫面尚未實作。
+已完成：年度台數曲線（`ScenarioYearVolume` 與「年度台數」分頁）、
+`getPaybackAnalysis()` 與儀表板的「回本分析」子頁籤（損平台數、回本 J 曲線、逐年現金流），
+以及 `calculateSensitivity()` 與「敏感度」子頁籤（匯率／台數／雙變數三種模式共用同一畫面）。

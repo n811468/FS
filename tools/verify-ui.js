@@ -580,12 +580,127 @@ assert(api('weightedTotalCaveat_')({
   isWeighted: true, volume: { mix: [{ pct: 80, monthlyVolume: 20 }, { pct: 20, monthlyVolume: 80 }] }
 }).indexOf('⚠') === 0, '構成比與台數比例差很多時應該提醒總額兜不攏');
 
+/* ---- 回本分析 / 敏感度 / 年度台數的前端產出 ---- */
+gs.saveDevInvestmentGrid(sc.ScenarioID, [
+  { RowID: '', Department: '產專室', AssetType: '模具', TargetLineCode: 'b5',
+    Amount: 200000000, Currency: 'TWD', ChallengeReductionPct: 0 }
+]);
+gs.saveFxGrid(sc.ScenarioID, [{ ParamID: '', Currency: 'JPY', ParamName: '現況匯率', Value: 0.22 }]);
+gs.saveCostOfSalesMatrix(sc.ScenarioID, [
+  { RowID: '', VehicleID: 'V1', LineCode: 'b2', Amount: 300000, Currency: 'JPY' },
+  { RowID: '', VehicleID: 'V2', LineCode: 'b2', Amount: 300000, Currency: 'JPY' }
+]);
+gs.seedYearVolumeFromSalesMix(sc.ScenarioID);
+
+const payback = gs.getPaybackAnalysis(sc.ScenarioID);
+ctx.__in.payback = payback;
+const paybackHtml = api('paybackBodyHtml_')(api('__in.payback'));
+
+assert(paybackHtml.indexOf('undefined') === -1, '回本分析畫面出現 undefined');
+assert(paybackHtml.indexOf('[object Object]') === -1, '回本分析畫面出現 [object Object]');
+assert(paybackHtml.indexOf('NaN') === -1, '回本分析畫面出現 NaN');
+assert(paybackHtml.indexOf('損平台數') !== -1, '回本分析應顯示損平台數');
+assert(paybackHtml.indexOf('稅前現金流，未計企業所得稅與營運資金占用') !== -1,
+  '回本分析必須把口徑寫在畫面上');
+assert(/第 \d+ 年/.test(paybackHtml), '回本分析應顯示回本年');
+// 逐年表格 = SOP 那一列 + 每一年一列
+const pbBody = paybackHtml.split('<tbody>')[1].split('</tbody>')[0];
+assert(pbBody.split('<tr').length - 1 === payback.years.length + 1,
+  '逐年表格列數應為年數 + 1(SOP)');
+// J 曲線：第 0 點必須是 −I，否則曲線不會從投資額起跳
+assert(paybackHtml.indexOf('<svg') !== -1, '回本分析應該畫出曲線');
+
+const never = Object.assign({}, payback, { breakEvenUnits: null, breakEvenRatio: null, perUnitCash: -5, paybackYear: null });
+ctx.__in.never = never;
+const neverHtml = api('paybackBodyHtml_')(api('__in.never'));
+assert(neverHtml.indexOf('不回本') !== -1, 'm ≤ 0 時應顯示「不回本」');
+assert(neverHtml.indexOf('Infinity') === -1, '不回本時不該出現 Infinity');
+assert(neverHtml.indexOf('NaN') === -1, '不回本時不該出現 NaN');
+
+// 帳面虧損但現金回本 —— 兩個判準分岔時一定要解釋，否則使用者會以為算錯
+const split = Object.assign({}, payback, { perUnitProfitK: -1000, withinPlannedVolume: true });
+ctx.__in.split = split;
+const splitHtml = api('paybackBodyHtml_')(api('__in.split'));
+assert(splitHtml.indexOf('帳面虧損，但現金回得了本') !== -1,
+  'K 為負但現金回得了本時，必須解釋兩個分母不同');
+
+/* 敏感度：雙變數矩陣 */
+const matrix = gs.calculateSensitivity(sc.ScenarioID, {
+  volumeScales: [0.8, 1, 1.2], fx: { currency: 'JPY', deltas: [-0.1, 0, 0.1] }, metric: 'paybackYear'
+});
+ctx.__in.matrix = matrix;
+api('sensMode = "both"'); api('sensMetric = "paybackYear"'); api('sensCurrency = "JPY"');
+const matrixHtml = api('sensMatrixHtml_')(api('__in.matrix'));
+assert(matrixHtml.indexOf('undefined') === -1, '敏感度矩陣出現 undefined');
+assert(matrixHtml.indexOf('NaN') === -1, '敏感度矩陣出現 NaN');
+const mBody = matrixHtml.split('<tbody>')[1].split('</tbody>')[0];
+assert(mBody.split('<tr').length - 1 === 3, '矩陣應有 3 列');
+assert((mBody.match(/class="cell/g) || []).length === 9, '矩陣應有 9 格');
+assert((matrixHtml.match(/base-cell/g) || []).length === 1, '基準格應該剛好標示一格');
+// 軸標籤要同時給相對與絕對值，否則對不上匯率設定頁
+assert(matrixHtml.indexOf('+10%') !== -1, '匯率軸應顯示相對偏移');
+assert(matrixHtml.indexOf('sens-axis-sub') !== -1, '軸標籤應附絕對值');
+
+/* 敏感度：單變數小倍數 */
+const single = gs.calculateSensitivity(sc.ScenarioID, {
+  volumeScales: [1], fx: { currency: 'JPY', deltas: [-0.2, -0.1, 0, 0.1, 0.2] }, metric: 'breakEvenUnits'
+});
+ctx.__in.single = single;
+api('sensMode = "fx"');
+const singleHtml = api('sensSmallMultiplesHtml_')(api('__in.single'));
+assert(singleHtml.indexOf('undefined') === -1, '小倍數出現 undefined');
+assert(singleHtml.indexOf('NaN') === -1, '小倍數出現 NaN');
+// 三個指標單位不同 → 三張各自獨立的圖，不是一張雙 y 軸
+assert((singleHtml.match(/class="sens-panel"/g) || []).length === 3,
+  '匯率單變數應該有三張小倍數圖(回本年/損平台數/單台K)');
+assert((singleHtml.match(/<svg/g) || []).length === 3, '三張圖各自一個 SVG');
+
+/* 台數單變數時 n* 要被排除掉（台數軸對它無效） */
+api('sensMode = "volume"');
+assert(api('sensMetricDisabled_')('breakEvenUnits', 'volume') === true,
+  '台數模式下 n* 應被停用');
+assert(api('sensMetricDisabled_')('breakEvenUnits', 'fx') === false,
+  '匯率模式下 n* 應可選');
+assert(api('sensMetricDisabled_')('paybackYear', 'both') === false,
+  '回本年在任何模式都可選');
+const volSingle = gs.calculateSensitivity(sc.ScenarioID, {
+  volumeScales: [0.8, 1, 1.2], fx: { currency: 'JPY', deltas: [0] }, metric: 'paybackYear'
+});
+ctx.__in.volSingle = volSingle;
+const volHtml = api('sensSmallMultiplesHtml_')(api('__in.volSingle'));
+assert((volHtml.match(/class="sens-panel"/g) || []).length === 2,
+  '台數單變數只該有兩張圖(n* 無效被排除)');
+
+/* 控制列：停用的指標要真的標成 disabled 並說明原因 */
+api('sensMode = "volume"'); api('sensCurrencies = ["JPY"]');
+const controls = api('sensControlsHtml_')();
+assert(controls.indexOf('disabled') !== -1, '台數模式下 n* 選項應標為 disabled');
+assert(controls.indexOf('台數為變數時不適用') !== -1, '停用的選項要說明原因');
+
+/* 年度台數頁 */
+ctx.__in.yv = gs.getYearVolumeGrid(sc.ScenarioID);
+api('yearVolumeData = __in.yv');
+api('drawYearVolumeGrid')();
+const yvHtml = elById_['grid-yearvolume'].innerHTML;
+assert(yvHtml.indexOf('undefined') === -1, '年度台數頁出現 undefined');
+assert(yvHtml.indexOf('NaN') === -1, '年度台數頁出現 NaN');
+assert((yvHtml.match(/class="yv-cell"/g) || []).length === 10, '年度台數應列出 10 年');
+assert(yvHtml.indexOf('兩者一致') !== -1, '依銷售構成填滿後應顯示一致');
+
+ctx.__in.yvOff = JSON.parse(JSON.stringify(ctx.__in.yv));
+ctx.__in.yvOff.rows[0].AnnualVolume = Number(ctx.__in.yvOff.rows[0].AnnualVolume) + 600;
+api('yearVolumeData = __in.yvOff');
+api('drawYearVolumeGrid')();
+const yvOffHtml = elById_['grid-yearvolume'].innerHTML;
+assert(yvOffHtml.indexOf('warn-text') !== -1, '合計與銷售構成不符時應標紅示警');
+assert(yvOffHtml.indexOf('系統不會自動改寫') !== -1, '應說明系統不會自動改寫任一邊');
+
 if (failures.length) {
   console.log(`前端驗證失敗：${failures.length} 項`);
   failures.forEach(f => console.log('  ✗ ' + f));
   process.exit(1);
 }
-console.log('前端驗證通過：損益表結構、% 基準/差異模式、hover 提示內容、SVG 圖表、最佳/最差標示、單位換算、欄位合併、設定記憶、主檔表格鎖定與 CSV 欄數皆正確。');
+console.log('前端驗證通過：損益表結構、回本分析、敏感度單/雙變數、年度台數、% 基準/差異模式、hover 提示內容、SVG 圖表、最佳/最差標示、單位換算、欄位合併、設定記憶、主檔表格鎖定與 CSV 欄數皆正確。');
 console.log('');
 console.log('損益表前 12 列的產出片段：');
 console.log(tableExFactory.split('<tr').slice(0, 13).join('<tr').replace(/\n\s+/g, ' '));

@@ -23,6 +23,24 @@ const ROOT = path.join(__dirname, '..', 'apps-script');
 const PORT = Number(process.env.PORT) || 8787;
 
 /* ---- 示範資料：Gate F 現況(來自驗算腳本)、由它衍生的目標情境、再加一個別的車型 ---- */
+/**
+ * 年度台數曲線：回本分析要有時序才畫得出 J 曲線。
+ * 做成爬坡→高原→衰退的形狀(而不是每年一樣)，才看得出回本點落在哪一年；
+ * 總量對齊銷售構成推算值，否則畫面上會一直掛著「與銷售構成不符」的提醒。
+ */
+function seedYearCurve(gs, scenarioId) {
+  const grid = gs.getYearVolumeGrid(scenarioId);
+  if (!grid.rows.length) return;
+  const shape = [0.5, 1.0, 1.25, 1.3, 1.2, 1.1, 1.0, 0.9, 0.8, 0.65, 0.5, 0.4];
+  const monthly = gs.getSalesMix(scenarioId).reduce((sum, r) => sum + (Number(r.MonthlyVolume) || 0), 0);
+  const raw = grid.rows.map((r, i) => (shape[i] === undefined ? 1 : shape[i]) * monthly * 12);
+  const total = raw.reduce((a, b) => a + b, 0);
+  const scale = total > 0 ? grid.salesMixLifeCycleUnits / total : 1;
+  gs.saveYearVolumeGrid(scenarioId, grid.rows.map((r, i) => ({
+    RowID: r.RowID, Year: r.Year, AnnualVolume: Math.round(raw[i] * scale), Notes: ''
+  })));
+}
+
 function seedDemoData() {
   const gs = loadAppsScript(['Constants.gs', 'Utils.gs', 'DataService.gs', 'CalcEngine.gs', 'SetupSheets.gs']);
   const baselineId = gatef.buildScenario(gs);
@@ -47,6 +65,9 @@ function seedDemoData() {
   const dev = gs.getDevInvestmentSummary(targetId);
   gs.saveDevInvestmentGrid(targetId, dev.rows.map(r => Object.assign({}, r, { ChallengeReductionPct: 15 })));
 
+  seedYearCurve(gs, baselineId);
+  seedYearCurve(gs, targetId);
+
   // 另一個車型：只有一個車系、售價與成本都不同，用來看跨車型並排比較
   gs.saveVehicleType({ VehicleTypeID: 'DE', Notes: '示範車型' });
   gs.saveVehicle({ VehicleID: 'DE1', VehicleTypeID: 'DE', VehicleCode: '5人休旅' });
@@ -57,17 +78,29 @@ function seedDemoData() {
     { RowID: '', VehicleID: 'DE1', SalesMixPct: 100, MonthlyVolume: 300, LifeCycleYears: 8,
       ListPriceTaxIncl: 1450000, MandatoryAccessoryPrice: 20000, ScrapFee: 3990, ScrapFeeTaxStatus: '含稅' }
   ]);
+  gs.saveFxGrid(de.ScenarioID, [{ ParamID: '', Currency: 'JPY', ParamName: '現況匯率', Value: 0.22 }]);
   gs.saveCostOfSalesMatrix(de.ScenarioID, [
     { RowID: '', VehicleID: 'DE1', LineCode: 'b1', Amount: 650000, Currency: 'TWD' },
-    { RowID: '', VehicleID: 'DE1', LineCode: 'b2', Amount: 210000, Currency: 'TWD' },
+    // KD 件以日圓計價(實務上進口件多半如此)，匯率敏感度才有東西可看
+    { RowID: '', VehicleID: 'DE1', LineCode: 'b2', Amount: 950000, Currency: 'JPY' },
     { RowID: '', VehicleID: 'DE1', LineCode: 'b6', Amount: 21000, Currency: 'TWD' },
     { RowID: '', VehicleID: 'DE1', LineCode: 'b7', Amount: 33000, Currency: 'TWD' }
+  ]);
+  // DA 的 Gate F 實際數字是賠錢的(B > A)，m < 0 所以永遠不回本 ——
+  // 那是真實資料、也是「不回本」畫面的好例子，但看不到 J 曲線。
+  // DE 給它開發總投與外幣成本，才示範得到回本點與匯率敏感度。
+  gs.saveDevInvestmentGrid(de.ScenarioID, [
+    { RowID: '', Department: '產專室', AssetType: '模具', TargetLineCode: 'b5',
+      Amount: 1600000000, Currency: 'TWD', ChallengeReductionPct: 0, SortOrder: 1 },
+    { RowID: '', Department: 'BASE廠開發費', AssetType: '費用-BASE廠', TargetLineCode: 'f4',
+      Amount: 180000000, Currency: 'JPY', ChallengeReductionPct: 0, SortOrder: 2 }
   ]);
   gs.saveOperatingExpenseMatrix(de.ScenarioID, [
     { RowID: '', VehicleID: 'DE1', LineCode: 'd1', Amount: 8000 },
     { RowID: '', VehicleID: 'DE1', LineCode: 'd2', Amount: 25000 },
     { RowID: '', VehicleID: 'DE1', LineCode: 'h1', Amount: 45000 }
   ]);
+  seedYearCurve(gs, de.ScenarioID);
   return gs;
 }
 
