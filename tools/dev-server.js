@@ -4,7 +4,7 @@
  *   node tools/dev-server.js            # http://localhost:8787
  *   PORT=9000 node tools/dev-server.js
  *
- * 做法：用 tools/fake-apps-script.js 的記憶體版試算表把 apps-script/*.gs 跑起來，
+ * 做法：用 tools/fake-apps-script.js 的記憶體版試算表把 src/*.gs 跑起來，
  * 灌一組示範資料(Gate F 現況 + 目標情境、另一個車型)，然後把 index.html 的
  * `<?!= include('style'); ?>` 這類樣板語法替換成實際檔案內容，並補上一個假的
  * `google.script.run`：前端呼叫什麼後端函式，就 POST /rpc 到這裡、由 Node 端的 .gs 執行後回傳。
@@ -19,7 +19,7 @@ const http = require('http');
 const { loadAppsScript } = require('./fake-apps-script');
 const gatef = require('./verify-gatef');
 
-const ROOT = path.join(__dirname, '..', 'apps-script');
+const ROOT = path.join(__dirname, '..', 'src');
 const PORT = Number(process.env.PORT) || 8787;
 
 /* ---- 示範資料：Gate F 現況(來自驗算腳本)、由它衍生的目標情境、再加一個別的車型 ---- */

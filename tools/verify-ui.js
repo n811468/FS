@@ -40,7 +40,7 @@ const comparison = gs.calculateComparison([
 ]);
 
 /* ---- 2. 把 script.html 的 JS 載進來 ---- */
-const html = fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'script.html'), 'utf8');
+const html = fs.readFileSync(path.join(__dirname, '..', 'src', 'script.html'), 'utf8');
 const js = html.replace(/^\s*<script>/, '').replace(/<\/script>\s*$/, '');
 const noopEl = {
   innerHTML: '', textContent: '', className: '', value: '', style: {}, options: [],
