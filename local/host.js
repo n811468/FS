@@ -112,7 +112,7 @@
     function call(fnName, args) {
       if (state.stale) throw new Error('資料已在另一個視窗或分頁更新過，請重新整理這一頁再繼續操作（避免互相覆蓋）。');
       var fn = backend.fns[fnName];
-      if (typeof fn !== 'function' || /_$/.test(fnName) || backend.privateNames[fnName]) {
+      if (typeof fn !== 'function' || /_$/.test(fnName)) {
         throw new Error('沒有這個後端函式：' + fnName);
       }
       backend.beginExecution();

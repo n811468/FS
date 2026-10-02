@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- 由 tools/build-local.js 產生，請勿直接修改；原始檔在 apps-script/ 與 local/ -->
+<!-- 由 tools/build-local.js 產生，請勿直接修改；原始檔在 src/ 與 local/ -->
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
@@ -309,13 +309,13 @@
 <body>
 <script>
 /**
- * 地端版的 Google Apps Script 模擬層：讓 apps-script/*.gs 原封不動地跑在瀏覽器裡。
+ * 地端版的 Google Apps Script 模擬層：讓 src/*.gs 原封不動地跑在瀏覽器裡。
  *
  * 跟 tools/fake-apps-script.js 的差別：那一份是給 Node 驗算用的(會數 API 呼叫次數、用 vm 載入檔案)，
  * 這一份是正式給使用者用的，所以：
  *   - 儲存格寫入比照真的 Google Sheets「自動偵測格式」：一般格式的儲存格裡，長得像數字的字串會變成 Number
- *     (純文字格式 '@' 的欄位不轉，前導零得以保留)。這樣地端版讀回來的型別跟線上版一致，
- *     不會出現「線上版正常、地端版因為型別不同而比對失敗」這種只在一邊發生的問題。
+ *     (純文字格式 '@' 的欄位不轉，前導零得以保留)。這樣讀回來的型別跟這套程式
+ *     原本在 Google Sheets 上的行為一致(.gs 裡的比對邏輯是照那個行為寫的)。
  *   - CacheService 是不快取的空殼：資料本來就在記憶體裡，跨執行快取只會多一個讀到舊資料的機會。
  *   - Session.getActiveUser() 回傳使用者在地端版工具列上自己填的名字(沒有 Google 帳號可用)。
  *
@@ -498,7 +498,6 @@
       },
       LockService: { getScriptLock: function () { return { waitLock: function () { }, releaseLock: function () { } }; } },
       CacheService: { getScriptCache: function () { return nullCache; } },
-      PropertiesService: { getScriptProperties: function () { return { getProperty: function () { return null; }, setProperty: function () { } }; } },
       Utilities: {
         getUuid: opts.getUuid || randomUuid_,
         formatDate: function (d) { return d.getFullYear() + '-' + pad2_(d.getMonth() + 1) + '-' + pad2_(d.getDate()); }
@@ -507,9 +506,7 @@
         getScriptTimeZone: function () { return 'Asia/Taipei'; },
         getActiveUser: function () { return { getEmail: function () { return getUser(); } }; }
       },
-      Logger: { log: function () { } },
-      HtmlService: null,
-      UrlFetchApp: { fetch: function () { throw new Error('地端版不連外部網路'); } }
+      Logger: { log: function () { } }
     };
   }
 
@@ -839,18 +836,15 @@
 
 </script>
 <script>
-/* 由 tools/build-local.js 從 apps-script/*.gs 產生，請勿直接修改 */
+/* 由 tools/build-local.js 從 src/*.gs 產生，請勿直接修改 */
 function FSBackendFactory(G) {
   var SpreadsheetApp = G.SpreadsheetApp;
   var LockService = G.LockService;
   var CacheService = G.CacheService;
-  var PropertiesService = G.PropertiesService;
   var Utilities = G.Utilities;
   var Session = G.Session;
   var Logger = G.Logger;
-  var HtmlService = G.HtmlService;
-  var UrlFetchApp = G.UrlFetchApp;
-// ===== apps-script/Constants.gs =====
+// ===== src/Constants.gs =====
 /**
  * 分頁名稱、欄位定義、損益科目表。
  * 個人使用版本：無登入權限控管、無情境鎖定機制，部門/科目皆允許自由新增與刪除。
@@ -1074,7 +1068,7 @@ var TEXT_COLUMNS = {
 };
 
 
-// ===== apps-script/Utils.gs =====
+// ===== src/Utils.gs =====
 /** 共用工具函式 */
 
 function getSheet_(name) {
@@ -1421,12 +1415,8 @@ function sortByOrder_(rows, field) {
   return withIndex.map(function (x) { return x.row; });
 }
 
-function include(filename) {
-  return HtmlService.createHtmlOutputFromFile(filename).getContent();
-}
 
-
-// ===== apps-script/DataService.gs =====
+// ===== src/DataService.gs =====
 /**
  * 資料存取層：每張表提供 get / save / delete。
  * 個人使用版本，仍用 LockService 避免同一個瀏覽器分頁快速連點造成資料錯亂。
@@ -2448,7 +2438,7 @@ function getOperatingExpenseLineOptions() {
 
 
 
-// ===== apps-script/CalcEngine.gs =====
+// ===== src/CalcEngine.gs =====
 /**
  * 損益計算引擎：重現 Gate F 損益試算的公式鏈。
  *
@@ -3135,7 +3125,7 @@ function getPLResult(scenarioId, vehicleId) {
 }
 
 
-// ===== apps-script/SetupSheets.gs =====
+// ===== src/SetupSheets.gs =====
 /**
  * 第一次使用時，在 Apps Script 編輯器手動執行一次 setupSpreadsheet()，
  * 會自動建立所有分頁、寫入標題列，並灌入固定的損益科目表(PLLineItems)。
@@ -3262,8 +3252,7 @@ function reportMaintenance_(message) {
 }
 
   return {
-    fns: { getSheet_: getSheet_, generateId_: generateId_, normalizeCellValue_: normalizeCellValue_, sheetCacheKey_: sheetCacheKey_, invalidateSheetCache_: invalidateSheetCache_, resetCalcMemo_: resetCalcMemo_, sheetToObjects_: sheetToObjects_, readSheetObjects_: readSheetObjects_, samePk_: samePk_, indexByPk_: indexByPk_, mergeRowForBatch_: mergeRowForBatch_, upsertRowMerge_: upsertRowMerge_, upsertRow_: upsertRow_, applyTextColumnFormats_: applyTextColumnFormats_, deleteRow_: deleteRow_, batchWriteRows_: batchWriteRows_, rowIdPrefix_: rowIdPrefix_, logAudit_: logAudit_, logAuditBatch_: logAuditBatch_, toNumber_: toNumber_, sortByOrder_: sortByOrder_, include: include, withLock_: withLock_, getBootstrap: getBootstrap, getVehicleTypes: getVehicleTypes, saveVehicleType: saveVehicleType, deleteVehicleType: deleteVehicleType, saveVehicleTypeGrid: saveVehicleTypeGrid, renameVehicleType: renameVehicleType, getVehicles: getVehicles, saveVehicle: saveVehicle, deleteVehicle: deleteVehicle, saveVehicleGrid: saveVehicleGrid, reorderVehicle: reorderVehicle, renameVehicle: renameVehicle, getScenarios: getScenarios, validateScenarioRow_: validateScenarioRow_, saveScenario: saveScenario, deleteScenario: deleteScenario, saveScenarioGrid: saveScenarioGrid, createScenarioFrom: createScenarioFrom, getSalesMix: getSalesMix, saveSalesMixRow: saveSalesMixRow, deleteSalesMixRow: deleteSalesMixRow, getSalesMixGrid: getSalesMixGrid, saveSalesMixGrid: saveSalesMixGrid, recalcSalesMixPctByVolume: recalcSalesMixPctByVolume, recalcSalesMixVolumeByPct: recalcSalesMixVolumeByPct, getCostOfSales: getCostOfSales, saveCostOfSalesRow: saveCostOfSalesRow, deleteCostOfSalesRow: deleteCostOfSalesRow, buildAmountMatrix_: buildAmountMatrix_, saveAmountMatrix_: saveAmountMatrix_, getCostOfSalesMatrix: getCostOfSalesMatrix, saveCostOfSalesMatrix: saveCostOfSalesMatrix, getOperatingExpenseMatrix: getOperatingExpenseMatrix, saveOperatingExpenseMatrix: saveOperatingExpenseMatrix, addLineItemInline: addLineItemInline, newLineItemRow_: newLineItemRow_, nextLineCode_: nextLineCode_, nextSortOrder_: nextSortOrder_, deleteLineItemInline: deleteLineItemInline, devAmortTargetOf_: devAmortTargetOf_, getDevAmortTargetOptions: getDevAmortTargetOptions, addDevAmortLineItem: addDevAmortLineItem, getDevInvestment: getDevInvestment, saveDevInvestmentRow: saveDevInvestmentRow, deleteDevInvestmentRow: deleteDevInvestmentRow, saveDevInvestmentGrid: saveDevInvestmentGrid, copyScenarioData: copyScenarioData, saveAmortBasis: saveAmortBasis, getKnownDepartments: getKnownDepartments, getOperatingExpense: getOperatingExpense, saveOperatingExpenseRow: saveOperatingExpenseRow, deleteOperatingExpenseRow: deleteOperatingExpenseRow, getParameters: getParameters, saveParameterRow: saveParameterRow, deleteParameterRow: deleteParameterRow, getTaxRateParameters: getTaxRateParameters, getFxParameters: getFxParameters, getRateGrid: getRateGrid, saveRateGrid: saveRateGrid, getFxGrid: getFxGrid, saveFxGrid: saveFxGrid, getConfiguredCurrencies: getConfiguredCurrencies, lookupParam_: lookupParam_, syncCodeOwnedLineItems_: syncCodeOwnedLineItems_, restoreBuiltInLineItems: restoreBuiltInLineItems, getPLLineItems: getPLLineItems, savePLLineItem: savePLLineItem, savePLLineItem_: savePLLineItem_, savePLLineItemGrid: savePLLineItemGrid, deletePLLineItem: deletePLLineItem, lineOptionsFor_: lineOptionsFor_, getCostOfSalesLineOptions: getCostOfSalesLineOptions, getOperatingExpenseLineOptions: getOperatingExpenseLineOptions, pct_: pct_, fxRateFor_: fxRateFor_, commodityTaxBreakdown_: commodityTaxBreakdown_, commodityTaxDeductCodes_: commodityTaxDeductCodes_, calculatePL: calculatePL, calculatePLCore_: calculatePLCore_, calculatePLCoreUncached_: calculatePLCoreUncached_, calculatePLAllVehicles: calculatePLAllVehicles, calculateScenarioWeighted: calculateScenarioWeighted, calculateComparison: calculateComparison, columnVolumeInfo_: columnVolumeInfo_, subtotalChecks_: subtotalChecks_, getComparisonOptions: getComparisonOptions, amortizeDevInvestmentPerUnit_: amortizeDevInvestmentPerUnit_, applyDevAmortLines_: applyDevAmortLines_, isBaselineScenario_: isBaselineScenario_, getLifeCycleUnits: getLifeCycleUnits, getSalesMixLifeCycleUnits: getSalesMixLifeCycleUnits, getDevInvestmentSummary: getDevInvestmentSummary, previewDevInvestmentSummary: previewDevInvestmentSummary, manualLineCodesFor_: manualLineCodesFor_, pickLines_: pickLines_, sumValues_: sumValues_, writePLResult_: writePLResult_, buildResultLines_: buildResultLines_, buildAutoLines_: buildAutoLines_, getCostOfSalesAutoLines: getCostOfSalesAutoLines, getOperatingExpenseAutoLines: getOperatingExpenseAutoLines, getPLResult: getPLResult, setupSpreadsheet: setupSpreadsheet, seedPLLineItems_: seedPLLineItems_, resetPLLineItemDefaults: resetPLLineItemDefaults, removeUnusedParameters: removeUnusedParameters, reportMaintenance_: reportMaintenance_ },
-    privateNames: { include: true },
+    fns: { getSheet_: getSheet_, generateId_: generateId_, normalizeCellValue_: normalizeCellValue_, sheetCacheKey_: sheetCacheKey_, invalidateSheetCache_: invalidateSheetCache_, resetCalcMemo_: resetCalcMemo_, sheetToObjects_: sheetToObjects_, readSheetObjects_: readSheetObjects_, samePk_: samePk_, indexByPk_: indexByPk_, mergeRowForBatch_: mergeRowForBatch_, upsertRowMerge_: upsertRowMerge_, upsertRow_: upsertRow_, applyTextColumnFormats_: applyTextColumnFormats_, deleteRow_: deleteRow_, batchWriteRows_: batchWriteRows_, rowIdPrefix_: rowIdPrefix_, logAudit_: logAudit_, logAuditBatch_: logAuditBatch_, toNumber_: toNumber_, sortByOrder_: sortByOrder_, withLock_: withLock_, getBootstrap: getBootstrap, getVehicleTypes: getVehicleTypes, saveVehicleType: saveVehicleType, deleteVehicleType: deleteVehicleType, saveVehicleTypeGrid: saveVehicleTypeGrid, renameVehicleType: renameVehicleType, getVehicles: getVehicles, saveVehicle: saveVehicle, deleteVehicle: deleteVehicle, saveVehicleGrid: saveVehicleGrid, reorderVehicle: reorderVehicle, renameVehicle: renameVehicle, getScenarios: getScenarios, validateScenarioRow_: validateScenarioRow_, saveScenario: saveScenario, deleteScenario: deleteScenario, saveScenarioGrid: saveScenarioGrid, createScenarioFrom: createScenarioFrom, getSalesMix: getSalesMix, saveSalesMixRow: saveSalesMixRow, deleteSalesMixRow: deleteSalesMixRow, getSalesMixGrid: getSalesMixGrid, saveSalesMixGrid: saveSalesMixGrid, recalcSalesMixPctByVolume: recalcSalesMixPctByVolume, recalcSalesMixVolumeByPct: recalcSalesMixVolumeByPct, getCostOfSales: getCostOfSales, saveCostOfSalesRow: saveCostOfSalesRow, deleteCostOfSalesRow: deleteCostOfSalesRow, buildAmountMatrix_: buildAmountMatrix_, saveAmountMatrix_: saveAmountMatrix_, getCostOfSalesMatrix: getCostOfSalesMatrix, saveCostOfSalesMatrix: saveCostOfSalesMatrix, getOperatingExpenseMatrix: getOperatingExpenseMatrix, saveOperatingExpenseMatrix: saveOperatingExpenseMatrix, addLineItemInline: addLineItemInline, newLineItemRow_: newLineItemRow_, nextLineCode_: nextLineCode_, nextSortOrder_: nextSortOrder_, deleteLineItemInline: deleteLineItemInline, devAmortTargetOf_: devAmortTargetOf_, getDevAmortTargetOptions: getDevAmortTargetOptions, addDevAmortLineItem: addDevAmortLineItem, getDevInvestment: getDevInvestment, saveDevInvestmentRow: saveDevInvestmentRow, deleteDevInvestmentRow: deleteDevInvestmentRow, saveDevInvestmentGrid: saveDevInvestmentGrid, copyScenarioData: copyScenarioData, saveAmortBasis: saveAmortBasis, getKnownDepartments: getKnownDepartments, getOperatingExpense: getOperatingExpense, saveOperatingExpenseRow: saveOperatingExpenseRow, deleteOperatingExpenseRow: deleteOperatingExpenseRow, getParameters: getParameters, saveParameterRow: saveParameterRow, deleteParameterRow: deleteParameterRow, getTaxRateParameters: getTaxRateParameters, getFxParameters: getFxParameters, getRateGrid: getRateGrid, saveRateGrid: saveRateGrid, getFxGrid: getFxGrid, saveFxGrid: saveFxGrid, getConfiguredCurrencies: getConfiguredCurrencies, lookupParam_: lookupParam_, syncCodeOwnedLineItems_: syncCodeOwnedLineItems_, restoreBuiltInLineItems: restoreBuiltInLineItems, getPLLineItems: getPLLineItems, savePLLineItem: savePLLineItem, savePLLineItem_: savePLLineItem_, savePLLineItemGrid: savePLLineItemGrid, deletePLLineItem: deletePLLineItem, lineOptionsFor_: lineOptionsFor_, getCostOfSalesLineOptions: getCostOfSalesLineOptions, getOperatingExpenseLineOptions: getOperatingExpenseLineOptions, pct_: pct_, fxRateFor_: fxRateFor_, commodityTaxBreakdown_: commodityTaxBreakdown_, commodityTaxDeductCodes_: commodityTaxDeductCodes_, calculatePL: calculatePL, calculatePLCore_: calculatePLCore_, calculatePLCoreUncached_: calculatePLCoreUncached_, calculatePLAllVehicles: calculatePLAllVehicles, calculateScenarioWeighted: calculateScenarioWeighted, calculateComparison: calculateComparison, columnVolumeInfo_: columnVolumeInfo_, subtotalChecks_: subtotalChecks_, getComparisonOptions: getComparisonOptions, amortizeDevInvestmentPerUnit_: amortizeDevInvestmentPerUnit_, applyDevAmortLines_: applyDevAmortLines_, isBaselineScenario_: isBaselineScenario_, getLifeCycleUnits: getLifeCycleUnits, getSalesMixLifeCycleUnits: getSalesMixLifeCycleUnits, getDevInvestmentSummary: getDevInvestmentSummary, previewDevInvestmentSummary: previewDevInvestmentSummary, manualLineCodesFor_: manualLineCodesFor_, pickLines_: pickLines_, sumValues_: sumValues_, writePLResult_: writePLResult_, buildResultLines_: buildResultLines_, buildAutoLines_: buildAutoLines_, getCostOfSalesAutoLines: getCostOfSalesAutoLines, getOperatingExpenseAutoLines: getOperatingExpenseAutoLines, getPLResult: getPLResult, setupSpreadsheet: setupSpreadsheet, seedPLLineItems_: seedPLLineItems_, resetPLLineItemDefaults: resetPLLineItemDefaults, removeUnusedParameters: removeUnusedParameters, reportMaintenance_: reportMaintenance_ },
     consts: { SCHEMA: SCHEMA, TEXT_COLUMNS: TEXT_COLUMNS, PL_LINE_ITEMS: PL_LINE_ITEMS, LINE_CODE_PREFIX: LINE_CODE_PREFIX },
     // 模擬 Apps Script「每次 google.script.run 都是全新執行」：單次執行內的快取要清掉
     beginExecution: function () { SHEET_CACHE_ = {}; resetCalcMemo_(); LOCK_DEPTH_ = 0; }
@@ -3385,7 +3374,7 @@ function reportMaintenance_(message) {
     function call(fnName, args) {
       if (state.stale) throw new Error('資料已在另一個視窗或分頁更新過，請重新整理這一頁再繼續操作（避免互相覆蓋）。');
       var fn = backend.fns[fnName];
-      if (typeof fn !== 'function' || /_$/.test(fnName) || backend.privateNames[fnName]) {
+      if (typeof fn !== 'function' || /_$/.test(fnName)) {
         throw new Error('沒有這個後端函式：' + fnName);
       }
       backend.beginExecution();
@@ -3821,9 +3810,8 @@ function switchTab(key) {
 
 /**
  * 記住「目前在哪一頁、選了哪個車型/情境」，讓整頁重新載入後能回到原本的位置。
- * Apps Script 的 HtmlService 網頁跑久了偶爾會自己整頁重新整理(Google 內部的工作階段/驗證更新機制，
- * 前端程式碼管不到、也無法阻止)，沒有這層記憶的話，使用者只是放著不動，畫面卻突然跳回「車型主檔」
- * 分頁、車型/情境選單也重設成第一筆，看起來就像「莫名其妙重新載入」。存最基本的三個狀態就好，
+ * 地端版匯入資料包、載入示範資料後都會整頁重新載入，使用者自己按 F5 也是；沒有這層記憶的話，
+ * 畫面每次都會跳回「車型主檔」分頁、車型/情境選單也重設成第一筆。存最基本的三個狀態就好，
  * 表格編輯頁裡「還沒存檔的修改」本來就無法安全地跨頁面重新載入還原，不在這裡處理。
  */
 const APP_STATE_KEY_ = 'plApp.state.v1';

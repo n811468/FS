@@ -1,11 +1,11 @@
 /**
- * 地端版的 Google Apps Script 模擬層：讓 apps-script/*.gs 原封不動地跑在瀏覽器裡。
+ * 地端版的 Google Apps Script 模擬層：讓 src/*.gs 原封不動地跑在瀏覽器裡。
  *
  * 跟 tools/fake-apps-script.js 的差別：那一份是給 Node 驗算用的(會數 API 呼叫次數、用 vm 載入檔案)，
  * 這一份是正式給使用者用的，所以：
  *   - 儲存格寫入比照真的 Google Sheets「自動偵測格式」：一般格式的儲存格裡，長得像數字的字串會變成 Number
- *     (純文字格式 '@' 的欄位不轉，前導零得以保留)。這樣地端版讀回來的型別跟線上版一致，
- *     不會出現「線上版正常、地端版因為型別不同而比對失敗」這種只在一邊發生的問題。
+ *     (純文字格式 '@' 的欄位不轉，前導零得以保留)。這樣讀回來的型別跟這套程式
+ *     原本在 Google Sheets 上的行為一致(.gs 裡的比對邏輯是照那個行為寫的)。
  *   - CacheService 是不快取的空殼：資料本來就在記憶體裡，跨執行快取只會多一個讀到舊資料的機會。
  *   - Session.getActiveUser() 回傳使用者在地端版工具列上自己填的名字(沒有 Google 帳號可用)。
  *
@@ -188,7 +188,6 @@
       },
       LockService: { getScriptLock: function () { return { waitLock: function () { }, releaseLock: function () { } }; } },
       CacheService: { getScriptCache: function () { return nullCache; } },
-      PropertiesService: { getScriptProperties: function () { return { getProperty: function () { return null; }, setProperty: function () { } }; } },
       Utilities: {
         getUuid: opts.getUuid || randomUuid_,
         formatDate: function (d) { return d.getFullYear() + '-' + pad2_(d.getMonth() + 1) + '-' + pad2_(d.getDate()); }
@@ -197,9 +196,7 @@
         getScriptTimeZone: function () { return 'Asia/Taipei'; },
         getActiveUser: function () { return { getEmail: function () { return getUser(); } }; }
       },
-      Logger: { log: function () { } },
-      HtmlService: null,
-      UrlFetchApp: { fetch: function () { throw new Error('地端版不連外部網路'); } }
+      Logger: { log: function () { } }
     };
   }
 

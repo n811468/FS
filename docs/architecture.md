@@ -1,86 +1,84 @@
-# 系統架構草案 — Google Sheet + Apps Script
+# 系統架構 — 地端版（單一 HTML 檔 + 資料包）
 
-資料結構定義見 `docs/data-schema.md`。本文件定義前端輸入 → Sheet 寫入 → 前端呈現的完整流程與專案檔案配置。
+資料結構定義見 `docs/data-schema.md`，使用說明見 `docs/usage.md` 與 `local/README.md`。
+本文件說明前端輸入 → 資料寫入 → 前端呈現的完整流程與專案檔案配置。
 
 ---
 
 ## 1. 整體資料流
 
 ```
-使用者操作前端表單
-   │  (google.script.run.withSuccessHandler)
+使用者操作前端表單 (src/script.html)
+   │  google.script.run.withSuccessHandler(...).saveXxx(...)   ← 介面沿用 Apps Script 的寫法
    ▼
-Apps Script Server 端函式 (DataService.gs)
-   │  驗證欄位 → LockService 上鎖 → upsert 寫入對應分頁
-   ▼
-Google Sheet（資料庫）
+local/host.js：google.script.run 替身，直接呼叫同一頁裡的後端函式(非同步回呼、參數/回傳值走一次 JSON)
    │
    ▼
-CalcEngine.gs 觸發重算
-   │  讀 SalesMix / CostOfSales / DevInvestment / OperatingExpense / Parameters
-   │  依 PLLineItems 科目鏈逐項 rollup (A→B→C→...→K)
+後端 src/*.gs (DataService.gs / CalcEngine.gs …)，包在 FSBackendFactory(G) 裡執行
+   │  驗證欄位 → upsert 寫入對應的「分頁」
    ▼
-寫回 PLResult 分頁
-   │
+記憶體試算表 (local/gas-shim.js，每個分頁 = 一張表)
+   │  有改到資料(PLResult 計算快照除外) → 整份存進瀏覽器 localStorage
+   │                                     → 工具列記「N 次修改尚未匯出」
    ▼
-前端呼叫 getPLResult(scenarioId, vehicleId)
-   │
+CalcEngine.gs 計算：讀 SalesMix / CostOfSales / DevInvestment / OperatingExpense / Parameters，
+   依 PLLineItems 科目鏈逐項 rollup (A→B→C→...→K)
    ▼
 Dashboard 頁面渲染損益表 + 結構圖表
+
+資料包 (local/pack.js)：整份或某幾個車型 ⇄ JSON 檔，用於備份、還原與跟同事交換(合併匯入)
 ```
 
-**關鍵原則：Sheet 只存「輸入資料」與「計算結果快照」，不存公式。**
-所有損益公式都在 `CalcEngine.gs` 用 JavaScript 運算，理由：
-1. Apps Script 讀寫 Sheet 公式效能差，且多情境比較時公式引用容易錯亂。
-2. 計算邏輯集中在一處，方便日後改公式、加科目、單元測試。
-3. `PLResult` 是「快照」，可以保留每次計算的時間戳記，做歷史軌跡。
+**關鍵原則：資料庫只存「輸入資料」，不存公式。**
+所有損益公式都在 `CalcEngine.gs` 用 JavaScript 運算，計算邏輯集中在一處，方便改公式、加科目、驗算；
+`PLResult` 只是計算快照，隨時可以重算，所以不放進暫存也不放進資料包。
+
+為什麼後端寫成 `.gs`、用「分頁」的觀念存資料：這套系統最早是 Google Sheet + Apps Script 的線上版，
+地端版沿用同一份後端程式碼，只把 `SpreadsheetApp` 換成記憶體試算表（`local/gas-shim.js`）。
+這樣原本用 Gate F 實際數字逐格對過帳的計算引擎完全不用改，`tools/verify-gatef.js` 照樣可以驗。
 
 ---
 
-## 2. Apps Script 專案檔案配置
+## 2. 專案檔案配置
 
 ```
-apps-script/                # 貼進 Apps Script 編輯器的檔案（檔名需一致）
-├─ appsscript.json         # 專案設定（webapp.access = MYSELF）
-├─ Code.gs                 # doGet 入口、Sheets 自訂選單
+src/                        # 系統本體(後端 + 前端)，build 時原封不動放進 dist/FS-local.html
 ├─ Constants.gs            # 分頁名稱、SCHEMA、科目表、預設參數
-├─ Utils.gs                # ID 產生器、日期正規化、upsert/delete、分頁讀取快取(單次執行內)
-├─ SetupSheets.gs          # 初始化分頁與科目表；重設科目排序、清除未使用參數等維護作業
+├─ Utils.gs                # ID 產生器、日期正規化、upsert/delete、整批寫入、分頁讀取快取(單次執行內)
+├─ SetupSheets.gs          # 建立分頁與科目表；重設科目排序、清除未使用參數等維護作業
 ├─ DataService.gs          # 各表 CRUD 與表格式整批存檔：getXxxGrid() / saveXxxGrid()
 ├─ CalcEngine.gs           # 損益計算引擎，對應 Gate F 公式鏈；比較 API 與小計驗算
 ├─ index.html              # SPA 外殼（nav 分頁 + 各 panel 容器）
-├─ style.html              # 共用 CSS（用 <?!= include('style') ?> 帶入）
+├─ style.html              # 共用 CSS
 └─ script.html             # 全部前端 JS：主檔表格、各輸入表格、儀表板
 
-tools/                      # 只在本機用 Node 執行，不會部署到 Apps Script
-├─ fake-apps-script.js     # 記憶體版的 SpreadsheetApp/LockService/Utilities，讓 .gs 能在 Node 跑
+local/                      # 地端層：讓 src/ 在瀏覽器裡跑起來 + 資料包
+├─ gas-shim.js             # 瀏覽器版 Apps Script 模擬層：記憶體試算表(比照 Sheets 自動偵測格式)、Lock/Cache/Session
+├─ pack.js                 # 資料包(JSON)：匯出、讀取檢查、只取部分車型、合併匯入(車型取代 + 自訂科目改號)
+├─ host.js                 # 後端主機：.gs 後端 + 瀏覽器暫存 + google.script.run 替身 + 多分頁保護
+├─ boot.js                 # 開機：在 script.html 執行前架好主機
+└─ local-ui.js / local-ui.css  # 地端版工具列(匯出/匯入/合併/提醒備份)
+
+dist/FS-local.html          # 產出物(單一檔案)，提交進 git，使用者直接複製這一個檔案
+
+tools/                      # 開發用，只在本機用 Node 執行
+├─ build-local.js          # src/ + local/ + 示範資料 → dist/FS-local.html
+├─ fake-apps-script.js     # Node 版的記憶體試算表(會數 API 呼叫次數)，讓 .gs 能在 Node 驗算
 ├─ verify-gatef.js         # 用實際 Gate F 表的數字逐格驗算計算引擎
-├─ verify-features.js      # 驗這一版的行為（情境帶入、科目自動編號、匯率精簡…）
+├─ verify-features.js      # 情境帶入、科目自動編號、匯率精簡等行為
 ├─ verify-ui.js            # 前端純函式的靜態驗證（損益表結構、hover 提示內容、SVG 圖表、差異模式…）
 ├─ verify-write-batching.js # 整批寫入(batchWriteRows_)：跨情境隔離、新增/更新/刪除混合、呼叫次數量測
-└─ dev-server.js           # 本機預覽：把 .gs 跑在 Node 上、假的 google.script.run 走 HTTP，瀏覽器直接開整個前端
+├─ verify-local.js         # 地端版：與 Node 驗算層逐格比對、暫存/資料包/合併、dist 為最新
+├─ e2e-local.js            # 用 Chromium 以 file:// 開啟的端對端測試(需要 Playwright)
+└─ dev-server.js           # 本機預覽伺服器：改前端時不必每次重新 build，存檔按 F5 就看得到
 ```
 
 > 前端全部集中在 `script.html`（單一 SPA），沒有 `input_*.html` / `dashboard.html` 這類分檔 ——
 > 每個分頁都是同一套表格元件的組態差異，拆檔只會讓共用邏輯散掉。
 
-### 地端版（同一份原始碼的另一種執行方式）
-
-```
-local/                      # 地端版專屬的一層，不改動 apps-script/ 的任何檔案
-├─ gas-shim.js             # 瀏覽器版 Apps Script 模擬層：記憶體試算表(比照 Sheets 自動偵測格式)、Lock/Cache/Session
-├─ pack.js                 # 資料包(JSON)：匯出、讀取檢查、只取部分車型、合併匯入(車型取代 + 自訂科目改號)
-├─ host.js                 # 後端主機：.gs 後端 + 瀏覽器暫存 + google.script.run 替身
-├─ boot.js / local-ui.js / local-ui.css   # 開機與地端版工具列
-tools/build-local.js        # .gs 包進 FSBackendFactory(G) + 前端原檔 + local/ → dist/FS-local.html(單一檔案)
-tools/verify-local.js       # 地端版與 Node 驗算層逐格比對、暫存/資料包/合併
-tools/e2e-local.js          # 用 Chromium 以 file:// 開啟的端對端測試
-dist/FS-local.html          # 產出物，提交進 git，使用者直接複製這一個檔案
-```
-
-資料流跟線上版相同，只是 `google.script.run` 不走網路，而是直接呼叫同一頁裡的 `.gs` 函式；
-`SpreadsheetApp` 換成記憶體試算表，每次有改到資料(PLResult 計算快照除外)就整份存進 `localStorage`。
-瀏覽器暫存只是便利，正式保存與交換一律用資料包。使用方式見 `local/README.md`。
+> `.gs` 被整段包進 `FSBackendFactory(G)` 函式裡（`G` 是模擬的 Apps Script 全域物件），
+> 後端的全域函式/變數不會跟前端 `script.html` 的同名函式互相蓋掉。每次前端呼叫都比照
+> 「每次都是新的執行」清掉單次執行快取，跟這套程式原本的假設一致。
 
 ---
 
@@ -96,7 +94,7 @@ function deleteSalesMixRow(rowId)
 //           getDevInvestment / saveDevInvestmentRow / deleteDevInvestmentRow
 //           getVehicles / getScenarios / getParameters(scenarioId)
 
-// 寫入時用 LockService 避免多人同時編輯衝突：
+// 寫入時包在 withLock_() 裡(地端版的 LockService 是空殼；原本是線上版防多人同時寫入用的，保留不影響行為)：
 function saveSalesMixRow(rowObj) {
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
@@ -186,8 +184,7 @@ LIFE CYCLE 總台數 = 情境的攤提基準(AmortMonthlyVolume × 12 × AmortLi
 所有頁面都是表格式編輯：一次看到全部資料、直接在格子裡改、最後按一次「儲存」整批送出。
 沒有「先按編輯才能改某一列」的模式 —— 那會讓一次要調十幾個數字的作業變成點十幾次編輯。
 
-Apps Script 的 HtmlService 網頁跑久了偶爾會自己整頁重新整理（Google 內部的工作階段/驗證更新機制，
-前端程式碼管不到、也無法阻止）。為了不讓使用者覺得「莫名其妙跳回第一頁」，`switchTab()` /
+匯入資料包、載入示範資料後都會整頁重新載入（使用者自己按 F5 也是）。為了不讓畫面每次都跳回第一頁，`switchTab()` /
 `onVehicleTypeChange()` / `setCurrentScenario()` 都會把「目前在哪一頁、選了哪個車型/情境」存進
 `localStorage`（`saveAppState_()`），開場 `DOMContentLoaded` 時讀回來還原（`loadAppState_()`）。
 表格編輯頁裡「還沒存檔的修改」本來就無法安全地跨一次整頁重新整理還原，不在這個機制處理範圍內。
@@ -257,7 +254,7 @@ Apps Script 的 HtmlService 網頁跑久了偶爾會自己整頁重新整理（G
     加權平均欄位的總台數是各車系加總，並附各車系構成比供標題 hover 顯示。
     > 加權平均欄位換算總額時有一個先天限制：單台金額是用**構成比**加權的，總額卻是乘上**台數**總和，
     > 只有兩者比例一致時，這一欄的總額才會等於各車系欄位的總額相加。「銷售構成」頁面在畫面上編輯時
-    > 會自動讓構成比與台數同步，所以正常不會差；但直接在 Sheet 上改、或帶入後只調了一邊就可能不一致。
+    > 會自動讓構成比與台數同步，所以正常不會差；但手動改過資料包、或帶入後只調了一邊就可能不一致。
     > 這種情況不會默默算錯給使用者看 —— `weightedTotalCaveat_()` 會在欄位標題的 hover 提示裡標出
     > 相差幾個百分點，並說明怎麼調回來。
   - **標示最佳/最差**：每一列把數字最好的欄位標 ▲、最差的標 ▼（同分都標），方向同上。
@@ -294,17 +291,17 @@ Apps Script 的 HtmlService 網頁跑久了偶爾會自己整頁重新整理（G
 
 ---
 
-## 6. 部署與權限
+## 6. 保存、交換與多人協作
 
-- 部署為 **Web App**：「執行身份：我」＋「存取權：僅限機構內的使用者」（依貴公司網域限制），避免資料外洩。
-- 若需要多人同時編輯，Sheet 端另外用「保護範圍」鎖定計算欄位，避免有人手動改到 `PLResult`。
-- 建議把 Sheet 拆成兩顆檔案：**輸入資料庫.gsheet**（VehicleTypes/Vehicles/Scenarios/SalesMix/CostOfSales/DevInvestment/OperatingExpense/Parameters）與 **計算結果.gsheet**（PLLineItems/PLResult/AuditLog），避免使用者誤改到公式相關分頁；Apps Script 用 `SpreadsheetApp.openById()` 分別存取。（也可以先合併在同一檔案，等資料量/人數變多再拆分）
+- 資料存在使用者自己電腦的瀏覽器（`localStorage`），不上傳任何地方；完全離線可用，不載入任何外部資源。
+- 瀏覽器暫存只是「關掉再打開還在」的便利。正式保存與交換一律用資料包：工具列「匯出全部」是備份，
+  「匯出目前車型」交給同事「合併匯入」。合併規則（以車型為單位取代、自訂科目撞號自動改號）見 `local/README.md`。
+- 同一份暫存被兩個分頁同時編輯時，後存檔的一方會讓另一方停止寫入並提示重新整理，避免互相覆蓋。
 
 ---
 
 ## 7. 待確認事項
 
-1. 使用者是否需要 Google 帳號登入權限控管？（決定部署存取權設定）
-2. 是否需要「核准/鎖定」機制，避免情境定案後被誤改？（`Scenarios.Locked` 已預留欄位）
-3. 開發總投的部門清單是否固定，或需要讓使用者自行新增部門？（現況：自由輸入，並提供已用過的部門建議）
-4. ~~圖表程式庫的資安規範~~ —— 已改成前端自己產生 SVG，不載入任何外部程式庫。
+1. 是否需要「核准/鎖定」機制，避免情境定案後被誤改？
+2. 開發總投的部門清單是否固定，或需要讓使用者自行新增部門？（現況：自由輸入，並提供已用過的部門建議）
+3. ~~圖表程式庫的資安規範~~ —— 已改成前端自己產生 SVG，不載入任何外部程式庫。

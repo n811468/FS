@@ -4,9 +4,8 @@
 把 `dist/FS-local.html` 複製到電腦任何位置，用 Chrome / Edge **雙擊**就能用。
 所有資料只存在你這台電腦的瀏覽器裡，不會上傳到任何地方。
 
-畫面與計算跟線上版（Apps Script）完全相同：地端版的後端就是 `apps-script/*.gs` 原檔，
-前端就是 `index.html` / `script.html` / `style.html` 原檔，只是換了一個執行的地方。
-`tools/verify-local.js` 會用 Gate F 實際數字逐格確認兩邊算出來一模一樣。
+後端是 `src/*.gs`（計算引擎與資料存取），前端是 `src/index.html` / `script.html` / `style.html`，
+build 時原封不動放進這一個檔案。`tools/verify-local.js` 會用 Gate F 實際數字逐格確認算出來的結果正確。
 
 ## 日常使用
 
@@ -64,11 +63,11 @@ local/
 ├─ local-ui.js   # 地端版工具列與匯入對話框
 └─ local-ui.css
 tools/build-local.js   # 組成 dist/FS-local.html(單一檔案)
-tools/verify-local.js  # Node 驗證：數字與線上版相同、暫存、資料包、合併
+tools/verify-local.js  # Node 驗證：數字與驗算層相同、暫存、資料包、合併
 tools/e2e-local.js     # 瀏覽器端對端測試(需要 Playwright，找不到時略過)
 ```
 
-改了 `apps-script/` 或 `local/` 之後：
+改了 `src/` 或 `local/` 之後：
 
 ```bash
 node tools/build-local.js     # 重新產生 dist/FS-local.html

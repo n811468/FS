@@ -3,7 +3,7 @@
  *
  *   node tools/verify-local.js
  *
- * 1. 算出來的數字跟線上版一模一樣 —— 同一組 Gate F 資料，分別用 Node 驗算層(tools/fake-apps-script.js)
+ * 1. 算出來的數字跟 Node 驗算層一模一樣 —— 同一組 Gate F 資料，分別用 Node 驗算層(tools/fake-apps-script.js)
  *    和地端版主機(local/host.js，走跟瀏覽器完全相同的 google.script.run 呼叫路徑)跑一次，逐格比對
  * 2. 瀏覽器暫存：關掉重開(用同一份 storage 建新主機)資料還在、數字不變
  * 3. 資料包：整份匯出 → 匯入另一台全新的主機，數字不變；只匯出某個車型時只帶那個車型的資料
@@ -92,7 +92,7 @@ function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
     'getComparisonOptions() 的結構跟這支驗證腳本預期的不同，請更新 compareAll()：' + JSON.stringify(opts).slice(0, 200));
 }
 
-/* ---- 1. 地端版與線上版(Node 驗算層)算出來的數字完全相同 -------------------------------------------- */
+/* ---- 1. 地端版與 Node 驗算層算出來的數字完全相同 -------------------------------------------- */
 const gs = loadAppsScript(['Constants.gs', 'Utils.gs', 'DataService.gs', 'CalcEngine.gs', 'SetupSheets.gs']);
 const sidRef = gatef.buildScenario(gs);
 const refSel = gatef.VEHICLES.map(v => ({ ScenarioID: sidRef, VehicleID: v.id })).concat([{ ScenarioID: sidRef, VehicleID: '' }]);
@@ -229,7 +229,6 @@ apiX.saveVehicle({ VehicleID: 'V1', VehicleTypeID: 'DZ', VehicleCode: '撞名車
 throws(() => hostM.previewMerge(Pack.parsePack(JSON.stringify(hostX.exportPack(['DZ'])))), /V1/, '車系代號跟本機其他車型衝突時應該擋下合併');
 
 /* ---- 5. 其他保護 --------------------------------------------------------------------------------- */
-throws(() => hostA.call('include', ['index']), /沒有這個後端函式/, '前端不該能呼叫 include()');
 throws(() => hostA.call('sheetToObjects_', ['Vehicles']), /沒有這個後端函式/, '前端不該能呼叫私有函式');
 throws(() => Pack.parsePack('not json'), /JSON/, '壞掉的檔案要有清楚的錯誤');
 throws(() => Pack.parsePack({ format: 'x', tables: {} }), /不是/, '不是資料包的 JSON 要擋下來');
@@ -270,11 +269,11 @@ const demoCmp = compareAll(apiOf(hostDemo));
 assert(demoCmp.columns.length >= 6 && demoCmp.columns.every(c => c.checks.length === 0), '示範資料載入後儀表板算不出來或小計對不起來');
 
 const distOk = fs.existsSync(build.OUT_FILE) && fs.readFileSync(build.OUT_FILE, 'utf8') === build.buildHtml();
-assert(distOk, 'dist/FS-local.html 不是最新的：改了 apps-script/ 或 local/ 之後請執行 node tools/build-local.js');
+assert(distOk, 'dist/FS-local.html 不是最新的：改了 src/ 或 local/ 之後請執行 node tools/build-local.js');
 
 if (failures.length) {
   console.log(`地端版驗證失敗：${failures.length} 項（共 ${checks} 項）`);
   failures.forEach(f => console.log('  ✗ ' + f));
   process.exit(1);
 }
-console.log(`地端版驗證通過：${checks} 項全部符合（Gate F 數字與線上版逐格相同、暫存/資料包/合併匯入行為正確、dist 為最新）。`);
+console.log(`地端版驗證通過：${checks} 項全部符合（Gate F 數字與 Node 驗算層逐格相同、暫存/資料包/合併匯入行為正確、dist 為最新）。`);

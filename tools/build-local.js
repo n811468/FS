@@ -4,28 +4,26 @@
  *   node tools/build-local.js
  *
  * 內容全部來自原始檔，地端版沒有另外一份商業邏輯：
- *   - 後端：apps-script/ 的 .gs 原檔，整段包進 FSBackendFactory(G) 函式裡(G = 模擬的 Apps Script 全域物件)，
+ *   - 後端：src/ 的 .gs 原檔，整段包進 FSBackendFactory(G) 函式裡(G = 模擬的 Apps Script 全域物件)，
  *     這樣 .gs 的全域函式/變數不會跟前端 script.html 的同名函式互相蓋掉
- *   - 前端：apps-script/index.html + style.html + script.html 原檔，跟線上版完全相同
+ *   - 前端：src/index.html + style.html + script.html 原檔
  *   - 地端層：local/ 底下的模擬層、資料包、主機、工具列
  *   - 示範資料：跑 tools/dev-server.js 同一組示範資料，存成資料包內嵌在檔案裡(工具列「載入示範資料」)
  *
- * 改了 apps-script/ 或 local/ 之後要重新執行一次再提交；tools/verify-local.js 會檢查 dist 是不是最新的。
+ * 改了 src/ 或 local/ 之後要重新執行一次再提交；tools/verify-local.js 會檢查 dist 是不是最新的。
  */
 const fs = require('fs');
 const path = require('path');
 
 const REPO = path.join(__dirname, '..');
-const GAS_DIR = path.join(REPO, 'apps-script');
+const GAS_DIR = path.join(REPO, 'src');
 const LOCAL_DIR = path.join(REPO, 'local');
 const OUT_FILE = path.join(REPO, 'dist', 'FS-local.html');
 
-// 地端版用得到的後端檔案。Code.gs(HtmlService/試算表選單)與 FirestoreClient.gs(雲端資料庫)用不到。
+// 後端檔案(依載入順序)
 const BACKEND_FILES = ['Constants.gs', 'Utils.gs', 'DataService.gs', 'CalcEngine.gs', 'SetupSheets.gs'];
-const GAS_GLOBALS = ['SpreadsheetApp', 'LockService', 'CacheService', 'PropertiesService', 'Utilities',
-  'Session', 'Logger', 'HtmlService', 'UrlFetchApp'];
-// 前端不該呼叫的公開函式(線上版靠 HtmlService 才有意義)
-const PRIVATE_NAMES = ['include'];
+// .gs 用到的 Apps Script 全域物件，由 local/gas-shim.js 的 createGlobals() 提供
+const GAS_GLOBALS = ['SpreadsheetApp', 'LockService', 'CacheService', 'Utilities', 'Session', 'Logger'];
 const EXPORTED_CONSTS = ['SCHEMA', 'TEXT_COLUMNS', 'PL_LINE_ITEMS', 'LINE_CODE_PREFIX'];
 
 function read(file) { return fs.readFileSync(file, 'utf8'); }
@@ -38,18 +36,17 @@ function buildBackendSource() {
     const re = /^function\s+([A-Za-z_$][\w$]*)\s*\(/gm;
     let m;
     while ((m = re.exec(code))) names.push(m[1]);
-    return `// ===== apps-script/${file} =====\n${code}`;
+    return `// ===== src/${file} =====\n${code}`;
   });
   const dupes = names.filter((n, i) => names.indexOf(n) !== i);
   if (dupes.length) throw new Error('後端有重複定義的函式：' + dupes.join(', '));
   return [
-    '/* 由 tools/build-local.js 從 apps-script/*.gs 產生，請勿直接修改 */',
+    '/* 由 tools/build-local.js 從 src/*.gs 產生，請勿直接修改 */',
     'function FSBackendFactory(G) {',
     GAS_GLOBALS.map(g => `  var ${g} = G.${g};`).join('\n'),
     parts.join('\n\n'),
     '  return {',
     `    fns: { ${names.map(n => `${n}: ${n}`).join(', ')} },`,
-    `    privateNames: { ${PRIVATE_NAMES.map(n => `${n}: true`).join(', ')} },`,
     `    consts: { ${EXPORTED_CONSTS.map(n => `${n}: ${n}`).join(', ')} },`,
     '    // 模擬 Apps Script「每次 google.script.run 都是全新執行」：單次執行內的快取要清掉',
     '    beginExecution: function () { SHEET_CACHE_ = {}; resetCalcMemo_(); LOCK_DEPTH_ = 0; }',
@@ -124,7 +121,7 @@ function buildHtml() {
     .replace('<body>', '<body>\n' + boot)
     .replace('<!--FS-LOCAL-FRONTEND-->',
       read(path.join(GAS_DIR, 'script.html')) + '\n' + inlineScript(read(path.join(LOCAL_DIR, 'local-ui.js'))));
-  return '<!DOCTYPE html>\n<!-- 由 tools/build-local.js 產生，請勿直接修改；原始檔在 apps-script/ 與 local/ -->\n' +
+  return '<!DOCTYPE html>\n<!-- 由 tools/build-local.js 產生，請勿直接修改；原始檔在 src/ 與 local/ -->\n' +
     html.replace(/^<!DOCTYPE html>\s*/i, '');
 }
 
