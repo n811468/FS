@@ -64,6 +64,24 @@ tools/                      # 只在本機用 Node 執行，不會部署到 Apps
 > 前端全部集中在 `script.html`（單一 SPA），沒有 `input_*.html` / `dashboard.html` 這類分檔 ——
 > 每個分頁都是同一套表格元件的組態差異，拆檔只會讓共用邏輯散掉。
 
+### 地端版（同一份原始碼的另一種執行方式）
+
+```
+local/                      # 地端版專屬的一層，不改動 apps-script/ 的任何檔案
+├─ gas-shim.js             # 瀏覽器版 Apps Script 模擬層：記憶體試算表(比照 Sheets 自動偵測格式)、Lock/Cache/Session
+├─ pack.js                 # 資料包(JSON)：匯出、讀取檢查、只取部分車型、合併匯入(車型取代 + 自訂科目改號)
+├─ host.js                 # 後端主機：.gs 後端 + 瀏覽器暫存 + google.script.run 替身
+├─ boot.js / local-ui.js / local-ui.css   # 開機與地端版工具列
+tools/build-local.js        # .gs 包進 FSBackendFactory(G) + 前端原檔 + local/ → dist/FS-local.html(單一檔案)
+tools/verify-local.js       # 地端版與 Node 驗算層逐格比對、暫存/資料包/合併
+tools/e2e-local.js          # 用 Chromium 以 file:// 開啟的端對端測試
+dist/FS-local.html          # 產出物，提交進 git，使用者直接複製這一個檔案
+```
+
+資料流跟線上版相同，只是 `google.script.run` 不走網路，而是直接呼叫同一頁裡的 `.gs` 函式；
+`SpreadsheetApp` 換成記憶體試算表，每次有改到資料(PLResult 計算快照除外)就整份存進 `localStorage`。
+瀏覽器暫存只是便利，正式保存與交換一律用資料包。使用方式見 `local/README.md`。
+
 ---
 
 ## 3. 後端函式介面（DataService.gs）
